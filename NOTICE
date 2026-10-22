@@ -1,0 +1,10 @@
+crabpot
+Copyright (c) 2026 TurtIeSocks
+
+This product is derived from Anthropic Sandbox Runtime
+(https://github.com/anthropics/sandbox-runtime),
+Copyright Anthropic PBC, licensed under the Apache License, Version 2.0.
+A copy of that licence is in LICENSE-APACHE.
+
+crabpot is a rewrite of that project in Rust. Its source has been changed
+from the original throughout.

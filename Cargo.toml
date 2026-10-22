@@ -19,10 +19,13 @@ exclude = ["/docs/"]
 [lints.rust]
 missing_docs = "deny"
 missing_debug_implementations = "deny"
-unsafe_code = "forbid"
+# deny, not forbid: the platform sandboxes are FFI (IR-7). The one module that
+# calls them allows it, and nothing else may (IR-22).
+unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
 
 # Debug info dominates a debug build, and a dependency's is never what is
 # being debugged.

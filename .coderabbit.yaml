@@ -36,7 +36,9 @@ reviews:
         exact-string test; no file over 1000 lines.
         docs/rust-house-style-addendum.md, when it exists, holds this repo's
         exceptions and wins over the rules.
-        `unsafe_code` is forbidden crate-wide in Cargo.toml.
+        `unsafe_code` is denied crate-wide in Cargo.toml and allowed only in
+        the one module that wraps the OS sandbox FFI. Flag unsafe anywhere
+        else, and any unsafe block without a `// SAFETY:` comment.
         Do not suggest widening an input grammar past what the code refuses. A
         refusal here is usually deliberate and says so in its own error.
     - path: "src/**"

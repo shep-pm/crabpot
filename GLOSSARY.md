@@ -30,6 +30,10 @@ _Avoid_: syncing, tracking, lockstep
 The test rig that runs the same case under upstream and under crabpot and compares the outcomes. Parity is reached when every case matches.
 _Avoid_: conformance suite, compat tests
 
+**Case**:
+A settings file, the files it starts from, and the probes run against it.
+_Avoid_: scenario, fixture (for the whole case), test
+
 **Probe**:
 One action a case runs inside the sandbox (read, write, connect, bind), whose outcome is allowed or refused.
 _Avoid_: check, assertion

@@ -10,14 +10,16 @@ tone_instructions: >-
 reviews:
   profile: assertive
   auto_review:
-    # Off, and a pull request opts in with the marker below in its
-    # description, so a drive-by pull request from a fork does not spend the
-    # plan's review slot. `@coderabbitai review` works on any pull request.
+    # Off, and a pull request opts in by carrying the `review please` label,
+    # so a drive-by pull request from a fork does not spend the plan's one
+    # review an hour. Gate with a positive label: a description keyword gates
+    # nothing, and a list of only negative labels means "review everything
+    # except these". `@coderabbitai review` works on any pull request.
     enabled: false
-    description_keyword: "<!-- coderabbit-review -->"
-    # Merging a release pull request IS the release, and its diff is a version
-    # bump plus a changelog generated from commits already reviewed.
     labels:
+      - "review please"
+      # Merging a release pull request IS the release, and its diff is a
+      # version bump plus a changelog generated from reviewed commits.
       - "!release"
   path_filters:
     - "!Cargo.lock"

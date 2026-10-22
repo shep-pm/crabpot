@@ -1,0 +1,45 @@
+name: runner-probe
+# Throwaway: answers "Can GitHub's macOS runners run sandbox-exec?" and is never merged.
+on:
+  push:
+    branches: [task/macos-runner-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: versions
+        run: sw_vers; uname -m; ls -l /usr/bin/sandbox-exec; whoami; node --version
+      - name: allow-default
+        run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true && echo OK
+      - name: deny probes
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/p/secret" "$RUNNER_TEMP/p/out"; echo hi > "$RUNNER_TEMP/p/secret/f"
+          D=$(cd "$RUNNER_TEMP/p" && pwd -P)
+          P="(version 1)(allow default)(deny file-read* (subpath \"$D/secret\"))(deny file-write* (subpath \"$D/out\"))(deny network-outbound (remote ip \"*:443\"))"
+          probe() { if /usr/bin/sandbox-exec -p "$P" "$@" >/dev/null 2>&1; then echo "allowed: $*"; else echo "refused($?): $*"; fi; }
+          probe cat "$D/secret/f"
+          probe touch "$D/out/x"
+          probe touch "$D/y"
+          probe curl -sS --max-time 5 https://example.com
+      - name: nesting
+        shell: bash
+        run: |
+          D='(version 1)(deny default)(allow process*)(allow file-read*)(allow sysctl-read)(allow mach-lookup)(allow file-write-data (literal "/dev/null"))'
+          /usr/bin/sandbox-exec -p "$D" /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true; echo "nested under deny-default: exit=$?"
+          /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true; echo "nested under allow-default: exit=$?"
+      - name: upstream srt 0.0.81
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/s/secret"; echo hi > "$RUNNER_TEMP/s/secret/f"; S=$(cd "$RUNNER_TEMP/s" && pwd -P)
+          printf '{"network":{"allowedDomains":["example.com"],"deniedDomains":[]},"filesystem":{"denyRead":["%s/secret"],"allowWrite":["%s"],"denyWrite":[]}}' "$S" "$S" > "$S/settings.json"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- cat "$S/secret/f"; echo "srt read of denied file: exit=$?"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://example.com; echo "srt allowed host: exit=$?"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- curl -sS -o /dev/null --max-time 10 https://github.com; echo "srt other host: exit=$?"

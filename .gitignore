@@ -18,3 +18,6 @@ target/
 # Claude Code: per-session worktrees and personal settings
 .claude/worktrees/
 .claude/settings.local.json
+
+# The maintainer's local log of kelpie gaps (shep-pm/shep-kelpie#897)
+docs/kelpie-journey.md

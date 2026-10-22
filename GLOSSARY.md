@@ -34,6 +34,12 @@ _Avoid_: conformance suite, compat tests
 One action a case runs inside the sandbox (read, write, connect, bind), whose outcome is allowed or refused.
 _Avoid_: check, assertion
 
+### Running
+
+**Wrapper**:
+The process that holds one sandbox's proxies and runs the sandboxed command as its child, for as long as that command lives. It is the crabpot CLI, or a host's own binary started in multicall. Recorded in ADR-0010.
+_Avoid_: launcher, shim, the srt process
+
 ### Consumers
 
 **Proving ground**:

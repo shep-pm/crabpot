@@ -15,9 +15,8 @@ use serde_json::Value;
 
 use super::error::ConfigError;
 use super::keys::{
-    allow_local_binding, allow_read, allow_unix_sockets, allow_write, denied_domains,
-    denied_resolved_addresses, deny_mach_lookup, deny_write, enable_weaker_network_isolation,
-    mitm_proxy,
+    allow_local_binding, allow_read, allow_unix_sockets, denied_domains, denied_resolved_addresses,
+    deny_mach_lookup, deny_write, enable_weaker_network_isolation, mitm_proxy,
 };
 
 /// Dotted paths, in the order they are checked.
@@ -31,7 +30,6 @@ pub(super) const PATHS: &[&str] = &[
     denied_resolved_addresses::PATH,
     mitm_proxy::PATH,
     allow_read::PATH,
-    allow_write::PATH,
     deny_write::PATH,
     // Upstream's other keys that act on macOS, with what each does.
     // Lets a command use every Unix socket.

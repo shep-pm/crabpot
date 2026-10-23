@@ -101,7 +101,7 @@ pub(crate) fn collapse_interior_spellings(path: &str) -> String {
 /// `path` is `dir` itself or lies beneath it, by component (`/xy` is not under
 /// `/x`). Nothing but the root has `//` for a prefix, so the root is told
 /// apart.
-pub(crate) fn is_at_or_under(path: &str, dir: &str) -> bool {
+pub fn is_at_or_under(path: &str, dir: &str) -> bool {
     path == dir
         || if dir == "/" {
             path.starts_with('/')

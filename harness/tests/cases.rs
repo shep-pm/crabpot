@@ -119,6 +119,34 @@ fn allowed_domain_untrimmed_matches_nothing() {
 }
 
 #[test]
+fn allow_write_folder() {
+    run("allow_write_folder", "allow-write-folder.json");
+}
+
+#[test]
+fn allow_write_outside_is_refused() {
+    run(
+        "allow_write_outside_is_refused",
+        "allow-write-outside-is-refused.json",
+    );
+}
+
+#[test]
+fn allow_write_glob() {
+    run("allow_write_glob", "allow-write-glob.json");
+}
+
+#[test]
+fn default_write_dev_null() {
+    run("default_write_dev_null", "default-write-dev-null.json");
+}
+
+#[test]
+fn default_write_tmp_claude() {
+    run("default_write_tmp_claude", "default-write-tmp-claude.json");
+}
+
+#[test]
 fn allow_mach_lookup_loads() {
     run("allow_mach_lookup_loads", "allow-mach-lookup-services.json");
 }

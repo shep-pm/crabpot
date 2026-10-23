@@ -4,15 +4,20 @@
 //! request filters).
 //!
 //! A plain request is forwarded as its head with the hop-by-hop headers
-//! dropped, and then the two sockets are joined, so its body and the answer
-//! pass as they come. The upstream connection is asked to close after the
-//! answer.
+//! dropped, then as many body bytes as its `Content-Length` says, and the
+//! answer passes back as it comes. Anything the client sends after that, such
+//! as a second request on the same connection, is not forwarded: it would reach
+//! the origin without being read, filtered or stripped of the credential. A
+//! body of unknown length (`Transfer-Encoding`) is refused for the same reason.
+//! The upstream connection is asked to close after the answer.
 
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt, copy, copy_bidirectional, sink};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, copy, copy_bidirectional, join, sink};
 use tokio::net::{TcpListener, TcpStream, lookup_host};
 use tokio::time::{sleep, timeout};
 
@@ -142,6 +147,7 @@ async fn end(client: &mut TcpStream, response: &str) -> io::Result<()> {
 
 const BAD_REQUEST: &str = "HTTP/1.1 400 Bad Request\r\n\r\n";
 const BAD_GATEWAY: &str = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
+const NOT_IMPLEMENTED: &str = "HTTP/1.1 501 Not Implemented\r\n\r\n";
 const AUTH_REQUIRED: &str = "HTTP/1.1 407 Proxy Authentication Required\r\n\
      Proxy-Authenticate: Basic realm=\"srt\"\r\n\
      Content-Length: 0\r\n\
@@ -184,12 +190,12 @@ async fn tunnel(
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
-    join(client, &mut upstream, &early).await
+    pipe(client, &mut upstream, &early).await
 }
 
 /// Passes bytes both ways until both sides are done. `early` is what the
 /// client sent in the packet of its head.
-async fn join(client: &mut TcpStream, upstream: &mut TcpStream, early: &[u8]) -> io::Result<()> {
+async fn pipe(client: &mut TcpStream, upstream: &mut TcpStream, early: &[u8]) -> io::Result<()> {
     upstream.write_all(early).await?;
     copy_bidirectional(client, upstream).await.map(drop)
 }
@@ -215,6 +221,10 @@ async fn forward(
             return end(client, &denied("Forbidden")).await;
         }
     };
+    let body = match body_length(head) {
+        Ok(length) => length,
+        Err(refusal) => return end(client, refusal).await,
+    };
     let Ok(mut upstream) = dial(&host, target.port).await else {
         return end(client, BAD_GATEWAY).await;
     };
@@ -227,13 +237,81 @@ async fn forward(
     }
     let authority = authority(&host, target.port);
     request.extend_from_slice(format!("Host: {authority}\r\nConnection: close\r\n\r\n").as_bytes());
-    request.extend_from_slice(&early);
-    join(client, &mut upstream, &request).await
+    let in_head_packet = early.len().min(usize::try_from(body).unwrap_or(usize::MAX));
+    request.extend_from_slice(&early[..in_head_packet]);
+    let body_left = body - in_head_packet as u64;
+    relay(client, &mut upstream, &request, body_left).await?;
+    let _ = timeout(LINGER, copy(client, &mut sink())).await;
+    Ok(())
+}
+
+/// How many body bytes the request carries, or the refusal to answer with when
+/// that is not known: a `Transfer-Encoding`, or a `Content-Length` that is not
+/// one number.
+fn body_length(head: &Head) -> Result<u64, &'static str> {
+    if head.header("transfer-encoding").is_some() {
+        return Err(NOT_IMPLEMENTED);
+    }
+    let mut lengths = head
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"));
+    let Some((_, value)) = lengths.next() else {
+        return Ok(0);
+    };
+    if lengths.next().is_some() {
+        return Err(BAD_REQUEST);
+    }
+    core::str::from_utf8(value)
+        .ok()
+        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|text| text.parse().ok())
+        .ok_or(BAD_REQUEST)
+}
+
+/// Writes `request` to the origin, then passes `body_left` more bytes from the
+/// client and the whole answer back. The origin's write side stays open, since
+/// some servers take a half-close for a client that left.
+async fn relay(
+    client: &mut TcpStream,
+    upstream: &mut TcpStream,
+    request: &[u8],
+    body_left: u64,
+) -> io::Result<()> {
+    upstream.write_all(request).await?;
+    let (client_read, client_write) = client.split();
+    let (upstream_read, upstream_write) = upstream.split();
+    let mut client = join(client_read.take(body_left), client_write);
+    let mut upstream = join(upstream_read, KeepOpen(upstream_write));
+    copy_bidirectional(&mut client, &mut upstream)
+        .await
+        .map(drop)
+}
+
+/// A writer whose shutdown does nothing.
+struct KeepOpen<W>(W);
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for KeepOpen<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// Hop-by-hop headers are for the connection to the proxy, so they are not
-/// forwarded, nor is the `Host`, which is rewritten. The framing of the body
-/// is kept, since the body passes as it came.
+/// forwarded, nor is the `Host`, which is rewritten. `Content-Length` is kept,
+/// since the body passes as it came.
 const HOP_BY_HOP: &[&str] = &[
     "connection",
     "keep-alive",
@@ -245,7 +323,7 @@ const HOP_BY_HOP: &[&str] = &[
     "upgrade",
     "host",
 ];
-const FRAMING: &[&str] = &["content-length", "transfer-encoding"];
+const FRAMING: &[&str] = &["content-length"];
 
 fn forwarded_headers(head: &Head) -> impl Iterator<Item = (&str, &[u8])> {
     let named: Vec<String> = head

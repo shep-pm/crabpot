@@ -61,6 +61,9 @@ impl Proxy {
             .spawn(move || {
                 // A dropped sender ends the wait as a sent one does.
                 let _ = runtime.block_on(stopped);
+                // Dropping the runtime would wait for a name lookup still
+                // running on its blocking pool, and so would the caller.
+                runtime.shutdown_background();
             })?;
         Ok(Self {
             port,

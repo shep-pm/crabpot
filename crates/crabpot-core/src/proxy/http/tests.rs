@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::thread;
+use std::time::Duration;
 
 use super::super::token::base64_encode;
 use super::super::{Proxy, username_for};
@@ -16,7 +17,8 @@ fn proxy_allowing(entries: &[&str]) -> Proxy {
 }
 
 /// A server on a loopback port that answers its first client with `reply`,
-/// or echoes it when there is none, and hands back what it read.
+/// or echoes it when there is none, and hands back what it read. With a
+/// reply it goes on reading for a moment after it has answered.
 fn origin(reply: Option<&'static str>) -> (u16, thread::JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -32,8 +34,14 @@ fn origin(reply: Option<&'static str>) -> (u16, thread::JoinHandle<Vec<u8>>) {
             seen.extend_from_slice(&buf[..n]);
             match reply {
                 None => client.write_all(&buf[..n]).unwrap(),
-                Some(reply) if seen.ends_with(b"\r\n\r\n") => {
+                Some(reply) if seen.windows(4).any(|w| w == b"\r\n\r\n") => {
                     client.write_all(reply.as_bytes()).unwrap();
+                    client
+                        .set_read_timeout(Some(Duration::from_millis(300)))
+                        .unwrap();
+                    while let Ok(n @ 1..) = client.read(&mut buf) {
+                        seen.extend_from_slice(&buf[..n]);
+                    }
                     return seen;
                 }
                 Some(_) => {}
@@ -232,4 +240,67 @@ fn connect_targets_and_absolute_targets_are_read_as_upstream_reads_them() {
     ] {
         assert!(Absolute::parse(bad).is_none(), "{bad}");
     }
+}
+
+#[test]
+fn a_second_request_on_the_connection_is_not_forwarded() {
+    let proxy = proxy_allowing(&["127.0.0.1"]);
+    let (port, seen) = origin(Some("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"));
+    let credential = credential(&proxy);
+    let first = format!("GET http://127.0.0.1:{port}/a HTTP/1.1\r\n{credential}\r\n");
+    let second = format!("GET http://127.0.0.1:{port}/b HTTP/1.1\r\n{credential}\r\n");
+    let mut stream = client(&proxy, &format!("{first}{second}"));
+
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    let seen = String::from_utf8(seen.join().unwrap()).unwrap();
+    assert!(seen.starts_with("GET /a HTTP/1.1\r\n"), "{seen}");
+    assert!(!seen.contains("/b"), "{seen}");
+    assert!(
+        !seen.to_lowercase().contains("proxy-authorization"),
+        "{seen}"
+    );
+    assert_eq!(answer.matches("HTTP/1.1 200").count(), 1, "{answer}");
+}
+
+#[test]
+fn a_body_of_the_length_the_request_gives_is_forwarded() {
+    let proxy = proxy_allowing(&["127.0.0.1"]);
+    let (port, seen) = origin(Some("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+    let request = format!(
+        "POST http://127.0.0.1:{port}/p HTTP/1.1\r\nContent-Length: 5\r\n{}\r\nhelloEXTRA",
+        credential(&proxy)
+    );
+    let mut stream = client(&proxy, &request);
+
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    let seen = String::from_utf8(seen.join().unwrap()).unwrap();
+    assert!(seen.ends_with("\r\n\r\nhello"), "{seen}");
+}
+
+#[test]
+fn a_body_of_unknown_length_gets_501() {
+    let proxy = proxy_allowing(&["127.0.0.1"]);
+    let request = format!(
+        "POST http://127.0.0.1:1/p HTTP/1.1\r\nTransfer-Encoding: chunked\r\n{}\r\n",
+        credential(&proxy)
+    );
+    let head = head(&mut client(&proxy, &request));
+
+    assert!(head.starts_with("HTTP/1.1 501 "), "{head}");
+}
+
+#[test]
+fn dropping_the_proxy_does_not_wait_for_a_tunnel() {
+    let proxy = proxy_allowing(&["127.0.0.1"]);
+    let (port, _) = origin(None);
+    let mut stream = connect(&proxy, &format!("127.0.0.1:{port}"), &credential(&proxy));
+    head(&mut stream);
+
+    drop(proxy);
+
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty());
 }

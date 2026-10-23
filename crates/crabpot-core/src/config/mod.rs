@@ -28,7 +28,7 @@ pub use crate::path_entries::PathEntry;
 
 use self::keys::{
     allow_mach_lookup, allow_read, allow_unix_sockets, allow_write, allowed_domains,
-    denied_domains, denied_resolved_addresses, deny_read, deny_write,
+    denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_read, deny_write,
     enable_weaker_network_isolation, mitm_proxy, strict_allowlist,
 };
 use self::leaf::present;
@@ -83,8 +83,9 @@ pub struct Network {
     /// macOS profile applies.
     #[serde(default, deserialize_with = "allow_mach_lookup::deserialize")]
     pub allow_mach_lookup: Option<Vec<String>>,
-    /// `denyMachLookup`, which is not read yet.
-    #[serde(default, deserialize_with = "present")]
+    /// `denyMachLookup`: the Mach services a command may not look up, which
+    /// the macOS profile denies last, over every allow. A key of crabpot's own.
+    #[serde(default, deserialize_with = "deny_mach_lookup::deserialize")]
     pub deny_mach_lookup: Option<Vec<String>>,
     /// `mitmProxy`: the domains sent to an upstream proxy over a Unix socket.
     #[serde(default, deserialize_with = "present")]

@@ -54,6 +54,11 @@ jobs:
       - if: runner.os == 'macOS'
         run: npm ci
         working-directory: harness
+      # `tests/deny_mach_lookup.rs` builds a Go program to prove Go's TLS works.
+      - if: runner.os == 'macOS'
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
       - run: rustup toolchain install stable --profile minimal
       - run: cargo test --locked
 

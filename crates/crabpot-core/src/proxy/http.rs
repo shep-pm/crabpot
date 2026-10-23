@@ -16,19 +16,20 @@ use core::task::{Context, Poll};
 use std::io;
 use std::sync::Arc;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional, join};
-use tokio::net::TcpStream;
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional, join, split,
+};
 
 use super::filter::Denial;
 use super::mitm;
-use super::shared::{DialError, Shared, dial, drain};
+use super::shared::{DialError, Shared, Stream, dial, drain};
 
 /// A request head longer than this is refused with 431, as Node's default.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 const MAX_HEADERS: usize = 100;
 
 /// One connection. A client that goes away mid-exchange is nobody's failure.
-pub(super) async fn handle(mut client: TcpStream, shared: Arc<Shared>) {
+pub(super) async fn handle<S: Stream>(mut client: S, shared: Arc<Shared>) {
     let _ = exchange(&mut client, &shared).await;
 }
 
@@ -56,7 +57,7 @@ enum Read {
     Closed,
 }
 
-async fn exchange(client: &mut TcpStream, shared: &Shared) -> io::Result<()> {
+async fn exchange<S: Stream>(client: &mut S, shared: &Shared) -> io::Result<()> {
     match read_head(client).await? {
         Read::Head(head, early) if head.method.eq_ignore_ascii_case("CONNECT") => {
             tunnel(client, shared, &head, early).await
@@ -69,7 +70,7 @@ async fn exchange(client: &mut TcpStream, shared: &Shared) -> io::Result<()> {
 
 /// Reads up to the end of the request head. The bytes after it, which are the
 /// start of a body or of a tunnel, come back as `early`.
-async fn read_head(client: &mut TcpStream) -> io::Result<Read> {
+async fn read_head<S: Stream>(client: &mut S) -> io::Result<Read> {
     let mut buf = Vec::with_capacity(1024);
     loop {
         let mut fields = [httparse::EMPTY_HEADER; MAX_HEADERS];
@@ -103,7 +104,7 @@ async fn read_head(client: &mut TcpStream) -> io::Result<Read> {
 /// client is still sending is read and dropped for a moment first, since
 /// closing on unread bytes resets the connection and can take the response
 /// with it.
-async fn end(client: &mut TcpStream, response: &str) -> io::Result<()> {
+async fn end<S: Stream>(client: &mut S, response: &str) -> io::Result<()> {
     client.write_all(response.as_bytes()).await?;
     client.shutdown().await?;
     drain(client).await;
@@ -158,12 +159,11 @@ fn undialed(error: &DialError, tunnel: bool) -> String {
     }
 }
 
-/// A `CONNECT`: the tunnel to `host:port` if the filter allows it.
 /// A `CONNECT`: the tunnel to `host:port` if the filter allows it, through the
 /// mitm socket when that route covers the host and through the guarded dial
 /// otherwise.
-async fn tunnel(
-    client: &mut TcpStream,
+async fn tunnel<S: Stream>(
+    client: &mut S,
     shared: &Shared,
     head: &Head,
     early: Vec<u8>,
@@ -191,8 +191,8 @@ async fn tunnel(
 }
 
 /// The client is told its tunnel is open, and the bytes start flowing.
-async fn established<U: AsyncRead + AsyncWrite + Unpin>(
-    client: &mut TcpStream,
+async fn established<S: Stream, U: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut S,
     upstream: &mut U,
     early: &[u8],
 ) -> io::Result<()> {
@@ -204,8 +204,8 @@ async fn established<U: AsyncRead + AsyncWrite + Unpin>(
 
 /// Passes bytes both ways until both sides are done. `early` is what the
 /// client sent in the packet of its head.
-async fn pipe<U: AsyncRead + AsyncWrite + Unpin>(
-    client: &mut TcpStream,
+async fn pipe<S: Stream, U: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut S,
     upstream: &mut U,
     early: &[u8],
 ) -> io::Result<()> {
@@ -215,8 +215,8 @@ async fn pipe<U: AsyncRead + AsyncWrite + Unpin>(
 
 /// A request to `http://host[:port]/path`: forwarded to the host if the filter
 /// allows it.
-async fn forward(
-    client: &mut TcpStream,
+async fn forward<S: Stream>(
+    client: &mut S,
     shared: &Shared,
     head: &Head,
     early: Vec<u8>,
@@ -299,15 +299,15 @@ fn body_length(head: &Head) -> Result<u64, &'static str> {
 /// Writes `request` to the upstream, then passes `body_left` more bytes from
 /// the client and the whole answer back. The upstream's write side stays open,
 /// since some servers take a half-close for a client that left.
-async fn relay<U: AsyncRead + AsyncWrite + Unpin>(
-    client: &mut TcpStream,
+async fn relay<S: Stream, U: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut S,
     upstream: &mut U,
     request: &[u8],
     body_left: u64,
 ) -> io::Result<()> {
     upstream.write_all(request).await?;
-    let (client_read, client_write) = client.split();
-    let (upstream_read, upstream_write) = tokio::io::split(&mut *upstream);
+    let (client_read, client_write) = split(client);
+    let (upstream_read, upstream_write) = split(&mut *upstream);
     let mut client = join(client_read.take(body_left), client_write);
     let mut upstream = join(upstream_read, KeepOpen(upstream_write));
     copy_bidirectional(&mut client, &mut upstream)

@@ -36,6 +36,14 @@ pub fn username_for(command: &str) -> String {
     }
 }
 
+/// `username:token` as base64, which is what an HTTP proxy's `Basic` credential
+/// carries. The macOS ssh `ProxyCommand` script takes it ready to put in its
+/// header, as upstream's `sshConnectScript` takes `basic`.
+#[must_use]
+pub fn basic_for(username: &str, token: &str) -> String {
+    base64_encode(format!("{username}:{token}").as_bytes())
+}
+
 /// `text` cut to `units` UTF-16 code units. A character the cut would split
 /// becomes U+FFFD, which is what JavaScript's slice leaves a UTF-8 encoder to
 /// write for the lone surrogate.

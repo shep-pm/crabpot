@@ -273,6 +273,21 @@ fn socks_other_domain_refused() {
 }
 
 #[test]
+fn mux_http_allowed() {
+    run("mux_http_allowed", "mux-http-allowed.json");
+}
+
+#[test]
+fn mux_socks_allowed() {
+    run("mux_socks_allowed", "mux-socks-allowed.json");
+}
+
+#[test]
+fn mux_other_domain_refused() {
+    run("mux_other_domain_refused", "mux-other-domain-refused.json");
+}
+
+#[test]
 fn unix_socket_unlisted_is_refused() {
     run(
         "unix_socket_unlisted_is_refused",

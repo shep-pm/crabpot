@@ -124,16 +124,15 @@ impl Sandbox {
                 .join(" ");
             let username = username_for(&line);
             let token = self.proxy.token();
-            for (name, value) in crabpot_macos::env::http::vars(self.proxy.port(), &username, token)
-                .into_iter()
-                .chain(crabpot_macos::env::socks::vars(
-                    self.proxy.socks_port(),
-                    &username,
-                    token,
-                    // The HTTP proxy is always there, so ssh goes through it.
-                    true,
-                ))
-            {
+            let http = crabpot_macos::env::http::vars(self.proxy.port(), &username, token);
+            let socks = crabpot_macos::env::socks::vars(self.proxy.socks_port(), &username, token);
+            let ssh = crabpot_macos::env::ssh::vars(
+                self.proxy.port(),
+                self.proxy.socks_port(),
+                &username,
+                token,
+            );
+            for (name, value) in http.into_iter().chain(socks).chain(ssh) {
                 wrapped.env(name, value);
             }
             Ok(wrapped)
@@ -256,7 +255,11 @@ mod tests {
             ftp.ends_with(&format!("@localhost:{}", sandbox.proxy.socks_port())),
             "{ftp}"
         );
-        assert_ne!(sandbox.proxy.socks_port(), sandbox.proxy.port());
+        assert_eq!(
+            sandbox.proxy.socks_port(),
+            sandbox.proxy.port(),
+            "one port serves both protocols"
+        );
     }
 
     #[cfg(not(target_os = "macos"))]

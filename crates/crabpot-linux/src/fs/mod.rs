@@ -11,6 +11,8 @@ use std::ffi::OsString;
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
+mod glob_walk;
+
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {
     ($($name:ident),* $(,)?) => {
@@ -20,7 +22,7 @@ macro_rules! sections {
     };
 }
 
-sections!(base);
+sections!(base, deny_read);
 
 /// The words a config's filesystem policy comes to, in the order bwrap reads
 /// them.
@@ -51,3 +53,6 @@ impl Plan {
         &self.words
     }
 }
+
+#[cfg(test)]
+mod tests;

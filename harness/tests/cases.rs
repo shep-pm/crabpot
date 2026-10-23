@@ -193,6 +193,19 @@ fn refused_deny_write_trailing_separator_glob() {
 }
 
 #[test]
+fn allow_mach_lookup_loads() {
+    run("allow_mach_lookup_loads", "allow-mach-lookup-services.json");
+}
+
+#[test]
+fn refused_allow_mach_lookup_mid_wildcard() {
+    run(
+        "refused_allow_mach_lookup_mid_wildcard",
+        "allow-mach-lookup-mid-wildcard.json",
+    );
+}
+
+#[test]
 fn unix_socket_listed_folder() {
     run(
         "unix_socket_listed_folder",

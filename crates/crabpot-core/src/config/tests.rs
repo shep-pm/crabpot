@@ -38,7 +38,6 @@ fn the_default_config_shape_loads() {
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
     ("network.deniedDomains", r#"["example.com"]"#),
-    ("network.allowMachLookup", r#"["com.apple.x"]"#),
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
     ("network.allowLocalBinding", "true"),
     ("enableWeakerNetworkIsolation", "true"),

@@ -1,0 +1,14 @@
+{
+  "files": {
+    "$ROOT/work/seed": "x",
+    "$ROOT/other/seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT/work"], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "write", "path": "$ROOT/work/created"},
+    {"kind": "write", "path": "$ROOT/work/seed"}
+  ]
+}

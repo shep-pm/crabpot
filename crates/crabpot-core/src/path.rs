@@ -13,14 +13,13 @@ mod tests;
 use core::fmt;
 use std::env;
 
-pub(crate) use lexical::{
-    collapse_interior_spellings, dirname, is_absolute, is_at_or_under, resolve,
-};
+pub use lexical::is_at_or_under;
+pub(crate) use lexical::{collapse_interior_spellings, dirname, is_absolute, resolve};
 pub(crate) use real_path::{is_absence_error, real_path_of};
 
 /// What a relative path and a leading `~` are read against.
 #[derive(Clone, Debug)]
-pub(crate) struct PathBase {
+pub struct PathBase {
     home: Option<String>,
     cwd: Option<String>,
 }
@@ -48,7 +47,7 @@ impl core::error::Error for PathError {}
 impl PathBase {
     /// The base of this process: `HOME`, and the working directory. An empty
     /// `HOME` is a home directory with no name, as it is to upstream.
-    pub(crate) fn from_env() -> Self {
+    pub fn from_env() -> Self {
         Self::new(
             env::var_os("HOME").and_then(|home| home.into_string().ok()),
             env::current_dir()
@@ -57,11 +56,17 @@ impl PathBase {
         )
     }
 
-    pub(crate) fn new(home: Option<String>, cwd: Option<String>) -> Self {
+    /// A base of the given home directory and working directory.
+    pub fn new(home: Option<String>, cwd: Option<String>) -> Self {
         Self { home, cwd }
     }
 
-    fn home(&self) -> Result<&str, PathError> {
+    /// The home directory.
+    ///
+    /// # Errors
+    ///
+    /// [`PathError::NoHomeDirectory`] when `HOME` is not set to text.
+    pub fn home(&self) -> Result<&str, PathError> {
         self.home.as_deref().ok_or(PathError::NoHomeDirectory)
     }
 
@@ -71,13 +76,13 @@ impl PathBase {
 }
 
 /// Whether a path pattern holds a character a glob reads: `*`, `?`, `[` or `]`.
-pub(crate) fn contains_glob_chars(path_pattern: &str) -> bool {
+pub fn contains_glob_chars(path_pattern: &str) -> bool {
     path_pattern.contains(['*', '?', '[', ']'])
 }
 
 /// `path_pattern` without a trailing `/**`, which only says "the directory and
 /// everything under it". Never empty: a pattern that was only that is `/`.
-pub(crate) fn remove_trailing_glob_suffix(path_pattern: &str) -> String {
+pub fn remove_trailing_glob_suffix(path_pattern: &str) -> String {
     let stripped = path_pattern.strip_suffix("/**").unwrap_or(path_pattern);
     if stripped.is_empty() { "/" } else { stripped }.to_owned()
 }
@@ -184,7 +189,7 @@ fn resolve_glob_directory(base: &PathBase, pattern: &str) -> Option<String> {
 ///
 /// [`PathError`] when the path needs a home directory or a working directory
 /// and has none.
-pub(crate) fn normalize_path_for_sandbox(
+pub fn normalize_path_for_sandbox(
     base: &PathBase,
     path_pattern: &str,
     literal: bool,

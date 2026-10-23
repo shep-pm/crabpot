@@ -347,14 +347,11 @@ pub fn run_upstream_only(text: &str, name: &str, upstream: &dyn Runner) -> Resul
 /// runner in `runners`, which is the whole comparison for two of them and one
 /// runner's own run for one.
 fn run_case_under(text: &str, name: &str, runners: &[&dyn Runner]) -> Result<bool, Error> {
-    let mut prepared = Prepared::new(text, name)?;
-    let outcome = if prepared.means_here() {
-        prepared.run(runners).map(|()| true)
-    } else {
-        Ok(false)
-    };
-    prepared.stop_serving();
-    outcome
+    let prepared = Prepared::new(text, name)?;
+    if !prepared.means_here() {
+        return Ok(false);
+    }
+    prepared.run(runners).map(|()| true)
 }
 
 /// A case file read into a fresh root: the case, its settings file, and the
@@ -363,8 +360,8 @@ struct Prepared {
     root: Root,
     case: Case,
     settings: PathBuf,
-    /// Served for the run, and stopped by [`Prepared::stop_serving`] before the
-    /// root is removed.
+    /// Served for the run, and stopped by [`Prepared`]'s `Drop` before the root
+    /// is removed, on every way out of the run.
     served: Option<serve::Served>,
 }
 
@@ -397,15 +394,6 @@ impl Prepared {
     /// Whether the case means the platform this harness runs on.
     fn means_here(&self) -> bool {
         self.case.runs_on(Platform::current())
-    }
-
-    /// Stops the case's served socket, which must happen before the root goes:
-    /// the socket is under the root, and a serve ends only when something
-    /// connects to its path. A root that is already removed has removed that
-    /// path, and the serve then waits in `accept` for a connect that cannot
-    /// come.
-    fn stop_serving(&mut self) {
-        self.served = None;
     }
 
     /// The closure that puts the fixture back as the case describes it.
@@ -445,6 +433,19 @@ impl Prepared {
         } else {
             run_probes(&self.case, &self.settings, &restore, runners)
         }
+    }
+}
+
+impl Drop for Prepared {
+    /// Stops the served socket before any field drops, which is the order the
+    /// run needs on every way out of it, a panic's unwinding included. The
+    /// socket is under the root, and a serve ends only when something connects
+    /// to its path: a root that is already gone has removed that path, and the
+    /// serve then waits in `accept` for a connect that cannot come, so the case
+    /// hangs instead of ending. `Prepared`'s fields would otherwise drop in the
+    /// order they are declared, root first.
+    fn drop(&mut self) {
+        self.served = None;
     }
 }
 

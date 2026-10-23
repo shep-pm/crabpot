@@ -174,6 +174,50 @@ fn a_case_stops_its_served_socket_before_it_removes_its_root() {
     assert!(outcome.unwrap());
 }
 
+/// The same order on the way out that a panic takes. A runner that panics must
+/// reach the caller as a panic, and the test process must end: unwinding drops
+/// `Prepared`, and its `Drop` stops the served socket before the root takes the
+/// socket's path with it.
+#[test]
+fn a_case_ends_when_a_runner_panics_under_it() {
+    struct Panicking(&'static str);
+
+    impl Runner for Panicking {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+
+        fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+            panic!("the runner is broken")
+        }
+
+        fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+            unreachable!("the case is not a refused one")
+        }
+    }
+
+    let text = r#"{"files": {}, "settings": {}, "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "200 OK"}, "probes": [{"kind": "bind"}]}"#;
+    // The panic is the point of the test, so its hook output is kept out of the
+    // log. The hook goes back before anything here asserts, which its own
+    // failure has to reach the log.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let upstream: &dyn Runner = &Panicking("upstream");
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_case_under(text, "panicking_runner", &[upstream])
+        }));
+        let _ = tx.send(unwound.is_err());
+    });
+    let ended = rx.recv_timeout(std::time::Duration::from_secs(10));
+    std::panic::set_hook(hook);
+    assert!(
+        ended.expect("the case never ended: the panic unwound past the served socket, which waited on a path its root had already removed"),
+        "the runner's panic reached the caller"
+    );
+}
+
 /// Runs a probe by dialing the socket at a `connect-unix` probe's path,
 /// resolving a relative one against the case root as a wrapper's working
 /// directory does.

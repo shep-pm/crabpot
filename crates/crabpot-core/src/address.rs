@@ -34,21 +34,22 @@ impl fmt::Display for AddressError {
 
 impl core::error::Error for AddressError {}
 
-/// An IP literal or CIDR range.
-///
-/// An IPv4-mapped IPv6 range is stored as the IPv4 range it stands for
-/// (`::ffff:10.0.0.0/104` is `10.0.0.0/8`), so the two spellings are one rule.
+/// An IP literal or CIDR range, in the form rules are kept in: an IPv4-mapped
+/// IPv6 range is the IPv4 range it stands for (`::ffff:10.0.0.0/104` is
+/// `10.0.0.0/8`), so the two spellings are one rule, and a zone id is dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AddressRange {
-    network: IpAddr,
-    prefix: u8,
+pub struct AddressRange {
+    /// The address, or the network's base address as written.
+    pub address: IpAddr,
+    /// How many leading bits of `address` the range fixes.
+    pub prefix: u8,
 }
 
 impl AddressRange {
     const fn v4(octets: [u8; 4], prefix: u8) -> Self {
         let [a, b, c, d] = octets;
         Self {
-            network: IpAddr::V4(Ipv4Addr::new(a, b, c, d)),
+            address: IpAddr::V4(Ipv4Addr::new(a, b, c, d)),
             prefix,
         }
     }
@@ -56,7 +57,7 @@ impl AddressRange {
     const fn v6(segments: [u16; 8], prefix: u8) -> Self {
         let [a, b, c, d, e, f, g, h] = segments;
         Self {
-            network: IpAddr::V6(Ipv6Addr::new(a, b, c, d, e, f, g, h)),
+            address: IpAddr::V6(Ipv6Addr::new(a, b, c, d, e, f, g, h)),
             prefix,
         }
     }
@@ -75,8 +76,8 @@ impl AddressRange {
             Some((host, raw)) => (host, Some(raw)),
             None => (entry, None),
         };
-        let network = parse_address(host).ok_or_else(invalid)?;
-        let width = match network {
+        let address = parse_address(host).ok_or_else(invalid)?;
+        let width = match address {
             IpAddr::V4(_) => 32,
             IpAddr::V6(_) => 128,
         };
@@ -92,22 +93,42 @@ impl AddressRange {
                     .ok_or_else(invalid)?
             }
         };
-        if let IpAddr::V6(v6) = network
+        if let IpAddr::V6(v6) = address
             && let Some(v4) = v6.to_ipv4_mapped()
         {
             let prefix = prefix.checked_sub(96).ok_or_else(invalid)?;
             return Ok(Self {
-                network: IpAddr::V4(v4),
+                address: IpAddr::V4(v4),
                 prefix,
             });
         }
-        Ok(Self { network, prefix })
+        Ok(Self { address, prefix })
+    }
+
+    /// The range that holds `address` alone.
+    pub(crate) fn host(address: IpAddr) -> Self {
+        match address {
+            IpAddr::V4(_) => Self {
+                address,
+                prefix: 32,
+            },
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(
+                Self {
+                    address,
+                    prefix: 128,
+                },
+                |v4| Self {
+                    address: IpAddr::V4(v4),
+                    prefix: 32,
+                },
+            ),
+        }
     }
 
     /// Whether `address` is in the range.
     pub(crate) fn contains(&self, address: IpAddr) -> bool {
         let prefix = u32::from(self.prefix);
-        match (self.network, address) {
+        match (self.address, address) {
             (IpAddr::V4(network), IpAddr::V4(address)) => same_prefix_v4(network, address, prefix),
             (IpAddr::V4(network), IpAddr::V6(address)) => address
                 .to_ipv4_mapped()
@@ -190,13 +211,16 @@ pub(crate) fn is_loopback_name(hostname: &str) -> bool {
     name == "localhost" || name.ends_with(".localhost")
 }
 
-/// An IP literal or CIDR range, optionally restricted to one destination port.
+/// An IP literal or CIDR range, optionally restricted to one destination port,
+/// as the text a rule is written in.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AddressRule<'a> {
     range: &'a str,
     port: Option<u16>,
 }
 
+#[cfg(test)]
 impl<'a> AddressRule<'a> {
     /// A rule for `range` on every port.
     pub(crate) const fn any_port(range: &'a str) -> Self {
@@ -212,18 +236,29 @@ impl<'a> AddressRule<'a> {
     }
 }
 
-/// Parsed [`AddressRule`]s, matched by address and destination port.
+/// Parsed ranges, each for one destination port or for every port, matched by
+/// address and destination port.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RuleSet {
     rules: Vec<(AddressRange, Option<u16>)>,
 }
 
 impl RuleSet {
+    /// A set of `ranges`, each limited to its port or `None` for every port.
+    pub(crate) fn from_ranges(
+        ranges: impl IntoIterator<Item = (AddressRange, Option<u16>)>,
+    ) -> Self {
+        Self {
+            rules: ranges.into_iter().collect(),
+        }
+    }
+
     /// Parses every rule.
     ///
     /// # Errors
     ///
     /// [`AddressError::InvalidRange`] for the first rule whose range is invalid.
+    #[cfg(test)]
     pub(crate) fn new<'a>(
         rules: impl IntoIterator<Item = AddressRule<'a>>,
     ) -> Result<Self, AddressError> {
@@ -273,8 +308,6 @@ pub(crate) enum DenialReason {
     HostAddress,
     /// A `localhost` name resolved to something other than loopback.
     NonLoopback,
-    /// The resolver returned something that is not an IP address.
-    Unparsable,
 }
 
 impl DenialReason {
@@ -292,7 +325,6 @@ impl DenialReason {
             Self::Listed => "a listed address",
             Self::HostAddress => "one of this host's addresses",
             Self::NonLoopback => "a non-loopback address",
-            Self::Unparsable => "an unparsable address",
         }
     }
 }
@@ -590,7 +622,6 @@ mod tests {
     #[test]
     fn reasons_sort_in_upstreams_order() {
         let mut reasons = [
-            DenialReason::Unparsable,
             DenialReason::NonLoopback,
             DenialReason::HostAddress,
             DenialReason::Listed,
@@ -616,7 +647,6 @@ mod tests {
                 "a listed address",
                 "one of this host's addresses",
                 "a non-loopback address",
-                "an unparsable address",
             ]
         );
     }

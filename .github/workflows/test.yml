@@ -67,6 +67,11 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: stable
+      # `crabpot-linux/tests/rg_parity.rs` compares its walk with `rg`'s.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install --yes ripgrep
+      - if: runner.os == 'macOS'
+        run: brew install ripgrep
       - run: rustup toolchain install stable --profile minimal
       - run: cargo test --locked
 

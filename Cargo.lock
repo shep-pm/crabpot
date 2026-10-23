@@ -34,7 +34,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "crabpot"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crabpot-core",
  "crabpot-linux",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "crabpot-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "getrandom",
  "httparse",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "crabpot-harness"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crabpot",
  "nix",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "crabpot-linux"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crabpot-core",
  "libc",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "crabpot-macos"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "crabpot-core",
 ]

@@ -38,3 +38,12 @@ publish_no_verify = false
 name = "crabpot-harness"
 release = false
 publish = false
+
+# The Linux crate is the crate the Linux slices land in (ADR-0012). It builds
+# on every runner, but the facade does not depend on it until the dependency
+# checks slice, and ADR-0012 never publishes a platform crate empty, so the
+# Linux release slice flips these two flags and `publish` in its Cargo.toml.
+[[package]]
+name = "crabpot-linux"
+release = false
+publish = false

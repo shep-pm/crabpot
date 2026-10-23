@@ -18,6 +18,7 @@ The repository is a workspace (ADR-0012). Each published crate carries symlinks 
 - `crates/crabpot`: the facade and the only crate users depend on. Depends on `crabpot-core`, and on `crabpot-macos` for `cfg(target_os = "macos")`.
 - `crates/crabpot-core`: what is the same on every platform. Depends on no other crabpot crate.
 - `crates/crabpot-macos`: the seatbelt profile, the child's environment and the `sandbox-exec` argv. Depends on `crabpot-core`, and compiles on every platform.
+- `crates/crabpot-linux`: the bwrap argv, the mandatory-deny walker, the seccomp filters and the dependency checks. Compiles on every platform, is empty until the Linux slices land in it, and the facade does not depend on it yet. `publish = false` in its `Cargo.toml` and unreleased in `release-plz.toml` until the Linux release slice flips both.
 - `harness/`: `crabpot-harness`, `publish = false`, excluded from release in `release-plz.toml`.
 - `NOTICE` carries upstream's Apache-2.0 attribution. It ships with the crate, so keep it accurate.
 

@@ -1,0 +1,8 @@
+{
+  "files": {},
+  "settings": "{not json",
+  "refused": true,
+  "probes": [
+    {"kind": "write", "path": "$ROOT/marker"}
+  ]
+}

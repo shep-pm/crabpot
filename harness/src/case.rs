@@ -27,8 +27,13 @@ pub enum Probe {
 pub struct Case {
     /// Files to create before the probes run, with their contents.
     pub files: Vec<(PathBuf, String)>,
-    /// The settings file, in upstream's schema.
+    /// The settings file, in upstream's schema. A string is the file's text
+    /// as written, so a case can hold a file that is not JSON or is empty,
+    /// and `null` is no file.
     pub settings: Value,
+    /// Whether both runners refuse the settings: each wrapper exits 1 before
+    /// the probe runs.
+    pub refused: bool,
     /// The probes, in order.
     pub probes: Vec<Probe>,
 }
@@ -63,7 +68,8 @@ impl Case {
     /// # Errors
     ///
     /// [`Error::Json`] when `text` is not JSON, [`Error::Shape`] when `files`,
-    /// `settings` or `probes` is missing or has the wrong type, and
+    /// `settings` or `probes` is missing or has the wrong type, as is a `refused`
+    /// that is not a boolean, and
     /// [`Error::UnknownProbe`] when a probe's `kind` is not one this harness knows.
     pub fn parse(text: &str, root: &str) -> Result<Self, Error> {
         let parsed: Value = serde_json::from_str(text).map_err(|e| Error::Json(e.to_string()))?;
@@ -89,6 +95,11 @@ impl Case {
             _ => return Err(Error::Shape("a `files` that is not an object".to_owned())),
         };
         let settings = take("settings")?;
+        let refused = match take("refused") {
+            Err(_) => false,
+            Ok(Value::Bool(refused)) => refused,
+            Ok(_) => return Err(Error::Shape("a `refused` that is not a boolean".to_owned())),
+        };
         let probes = match take("probes")? {
             Value::Array(probes) => probes
                 .iter()
@@ -99,6 +110,7 @@ impl Case {
         Ok(Self {
             files,
             settings,
+            refused,
             probes,
         })
     }
@@ -199,11 +211,46 @@ mod tests {
     }
 
     #[test]
+    fn a_case_may_say_its_settings_are_refused() {
+        let text = |refused: &str| {
+            format!(r#"{{"files": {{}}, "settings": "", "refused": {refused}, "probes": []}}"#)
+        };
+
+        let case = Case::parse(&text("true"), "/r").unwrap();
+        assert!(case.refused);
+        assert_eq!(case.settings, json!(""));
+        assert!(
+            !Case::parse(r#"{"files": {}, "settings": {}, "probes": []}"#, "/r")
+                .unwrap()
+                .refused
+        );
+        assert!(matches!(
+            Case::parse(&text("1"), "/r"),
+            Err(Error::Shape(_))
+        ));
+    }
+
+    #[test]
     fn an_unknown_probe_kind_is_a_harness_error() {
         let text = r#"{"files": {}, "settings": {}, "probes": [{"kind": "ping"}]}"#;
         assert_eq!(
             Case::parse(text, "/r"),
             Err(Error::UnknownProbe("ping".to_owned()))
         );
+    }
+
+    #[test]
+    fn every_case_file_in_the_folder_parses() {
+        let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/cases");
+        let mut parsed = 0;
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            if let Err(error) = Case::parse(&text, "/r") {
+                panic!("{}: {error}", path.display());
+            }
+            parsed += 1;
+        }
+        assert!(parsed >= 4, "only {parsed} case files found");
     }
 }

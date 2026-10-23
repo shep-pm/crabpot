@@ -29,3 +29,18 @@ fn run(name: &str, file: &str) {
 fn default_settings() {
     run("default_settings", "default-settings.json");
 }
+
+#[test]
+fn refused_invalid_json() {
+    run("refused_invalid_json", "refused-invalid-json.json");
+}
+
+#[test]
+fn refused_empty_file() {
+    run("refused_empty_file", "refused-empty-file.json");
+}
+
+#[test]
+fn refused_missing_settings() {
+    run("refused_missing_settings", "refused-missing-settings.json");
+}

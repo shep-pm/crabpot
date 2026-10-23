@@ -1,0 +1,14 @@
+{
+  "files": {
+    "$ROOT/secrets/key": "x",
+    "$ROOT/open/readable": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": ["~/secrets"], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/secrets/key"},
+    {"kind": "read", "path": "$ROOT/open/readable"}
+  ]
+}

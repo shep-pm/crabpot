@@ -9,7 +9,10 @@
 
 #![cfg_attr(
     not(test),
-    expect(dead_code, reason = "the seatbelt profile slice is the first consumer")
+    expect(
+        dead_code,
+        reason = "denyRead is the first consumer; allowRead and the write lists are the rest"
+    )
 )]
 
 #[cfg(all(test, unix))]

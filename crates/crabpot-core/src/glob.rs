@@ -5,11 +5,6 @@
 //! negates, a set ends at the first `]`, and `{a,b}` and a broken bracket are
 //! text.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the seatbelt profile slice is the first consumer")
-)]
-
 /// One piece of a pattern, as upstream's `GlobToken` reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Token {
@@ -156,7 +151,7 @@ fn parse_glob(pattern: &str) -> Vec<Token> {
 }
 
 /// A regular expression that matches `text` and nothing else.
-fn escape_regex_literal(text: &str) -> String {
+pub(crate) fn escape_regex_literal(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for c in text.chars() {
         if ".*+?^${}()|[]\\".contains(c) {
@@ -206,6 +201,75 @@ pub(crate) fn deny_glob_regex(pattern: &str) -> String {
     regex.pop();
     regex.push_str("(/.*)?$");
     regex
+}
+
+/// Whether `deny_glob_regex(pattern)` matches `text`, which is how a deny glob
+/// is asked whether it covers a path.
+pub(crate) fn deny_glob_matches(pattern: &str, text: &str) -> bool {
+    let tokens = parse_glob(pattern);
+    // The tail `(/.*)?` takes whatever follows a `/`, or nothing.
+    (0..=text.len())
+        .filter(|&at| {
+            text.is_char_boundary(at) && (at == text.len() || text[at..].starts_with('/'))
+        })
+        .any(|at| tokens_match(&tokens, &text[..at]))
+}
+
+/// Whether `tokens` match all of `text`. The wildcards try every way to share
+/// `text` out, which is cheap for the short texts this is asked about.
+fn tokens_match(tokens: &[Token], text: &str) -> bool {
+    let Some((token, rest)) = tokens.split_first() else {
+        return text.is_empty();
+    };
+    let ends = || (0..=text.len()).filter(|&at| text.is_char_boundary(at));
+    let first = text.chars().next();
+    match token {
+        Token::Text(literal) => text
+            .strip_prefix(literal.as_str())
+            .is_some_and(|after| tokens_match(rest, after)),
+        Token::Separator => text
+            .strip_prefix('/')
+            .is_some_and(|after| tokens_match(rest, after)),
+        Token::AnyChar => {
+            first.is_some_and(|c| c != '/' && tokens_match(rest, &text[c.len_utf8()..]))
+        }
+        Token::Star => ends()
+            .take_while(|&at| !text[..at].contains('/'))
+            .any(|at| tokens_match(rest, &text[at..])),
+        Token::Globstar => ends().any(|at| tokens_match(rest, &text[at..])),
+        Token::GlobstarSlash => {
+            tokens_match(rest, text)
+                || ends().any(|at| text[..at].ends_with('/') && tokens_match(rest, &text[at..]))
+        }
+        Token::Set(members) => first
+            .is_some_and(|c| set_holds(members, c) && tokens_match(rest, &text[c.len_utf8()..])),
+    }
+}
+
+/// Whether the set `members` holds `c`, as a regular expression without the
+/// `u` flag reads it: by UTF-16 code unit, so a character outside the basic
+/// plane is held by no set.
+fn set_holds(members: &str, c: char) -> bool {
+    let mut unit = [0u16; 2];
+    let [only] = *c.encode_utf16(&mut unit) else {
+        return false;
+    };
+    let units: Vec<u16> = members.encode_utf16().collect();
+    let mut i = 0;
+    while i < units.len() {
+        let from = units[i];
+        let to = if units.get(i + 1) == Some(&u16::from(b'-')) && i + 2 < units.len() {
+            i += 2;
+            units[i]
+        } else {
+            from
+        };
+        if (from..=to).contains(&only) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 #[cfg(test)]

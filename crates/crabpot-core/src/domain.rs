@@ -13,7 +13,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the denied list and the resolved-address check do not use the rest yet"
+        reason = "the resolved-address check does not use the rest yet"
     )
 )]
 

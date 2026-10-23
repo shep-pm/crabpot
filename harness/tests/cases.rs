@@ -237,3 +237,34 @@ fn refused_allow_mach_lookup_mid_wildcard() {
         "allow-mach-lookup-mid-wildcard.json",
     );
 }
+
+#[test]
+fn denied_beats_allowed() {
+    run("denied_beats_allowed", "denied-domains-beats-allowed.json");
+}
+
+#[test]
+fn denied_port_only() {
+    run("denied_port_only", "denied-domains-port-only.json");
+}
+
+#[test]
+fn denied_star() {
+    run("denied_star", "denied-domains-star.json");
+}
+
+#[test]
+fn strict_allowlist_false() {
+    run(
+        "strict_allowlist_false",
+        "denied-domains-strict-allowlist-false.json",
+    );
+}
+
+#[test]
+fn refused_denied_domains_bad_entry() {
+    run(
+        "refused_denied_domains_bad_entry",
+        "refused-denied-domains-bad-entry.json",
+    );
+}

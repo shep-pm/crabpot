@@ -1,0 +1,16 @@
+{
+  "files": {
+    "$ROOT/secrets/a.txt": "x",
+    "$ROOT/secrets/b.log": "x",
+    "$ROOT/secrets/sub/c.txt": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": ["$ROOT/secrets"], "allowRead": ["$ROOT/secrets/*.txt"], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/secrets/a.txt"},
+    {"kind": "read", "path": "$ROOT/secrets/b.log"},
+    {"kind": "read", "path": "$ROOT/secrets/sub/c.txt"}
+  ]
+}

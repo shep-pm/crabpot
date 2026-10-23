@@ -94,19 +94,26 @@ impl core::error::Error for Error {
 
 /// Runs every probe of `case` under both runners.
 ///
+/// `restore` puts the fixture back as the case describes it. It runs before
+/// every runner's run of every probe, so a probe that changes the fixture, such
+/// as a write that creates a file, leaves the next run's precondition alone.
+///
 /// # Errors
 ///
 /// [`Error::Erred`] for the first probe that exits [`probe::ERROR`] under either
 /// runner, [`Error::Differ`] for the first probe the runners disagree on, and
-/// whatever a runner returns.
+/// whatever `restore` or a runner returns.
 pub fn compare(
     case: &Case,
     settings: &Path,
+    restore: &dyn Fn() -> Result<(), Error>,
     upstream: &dyn Runner,
     crabpot: &dyn Runner,
 ) -> Result<(), Error> {
     for probe in &case.probes {
+        restore()?;
         let upstream = code(upstream, settings, probe)?;
+        restore()?;
         let crabpot = code(crabpot, settings, probe)?;
         if upstream != crabpot {
             return Err(Error::Differ {
@@ -130,7 +137,8 @@ fn code(runner: &dyn Runner, settings: &Path, probe: &Probe) -> Result<u8, Error
 }
 
 /// Runs the case file's `text` in a fresh root named after `name`: creates its
-/// files and its settings file, then compares its probes.
+/// files and its settings file, then compares its probes, restoring the root
+/// before each run.
 ///
 /// # Errors
 ///
@@ -144,15 +152,18 @@ pub fn run_case(
 ) -> Result<(), Error> {
     let root = Root::new(name).map_err(Error::Io)?;
     let case = Case::parse(text, &root.0).map_err(Error::Case)?;
-    for (path, contents) in &case.files {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(Error::Io)?;
-        }
-        fs::write(path, contents).map_err(Error::Io)?;
-    }
     let settings = Path::new(&root.0).join("settings.json");
-    fs::write(&settings, case.settings.to_string()).map_err(Error::Io)?;
-    compare(&case, &settings, upstream, crabpot)
+    let restore = || {
+        root.empty().map_err(Error::Io)?;
+        for (path, contents) in &case.files {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(Error::Io)?;
+            }
+            fs::write(path, contents).map_err(Error::Io)?;
+        }
+        fs::write(&settings, case.settings.to_string()).map_err(Error::Io)
+    };
+    compare(&case, &settings, &restore, upstream, crabpot)
 }
 
 /// A fresh folder, its path as `pwd -P` prints it, removed on drop.
@@ -171,6 +182,12 @@ impl Root {
             )
         })?;
         Ok(Self(text.to_owned()))
+    }
+
+    /// Removes everything in the folder and leaves the folder.
+    fn empty(&self) -> std::io::Result<()> {
+        fs::remove_dir_all(&self.0)?;
+        fs::create_dir(&self.0)
     }
 }
 
@@ -284,6 +301,7 @@ fn exit_code(mut command: Command, runner: &'static str) -> Result<u8, Error> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::Cell;
 
     /// Answers each probe with what `answer` says.
     struct StandIn(&'static str, fn(&Probe) -> u8);
@@ -310,6 +328,7 @@ mod tests {
         compare(
             &case(),
             Path::new("/r/settings.json"),
+            &|| Ok(()),
             &StandIn("upstream", upstream),
             &StandIn("crabpot", crabpot),
         )
@@ -359,5 +378,35 @@ mod tests {
                 probe: Probe::Read(_),
             })
         ));
+    }
+
+    /// Runs only on a restored fixture, which its run then spoils.
+    struct Spoiling<'a>(&'static str, &'a Cell<bool>);
+
+    impl Runner for Spoiling<'_> {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+
+        fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+            assert!(self.1.replace(false), "{} ran on a spoiled fixture", self.0);
+            Ok(probe::ALLOWED)
+        }
+    }
+
+    #[test]
+    fn each_runner_gets_a_restored_fixture_for_each_probe() {
+        let clean = Cell::new(false);
+        compare(
+            &case(),
+            Path::new("/r/settings.json"),
+            &|| {
+                clean.set(true);
+                Ok(())
+            },
+            &Spoiling("upstream", &clean),
+            &Spoiling("crabpot", &clean),
+        )
+        .unwrap();
     }
 }

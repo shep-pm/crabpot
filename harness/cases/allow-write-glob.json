@@ -1,0 +1,15 @@
+{
+  "files": {
+    "$ROOT/logs/seed": "x",
+    "$ROOT/out/seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT/logs/*.log", "$ROOT/out/**"], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "write", "path": "$ROOT/logs/a.log"},
+    {"kind": "write", "path": "$ROOT/logs/a.txt"},
+    {"kind": "write", "path": "$ROOT/out/created"}
+  ]
+}

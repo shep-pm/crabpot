@@ -14,5 +14,9 @@ exclude = ["/docs/"]
 # flips this, and `release-plz.toml` with it.
 publish = false
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The `O_TMPFILE` open the args file is opened with. std cannot ask for it.
+libc = { version = "0.2", default-features = false }
+
 [lints]
 workspace = true

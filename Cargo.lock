@@ -66,6 +66,9 @@ dependencies = [
 [[package]]
 name = "crabpot-linux"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "crabpot-macos"

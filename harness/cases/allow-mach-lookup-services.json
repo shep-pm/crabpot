@@ -1,0 +1,17 @@
+{
+  "files": {
+    "$ROOT/readable": "x"
+  },
+  "settings": {
+    "network": {
+      "allowedDomains": [],
+      "deniedDomains": [],
+      "allowMachLookup": ["com.example.*", "com.apple.system.logger", "*"]
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/readable"},
+    {"kind": "write", "path": "$ROOT/created"}
+  ]
+}

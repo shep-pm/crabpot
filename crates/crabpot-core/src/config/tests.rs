@@ -39,7 +39,6 @@ fn the_default_config_shape_loads() {
 const ASKING: &[(&str, &str)] = &[
     ("network.deniedDomains", r#"["example.com"]"#),
     ("network.allowUnixSockets", r#"["/tmp/x.sock"]"#),
-    ("network.allowMachLookup", r#"["com.apple.x"]"#),
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
     ("network.allowLocalBinding", "true"),
     ("enableWeakerNetworkIsolation", "true"),

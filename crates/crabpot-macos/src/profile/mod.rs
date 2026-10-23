@@ -25,6 +25,7 @@ macro_rules! sections {
 
 sections!(
     base,
+    mach_lookup,
     read,
     deny_read,
     allow_read,

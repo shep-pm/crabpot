@@ -78,7 +78,7 @@ impl TempKeychain {
             path,
             searched,
         };
-        keychain.search(&[&[path_text.clone()], &keychain.searched[..]].concat());
+        keychain.search(&[path_text.as_str()]);
 
         // `-A` lets any program read the items, so no prompt stands in for the
         // sandbox's refusal.
@@ -110,9 +110,11 @@ impl TempKeychain {
         keychain
     }
 
-    fn search(&self, keychains: &[String]) {
+    /// Puts `first` ahead of the keychains the user searched before.
+    fn search(&self, first: &[&str]) {
         let mut args = vec!["list-keychains", "-d", "user", "-s"];
-        args.extend(keychains.iter().map(String::as_str));
+        args.extend(first);
+        args.extend(self.searched.iter().map(String::as_str));
         security(&args);
     }
 
@@ -128,7 +130,7 @@ impl TempKeychain {
 
 impl Drop for TempKeychain {
     fn drop(&mut self) {
-        self.search(&self.searched);
+        self.search(&[]);
         let _ = Command::new("security")
             .arg("delete-keychain")
             .arg(&self.path)

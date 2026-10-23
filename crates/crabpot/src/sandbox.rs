@@ -7,6 +7,7 @@ use std::process::Command;
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
+#[cfg(target_os = "macos")]
 use crabpot_core::proxy::{Proxy, username_for};
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;

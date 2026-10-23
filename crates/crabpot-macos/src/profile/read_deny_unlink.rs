@@ -391,6 +391,17 @@ mod tests {
         );
     }
 
+    /// A credential glob is judged like any glob: one that meets no write root
+    /// needs nothing. Only a credential name is kept wherever it lies. Upstream
+    /// emits no trailing rule for this config.
+    #[test]
+    fn a_credential_glob_outside_every_write_root_is_left_alone() {
+        let write_roots = [ResolvedPath::named("/crabpot-nowhere/work")];
+        let credential = [ResolvedPath::pattern("/crabpot-nowhere/home/.aws/*", None)];
+
+        assert_eq!(filters(&[], &credential, &[], &write_roots), Vec::<String>::new());
+    }
+
     /// A new file named like a denied one is still refused by name, which only
     /// create could undo: the rule never names it.
     #[test]

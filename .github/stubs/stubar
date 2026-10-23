@@ -1,0 +1,32 @@
+#!/bin/sh
+# Stand-in for the archiver (`ar`, `lib.exe`, `llvm-lib`), for the same gates
+# `.github/stubs/stubcc` stands in for: the cross-target `cargo clippy` and
+# `cargo check` of a Windows target from a macOS or Linux runner, where
+# `rusqlite`'s `bundled` feature would otherwise archive sqlite.
+#
+# Set it with `AR_<target>=.github/stubs/stubar` (`AR_x86_64_pc_windows_msvc`).
+#
+# Writes an empty file for whatever archive the archiver was told to produce:
+# `-out:X` (llvm-lib), `/OUT:X` (lib.exe and the MSVC-style spelling), or a
+# bare `X.a` / `X.lib` (`ar rcv`, and `cc` crate's own spelling).
+
+out=
+for arg in "$@"; do
+	case "$arg" in
+	-out:*)
+		out=${arg#-out:}
+		;;
+	/OUT:*)
+		out=${arg#/OUT:}
+		;;
+	*.a | *.lib)
+		out=$arg
+		;;
+	esac
+done
+
+if [ -n "$out" ]; then
+	: >"$out"
+fi
+
+exit 0

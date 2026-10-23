@@ -1,0 +1,18 @@
+# IR-48 baseline: a Rust file over 1000 lines that has to stay over for a
+# while. Each line is `<lines> <path>`, and the file may shrink but never grow.
+#
+# Every entry below is upstream's `srt-win` source, copied byte for byte into
+# `crates/crabpot-windows/srt-win/` in #144 (ADR-0005, ADR-0001's baseline
+# commit). crabpot does not rewrite upstream's Windows security code into
+# smaller files: a later sync from upstream is a copy, and splitting these
+# files locally would turn every sync into a merge. They leave the baseline when
+# the Windows map rewrites a file, or upstream splits it first.
+3985 crates/crabpot-windows/srt-win/src/cli.rs
+3887 crates/crabpot-windows/srt-win/src/profile.rs
+3287 crates/crabpot-windows/srt-win/src/profile_plan.rs
+3042 crates/crabpot-windows/srt-win/src/acl.rs
+2783 crates/crabpot-windows/srt-win/src/state_db.rs
+2012 crates/crabpot-windows/srt-win/src/persist.rs
+1335 crates/crabpot-windows/srt-win/src/probe.rs
+1224 crates/crabpot-windows/srt-win/src/wfp.rs
+1036 crates/crabpot-windows/srt-win/src/logon.rs

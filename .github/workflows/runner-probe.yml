@@ -20,14 +20,14 @@ jobs:
           uname -a; . /etc/os-release; echo "$PRETTY_NAME"; whoami; node --version
           grep -E 'Seccomp|NoNewPrivs' /proc/self/status
           sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone user.max_user_namespaces 2>&1
-          which bwrap socat rg
+          which bwrap socat rg; true
       - name: install
         run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap socat ripgrep >/dev/null && bwrap --version && socat -V | head -2 && rg --version | head -1
       - name: bwrap before sysctl
         run: |
           set +e
           bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true; echo "bwrap unshare-all: exit=$?"
-          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net true; echo "bwrap unshare-net: exit=$?"
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net true; echo "bwrap unshare-net: exit=$?"; true
       - name: allow userns
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: bwrap after sysctl
@@ -35,7 +35,7 @@ jobs:
           set +e
           bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true; echo "bwrap unshare-all: exit=$?"
           bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true; echo "nested bwrap: exit=$?"
-          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all sh -c 'grep Seccomp /proc/self/status'
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all sh -c 'grep Seccomp /proc/self/status'; true
       - name: upstream srt 0.0.81
         shell: bash
         run: |
@@ -49,4 +49,4 @@ jobs:
           npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://example.com; echo "srt allowed host: exit=$?"
           npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://github.com; echo "srt other host: exit=$?"
           npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("/tmp/x.sock"); print("unix bind ok")'; echo "srt unix socket: exit=$?"
-          ls ~/.npm/_npx/*/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/ 2>&1 | head
+          ls ~/.npm/_npx/*/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/ 2>&1 | head; true

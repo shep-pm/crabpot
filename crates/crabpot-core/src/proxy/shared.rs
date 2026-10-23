@@ -14,6 +14,7 @@ use tokio::time::{sleep, timeout};
 
 use super::filter::Filter;
 use super::guard::{Guard, Refusal};
+use super::mitm;
 use super::token::Token;
 
 /// How long a dial may take in all, and how long it may spend on one address.
@@ -29,15 +30,30 @@ pub(super) struct Shared {
     pub(super) filter: Filter,
     pub(super) guard: Guard,
     pub(super) token: Token,
+    /// `network.mitmProxy`: the domains sent to a Unix socket instead of being
+    /// dialed direct.
+    mitm: Option<mitm::Route>,
 }
 
 impl Shared {
-    pub(super) fn new(filter: Filter, guard: Guard, token: Token) -> Self {
+    pub(super) fn new(
+        filter: Filter,
+        guard: Guard,
+        token: Token,
+        mitm: Option<mitm::Route>,
+    ) -> Self {
         Self {
             filter,
             guard,
             token,
+            mitm,
         }
+    }
+
+    /// The socket `host` is sent to, when `network.mitmProxy` covers it. The
+    /// SOCKS proxy has no such route, and dials what it allows.
+    pub(super) fn socket_for(&self, host: &str) -> Option<&str> {
+        self.mitm.as_ref().and_then(|route| route.socket_for(host))
     }
 }
 

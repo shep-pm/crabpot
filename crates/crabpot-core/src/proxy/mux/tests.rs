@@ -143,6 +143,7 @@ fn the_first_byte_picks_the_leg_and_the_backend_gets_the_rest() {
         Filter::new(&[], &[], false),
         Guard::new(&[], &[], &[]),
         token.clone(),
+        None,
     ));
     let runtime = Builder::new_current_thread()
         .enable_io()

@@ -14,13 +14,12 @@
 use serde_json::Value;
 
 use super::error::ConfigError;
-use super::keys::{allow_local_binding, mitm_proxy};
+use super::keys::allow_local_binding;
 
 /// Dotted paths, in the order they are checked.
 pub(super) const PATHS: &[&str] = &[
     // The kelpie keys, each refused until its slice builds it.
     allow_local_binding::PATH,
-    mitm_proxy::PATH,
     // Upstream's other keys that act on macOS, with what each does.
     // Lets a command use every Unix socket.
     "network.allowAllUnixSockets",

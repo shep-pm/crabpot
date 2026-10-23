@@ -13,7 +13,7 @@ pub(super) fn proxy_allowing(entries: &[&str]) -> Proxy {
         .iter()
         .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
         .collect();
-    Proxy::start(&entries, &[], &[], false).unwrap()
+    Proxy::start(&entries, &[], &[], false, None).unwrap()
 }
 
 /// A proxy that allows `localhost` but denies both loopback literals, so a name
@@ -21,7 +21,7 @@ pub(super) fn proxy_allowing(entries: &[&str]) -> Proxy {
 pub(super) fn proxy_refusing_what_localhost_resolves_to() -> Proxy {
     let allowed = [DomainEntry::parse_allowed("localhost").unwrap()];
     let denied = ["127.0.0.1", "[::1]"].map(|entry| DomainEntry::parse_denied(entry).unwrap());
-    Proxy::start(&allowed, &denied, &[], false).unwrap()
+    Proxy::start(&allowed, &denied, &[], false, None).unwrap()
 }
 
 /// A server on a loopback port that answers its first client with `reply`,

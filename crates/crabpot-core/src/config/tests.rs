@@ -38,10 +38,6 @@ fn the_default_config_shape_loads() {
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
     ("network.allowLocalBinding", "true"),
-    (
-        "network.mitmProxy",
-        r#"{"socketPath": "/tmp/m.sock", "domains": ["example.com"]}"#,
-    ),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),
     ("network.socksProxyPort", "1080"),
@@ -379,14 +375,11 @@ fn a_bad_leaf_beats_an_unsupported_key() {
 
 #[test]
 fn deserializing_a_config_refuses_what_from_json_refuses() {
-    let json = with(
-        "network.mitmProxy",
-        json!({"socketPath": "/tmp/m.sock", "domains": ["example.com"]}),
-    );
+    let json = with("network.parentProxy", json!({"http": "http://proxy:3128"}));
 
     let error = serde_json::from_str::<Config>(&json).unwrap_err();
 
-    assert!(error.to_string().contains("network.mitmProxy"), "{error}");
+    assert!(error.to_string().contains("network.parentProxy"), "{error}");
 }
 
 mod files {

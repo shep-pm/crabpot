@@ -10,6 +10,7 @@ mod filter;
 mod guard;
 mod host;
 mod http;
+mod mitm;
 mod mux;
 mod shared;
 mod socks;
@@ -30,6 +31,7 @@ use tokio::sync::oneshot;
 pub use token::{basic_for, username_for};
 
 use crate::address::AddressRange;
+use crate::config::MitmProxy;
 use crate::domain::DomainEntry;
 use filter::Filter;
 use guard::Guard;
@@ -60,6 +62,9 @@ impl Proxy {
     /// this proxy lets through yet: crabpot has no ask callback and no
     /// per-command allow list for it to gate.
     ///
+    /// `mitm` is `network.mitmProxy`: the domains it names are sent to its Unix
+    /// socket instead of being dialed direct, for the HTTP proxy alone.
+    ///
     /// # Errors
     ///
     /// The [`io::Error`] of whatever failed: reading the token, binding the port
@@ -70,6 +75,7 @@ impl Proxy {
         denied: &[DomainEntry],
         listed: &[AddressRange],
         strict: bool,
+        mitm: Option<&MitmProxy>,
     ) -> io::Result<Self> {
         let token = Token::generate()?;
         // The backend is bound before the front end, so no connection is ever
@@ -92,6 +98,7 @@ impl Proxy {
             Filter::new(allowed, denied, strict),
             Guard::new(allowed, denied, listed),
             token.clone(),
+            mitm.map(mitm::Route::new),
         ));
         runtime.spawn(serve(backend, Arc::clone(&shared), http::handle));
         runtime.spawn(serve(front, Arc::clone(&shared), move |client, shared| {

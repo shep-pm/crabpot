@@ -9,6 +9,7 @@ A Rust port of anthropics/sandbox-runtime (`srt`). It sandboxes a process's file
 - `cargo test --locked` is the test shape.
 - CI's gates, all required: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features --locked -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked`, and `cargo +1.88 check --all-targets --all-features --locked` for the MSRV.
 - One cargo command at a time: they share the target-dir lock.
+- `crates/crabpot-windows` is compiled off Windows by the cross-target gates: `cargo clippy --locked -p crabpot-windows --target x86_64-pc-windows-msvc --all-targets -- -D warnings` with `CC_x86_64_pc_windows_msvc` and `AR_x86_64_pc_windows_msvc` set to `.github/stubs/stubcc` and `.github/stubs/stubar`, and the same pair for `aarch64-pc-windows-msvc`. `rusqlite`'s `bundled` feature needs the stubs, and nothing links in `check` or `clippy`.
 - `rust-toolchain.toml` floats on stable, like CI. When CI's clippy flags something a local run did not, `rustup update stable` first.
 
 ## Where things live
@@ -19,6 +20,7 @@ The repository is a workspace (ADR-0012). Each published crate carries symlinks 
 - `crates/crabpot-core`: what is the same on every platform. Depends on no other crabpot crate.
 - `crates/crabpot-macos`: the seatbelt profile, the child's environment and the `sandbox-exec` argv. Depends on `crabpot-core`, and compiles on every platform.
 - `crates/crabpot-linux`: the bwrap argv, the mandatory-deny walker, the seccomp filters and the dependency checks. Compiles on every platform, holds each Linux slice as it lands behind `cfg(target_os = "linux")` and the unix-only `argv` behind `cfg(unix)`, and the facade does not depend on it yet. `publish = false` in its `Cargo.toml` and unreleased in `release-plz.toml` until the Linux release slice flips both.
+- `crates/crabpot-windows`: upstream's `srt-win` source, copied byte for byte into `srt-win/` (ADR-0005), plus crabpot's own `src/lib.rs`, which pulls it in with `#[path]` and re-exports every module at the crate root. Compiles on every platform and is empty off Windows; the copied library is `#![cfg(windows)]`. `crates/crabpot-windows/PATCHES.md` lists every change from upstream, and a sync re-copies the tree and re-applies that list. The crate has its own `[lints]` table, not the workspace's, which is where the IR-22 exemption lives. Never published. The facade does not depend on it yet.
 - `harness/`: `crabpot-harness`, `publish = false`, excluded from release in `release-plz.toml`.
 - `NOTICE` carries upstream's Apache-2.0 attribution. It ships with the crate, so keep it accurate.
 

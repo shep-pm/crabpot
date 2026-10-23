@@ -5,7 +5,9 @@
 //! read list: `toPathEntry`, `toLiteralPathEntry`, `alsoReadAs`,
 //! `callerEntries` and `inBothSpellings`, for a deny and for an allow.
 
-use crate::glob::{deny_glob_matches, deny_glob_regex, escape_regex_literal, glob_to_regex};
+use crate::glob::{
+    deny_glob_matches, deny_glob_regex, escape_regex_literal, glob_matches, glob_to_regex,
+};
 use crate::path::{
     PathBase, PathError, contains_glob_chars, is_at_or_under, normalize_path_for_sandbox,
     path_spellings,
@@ -38,6 +40,16 @@ impl ResolvedPath {
     #[must_use]
     pub fn named(path: impl Into<String>) -> Self {
         Self::Name { path: path.into() }
+    }
+
+    /// The pattern `path`, whose leading `anchor` is a name on disk if there is
+    /// one.
+    #[must_use]
+    pub fn pattern(path: impl Into<String>, anchor: Option<String>) -> Self {
+        Self::Pattern {
+            path: path.into(),
+            anchor,
+        }
     }
 
     /// The paths `pattern` matches beneath `anchor`, which is a name on disk
@@ -94,6 +106,22 @@ impl ResolvedPath {
     #[must_use]
     pub fn is_pattern(&self) -> bool {
         matches!(self, Self::Pattern { .. })
+    }
+
+    /// Whether an allow of this pattern matches `path` itself. A name matches
+    /// nothing here, as it does not for [`ResolvedPath::deny_covers`].
+    #[must_use]
+    pub fn allow_matches(&self, path: &str) -> bool {
+        let Self::Pattern {
+            path: pattern,
+            anchor,
+        } = self
+        else {
+            return false;
+        };
+        let anchor = anchor.as_deref().unwrap_or_default();
+        path.strip_prefix(anchor)
+            .is_some_and(|rest| glob_matches(pattern.get(anchor.len()..).unwrap_or_default(), rest))
     }
 
     /// Whether a deny of this pattern matches `sample`, which is how it is
@@ -413,5 +441,17 @@ mod tests {
         assert!(name.is_strictly_under("/"));
         assert!(!name.is_strictly_under("/h/proj"));
         assert!(!name.is_strictly_under("/h/pro"));
+    }
+
+    #[test]
+    fn an_allow_pattern_matches_the_paths_it_spells_and_not_what_is_beneath() {
+        let region = ResolvedPath::pattern("/h/**/proj", None);
+        let anchored = ResolvedPath::pattern("/a[1]/*", Some("/a[1]".to_owned()));
+
+        assert!(region.allow_matches("/h/a/proj"));
+        assert!(!region.allow_matches("/h/a/proj/src"));
+        assert!(anchored.allow_matches("/a[1]/x"));
+        assert!(!anchored.allow_matches("/a1/x"));
+        assert!(!ResolvedPath::named("/h/proj").allow_matches("/h/proj"));
     }
 }

@@ -2,7 +2,7 @@
 //! seccomp filters and the bwrap dependency checks.
 //!
 //! The crate is the landing place for the Linux slices of the Linux map, and
-//! holds only the ones that have landed: [`argv`], [`deps`] and
+//! holds only the ones that have landed: [`argv`], [`deps`], `seccomp` and
 //! [`mandatory`]. It builds on every platform so a Linux slice fails on the
 //! macOS runner too, as
 //! `crabpot-macos` does in reverse; Linux-only code sits behind
@@ -15,7 +15,8 @@
 //! - The bwrap argv, rendered under upstream's size limits ([`argv`]).
 //! - The mandatory-deny walker, matching upstream's `rg` list with `std::fs`
 //!   ([`mandatory`]).
-//! - The two seccomp filters, built per architecture.
+//! - The two seccomp filters, built per architecture: `seccomp`, on Linux
+//!   only.
 //! - The bwrap dependency checks, run before a sandbox starts: [`deps`].
 //! - The Linux path entries: `denyRead`, `allowRead`, `allowWrite` and
 //!   `denyWrite` mapped onto bwrap binds.
@@ -31,3 +32,5 @@ pub mod argv;
 pub mod deps;
 #[cfg(unix)]
 pub mod mandatory;
+#[cfg(target_os = "linux")]
+pub mod seccomp;

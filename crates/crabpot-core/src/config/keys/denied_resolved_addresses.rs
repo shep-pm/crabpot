@@ -1,66 +1,87 @@
 //! `network.deniedResolvedAddresses`: IP addresses and CIDR ranges an allowed
 //! name may not resolve to.
 
-use core::net::IpAddr;
-
 use serde::Deserializer;
 
 use super::super::leaf::parsed_list;
+use crate::address::AddressRange;
 
-pub(crate) const PATH: &str = "network.deniedResolvedAddresses";
-
-/// An IP literal or a CIDR range, in the form rules are kept in: an IPv4-mapped
-/// IPv6 range is the IPv4 range it stands for, and a zone id is dropped.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AddressRange {
-    /// The address, or the network's base address as written.
-    pub address: IpAddr,
-    /// How many leading bits of `address` the range fixes.
-    pub prefix: u8,
-}
-
-impl AddressRange {
-    fn parse(entry: &str) -> Result<Self, &'static str> {
-        const INVALID: &str = "invalid IP address or CIDR range. Use an IPv4/IPv6 literal or \
-            CIDR, e.g. \"10.0.0.0/8\", \"192.168.1.10\", \"fc00::/7\" (IPv6 unbracketed)";
-        let (address, prefix) = match entry.split_once('/') {
-            Some((address, prefix)) => (address, Some(prefix)),
-            None => (entry, None),
-        };
-        let address = address.split_once('%').map_or(address, |(bare, _)| bare);
-        let address: IpAddr = address.parse().map_err(|_| INVALID)?;
-        let max: u8 = if address.is_ipv4() { 32 } else { 128 };
-        let prefix = match prefix {
-            None => max,
-            Some(digits)
-                if (1..=3).contains(&digits.len())
-                    && digits.bytes().all(|b| b.is_ascii_digit()) =>
-            {
-                digits
-                    .parse()
-                    .ok()
-                    .filter(|prefix| *prefix <= max)
-                    .ok_or(INVALID)?
-            }
-            Some(_) => return Err(INVALID),
-        };
-        if let IpAddr::V6(v6) = address
-            && let Some(v4) = v6.to_ipv4_mapped()
-        {
-            return match prefix.checked_sub(96) {
-                Some(prefix) => Ok(Self {
-                    address: IpAddr::V4(v4),
-                    prefix,
-                }),
-                None => Err(INVALID),
-            };
-        }
-        Ok(Self { address, prefix })
-    }
+fn parse(entry: &str) -> Result<AddressRange, &'static str> {
+    AddressRange::parse(entry).map_err(|_| {
+        "invalid IP address or CIDR range. Use an IPv4/IPv6 literal or CIDR, e.g. \
+         \"10.0.0.0/8\", \"192.168.1.10\", \"fc00::/7\" (IPv6 unbracketed)"
+    })
 }
 
 pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Vec<AddressRange>>, D::Error> {
-    parsed_list(deserializer, AddressRange::parse).map(Some)
+    parsed_list(deserializer, parse).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::config::{Config, ConfigError};
+
+    fn load(addresses: &serde_json::Value) -> Result<Config, ConfigError> {
+        Config::from_json(
+            &json!({
+                "network": {
+                    "allowedDomains": [],
+                    "deniedDomains": [],
+                    "deniedResolvedAddresses": addresses
+                },
+                "filesystem": {"denyRead": [], "allowWrite": [], "denyWrite": []}
+            })
+            .to_string(),
+        )
+    }
+
+    #[test]
+    fn a_bad_cidr_is_refused_with_its_key_path() {
+        for (addresses, key) in [
+            (json!(["10.0.0.0/33"]), "network.deniedResolvedAddresses.0"),
+            (
+                json!(["10.0.0.0/8", "fc00::/129"]),
+                "network.deniedResolvedAddresses.1",
+            ),
+            (json!(["[::1]"]), "network.deniedResolvedAddresses.0"),
+            (
+                json!(["::ffff:10.0.0.0/95"]),
+                "network.deniedResolvedAddresses.0",
+            ),
+            (json!(["example.com"]), "network.deniedResolvedAddresses.0"),
+            (json!("10.0.0.0/8"), "network.deniedResolvedAddresses"),
+        ] {
+            match load(&addresses) {
+                Err(ConfigError::Invalid { key: got, .. }) => {
+                    assert_eq!(got, key, "{addresses}");
+                }
+                other => panic!("{addresses}: expected Invalid, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_ranges_are_read_in_the_form_rules_keep() {
+        let config = load(&json!(["10.0.0.0/8", "::ffff:10.0.0.0/104", "fe80::1%en0"])).unwrap();
+
+        let ranges: Vec<(String, u8)> = config
+            .network
+            .denied_resolved_addresses
+            .unwrap()
+            .iter()
+            .map(|range| (range.address.to_string(), range.prefix))
+            .collect();
+        assert_eq!(
+            ranges,
+            [
+                ("10.0.0.0".to_owned(), 8),
+                ("10.0.0.0".to_owned(), 8),
+                ("fe80::1".to_owned(), 128),
+            ]
+        );
+    }
 }

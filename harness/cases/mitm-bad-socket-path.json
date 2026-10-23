@@ -1,0 +1,17 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": ["mitm.example.com"],
+      "deniedDomains": [],
+      "mitmProxy": {
+        "socketPath": "/no/such/crabpot-mitm.sock",
+        "domains": ["mitm.example.com"]
+      }
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "connect", "host": "mitm.example.com", "port": 443}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": ["mitm.example.com", "example.com"],
+      "deniedDomains": [],
+      "mitmProxy": {
+        "socketPath": "$ROOT/mitm.sock",
+        "domains": ["mitm.example.com"]
+      }
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "403 Forbidden"},
+  "probes": [
+    {"kind": "connect", "host": "example.com", "port": 443}
+  ]
+}

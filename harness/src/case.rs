@@ -22,6 +22,15 @@ pub enum Probe {
     Bind,
 }
 
+/// A peer the harness serves while a case's probes run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Serve {
+    /// The Unix socket to listen on.
+    pub unix_socket: String,
+    /// The status line to answer its `CONNECT` with.
+    pub status: String,
+}
+
 /// A case file, with `$ROOT` expanded.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Case {
@@ -34,6 +43,8 @@ pub struct Case {
     /// Whether both runners refuse the settings: each wrapper exits 1 before
     /// the probe runs.
     pub refused: bool,
+    /// A socket the harness serves for the probes to reach.
+    pub serve: Option<Serve>,
     /// The probes, in order.
     pub probes: Vec<Probe>,
 }
@@ -68,7 +79,7 @@ impl Case {
     /// # Errors
     ///
     /// [`Error::Json`] when `text` is not JSON, [`Error::Shape`] when `files`,
-    /// `settings` or `probes` is missing or has the wrong type, as is a `refused`
+    /// `settings`, `serve` or `probes` is missing or has the wrong type, as is a `refused`
     /// that is not a boolean, and
     /// [`Error::UnknownProbe`] when a probe's `kind` is not one this harness knows.
     pub fn parse(text: &str, root: &str) -> Result<Self, Error> {
@@ -100,6 +111,23 @@ impl Case {
             Ok(Value::Bool(refused)) => refused,
             Ok(_) => return Err(Error::Shape("a `refused` that is not a boolean".to_owned())),
         };
+        let serve = match take("serve") {
+            Err(_) => None,
+            Ok(Value::Object(members)) => {
+                let field = |name: &str| {
+                    members
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| Error::Shape(format!("a `serve` without a string `{name}`")))
+                };
+                Some(Serve {
+                    unix_socket: field("unixSocket")?,
+                    status: field("status")?,
+                })
+            }
+            Ok(_) => return Err(Error::Shape("a `serve` that is not an object".to_owned())),
+        };
         let probes = match take("probes")? {
             Value::Array(probes) => probes
                 .iter()
@@ -111,6 +139,7 @@ impl Case {
             files,
             settings,
             refused,
+            serve,
             probes,
         })
     }
@@ -228,6 +257,37 @@ mod tests {
             Case::parse(&text("1"), "/r"),
             Err(Error::Shape(_))
         ));
+    }
+
+    #[test]
+    fn a_case_may_serve_a_unix_socket() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "403 Forbidden"},
+            "probes": []
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+
+        assert_eq!(
+            case.serve,
+            Some(Serve {
+                unix_socket: "/r/mitm.sock".to_owned(),
+                status: "403 Forbidden".to_owned(),
+            })
+        );
+        let case = Case::parse(r#"{"files": {}, "settings": {}, "probes": []}"#, "/r").unwrap();
+        assert_eq!(case.serve, None);
+        for text in [
+            r#"{"files": {}, "settings": {}, "serve": [], "probes": []}"#,
+            r#"{"files": {}, "settings": {}, "serve": {}, "probes": []}"#,
+            r#"{"files": {}, "settings": {}, "serve": {"unixSocket": 1}, "probes": []}"#,
+        ] {
+            assert!(
+                matches!(Case::parse(text, "/r"), Err(Error::Shape(_))),
+                "{text}"
+            );
+        }
     }
 
     #[test]

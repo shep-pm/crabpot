@@ -235,3 +235,29 @@ fn refused_denied_domains_bad_entry() {
         "refused-denied-domains-bad-entry.json",
     );
 }
+
+#[test]
+fn mitm_matching_domain_reaches_the_socket() {
+    run(
+        "mitm_matching_domain_reaches_the_socket",
+        "mitm-matching-domain.json",
+    );
+}
+
+#[test]
+fn mitm_other_domain_goes_direct() {
+    run("mitm_other_domain_goes_direct", "mitm-other-domain.json");
+}
+
+#[test]
+fn mitm_bad_socket_path_is_502() {
+    run("mitm_bad_socket_path_is_502", "mitm-bad-socket-path.json");
+}
+
+#[test]
+fn refused_mitm_empty_domains() {
+    run(
+        "refused_mitm_empty_domains",
+        "refused-mitm-empty-domains.json",
+    );
+}

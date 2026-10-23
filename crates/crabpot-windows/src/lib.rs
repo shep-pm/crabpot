@@ -11,15 +11,18 @@
 //! `crate` meaning `crabpot_windows`: no path inside a copied file is edited to
 //! say so.
 //!
-//! Off Windows the crate is empty, the way upstream's own crate is: the whole
-//! copied library is `#![cfg(windows)]`. A macOS or Linux host builds this file
-//! and its tests alone, and the copied source is compiled by the cross-target
+//! Off Windows the copied library is empty, the way upstream's own crate is: it
+//! is `#![cfg(windows)]`. [`fs_access`] is crabpot's own and compiles on every
+//! host, so a macOS or Linux host builds it and its tests alone, and the copied
+//! source is compiled by the cross-target
 //! clippy and `check` gates with the C compiler and archiver stubbed
 //! (`.github/stubs/`), which is the only gate that reads the clap-derive CLI
 //! structs off a Windows host.
 //!
 //! The crate is not a dependency of the facade yet, and ADR-0005 keeps it
 //! unpublished: what crabpot ships is its own name, never upstream's.
+
+pub mod fs_access;
 
 #[cfg(windows)]
 #[path = "../srt-win/src/lib.rs"]

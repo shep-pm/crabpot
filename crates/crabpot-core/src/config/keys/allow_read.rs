@@ -2,13 +2,33 @@
 
 use serde::Deserializer;
 
+use super::super::Filesystem;
 use super::super::leaf::path_list;
+use crate::path::{PathBase, PathError};
 use crate::path_entries::PathEntry;
+use crate::resolved_path::{ResolvedPath, allow_entries};
 
 pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Vec<PathEntry>>, D::Error> {
     path_list(deserializer).map(Some)
+}
+
+impl Filesystem {
+    /// What `allowRead` re-opens inside what `denyRead` hides, as the sandbox
+    /// matches it: each entry made absolute against `HOME` and the working
+    /// directory, in every reading it has.
+    ///
+    /// # Errors
+    ///
+    /// [`PathError`] when an entry starts with `~` and `HOME` is not set, or is
+    /// relative and there is no working directory.
+    pub fn read_allows(&self) -> Result<Vec<ResolvedPath>, PathError> {
+        allow_entries(
+            &PathBase::from_env(),
+            self.allow_read.as_deref().unwrap_or_default(),
+        )
+    }
 }
 
 #[cfg(test)]

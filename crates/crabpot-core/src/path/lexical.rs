@@ -110,3 +110,8 @@ pub(crate) fn is_at_or_under(path: &str, dir: &str) -> bool {
                 .is_some_and(|rest| rest.starts_with('/'))
         }
 }
+
+/// `path` lies beneath `dir`, and is not `dir`.
+pub(crate) fn is_strictly_under(path: &str, dir: &str) -> bool {
+    path != dir && is_at_or_under(path, dir)
+}

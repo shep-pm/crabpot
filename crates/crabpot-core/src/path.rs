@@ -14,7 +14,7 @@ use core::fmt;
 use std::env;
 
 pub(crate) use lexical::{
-    collapse_interior_spellings, dirname, is_absolute, is_at_or_under, resolve,
+    collapse_interior_spellings, dirname, is_absolute, is_at_or_under, is_strictly_under, resolve,
 };
 pub(crate) use real_path::{is_absence_error, real_path_of};
 

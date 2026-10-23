@@ -11,6 +11,8 @@
 
 use std::io;
 #[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -22,6 +24,8 @@ use tokio::time::timeout;
 
 use crate::config::MitmProxy;
 use crate::domain::DomainPattern;
+#[cfg(unix)]
+use crate::unix_socket;
 
 /// How long a socket may take to open, and to answer the `CONNECT`, which is
 /// upstream's `CONNECT_TIMEOUT_MS`.
@@ -90,7 +94,7 @@ type Socket = tokio::io::Empty;
 pub(super) async fn open_tunnel(path: &str, host: &str, port: u16) -> io::Result<Tunnel> {
     let authority = connect_authority(host, port);
     let handshake = async {
-        let mut upstream = BufReader::new(UnixStream::connect(path).await?);
+        let mut upstream = BufReader::new(unix_socket::connect(Path::new(path)).await?);
         upstream
             .write_all(
                 format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes(),
@@ -123,7 +127,7 @@ pub(super) async fn open_tunnel(path: &str, host: &str, port: u16) -> io::Result
 /// open within [`CONNECT_TIMEOUT`].
 #[cfg(unix)]
 pub(super) async fn open_socket(path: &str) -> io::Result<Socket> {
-    match timeout(CONNECT_TIMEOUT, UnixStream::connect(path)).await {
+    match timeout(CONNECT_TIMEOUT, unix_socket::connect(Path::new(path))).await {
         Ok(outcome) => outcome,
         Err(_) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -214,7 +218,6 @@ mod tests {
     use std::fs;
     use std::future::Future;
     use std::io::{Read, Write};
-    use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
     use std::thread;
 
@@ -241,6 +244,12 @@ mod tests {
 
         fn socket(&self) -> PathBuf {
             self.0.join("s")
+        }
+
+        /// A socket path in this folder that is `len` bytes long.
+        #[cfg(target_os = "macos")]
+        fn socket_of(&self, len: usize) -> PathBuf {
+            self.0.join("s".repeat(len - self.0.as_os_str().len() - 1))
         }
     }
 
@@ -271,7 +280,8 @@ mod tests {
     /// A Unix socket that answers one `CONNECT` with `answer` as it was given,
     /// then echoes what it reads. It hands back the head it saw.
     fn stand_in(socket: &Path, answer: &'static str) -> thread::JoinHandle<String> {
-        let listener = UnixListener::bind(socket).unwrap();
+        let listener = unix_socket::bind(socket).unwrap();
+        listener.set_nonblocking(false).unwrap();
         thread::spawn(move || {
             let (mut client, _) = listener.accept().unwrap();
             client.set_read_timeout(Some(PATIENCE)).unwrap();
@@ -331,6 +341,21 @@ mod tests {
             seen.join().unwrap(),
             "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
         );
+    }
+
+    /// Past the 104 bytes of macOS's `sun_path`, where a socket path is the
+    /// user's own choice and upstream's Node dials it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_socket_path_past_sun_path_is_dialled() {
+        let fixture = Fixture::new("long");
+        let socket = fixture.socket_of(110);
+        let seen = stand_in(&socket, "HTTP/1.1 200 Connection Established\r\n\r\n");
+
+        let outcome = block(open_tunnel(socket.to_str().unwrap(), "example.com", 443));
+
+        assert!(outcome.is_ok(), "{:?}", outcome.err());
+        assert!(seen.join().unwrap().starts_with("CONNECT example.com:443"));
     }
 
     #[test]

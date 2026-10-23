@@ -12,9 +12,8 @@
 //!
 //! The backend is bound before the front end accepts anything, so no connection
 //! is dispatched to a backend that is not there. Its file goes with the proxy
-//! that started it (ADR-0010). Upstream's 104-byte `sun_path` limit stays as
-//! upstream has it (ADR-0003): a temp dir whose own name carries the socket past
-//! it is refused, not worked around.
+//! that started it (ADR-0010). The socket binds wherever macOS takes its path,
+//! past the 104 bytes of `sun_path`, as upstream's does under Node (ADR-0003).
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -27,11 +26,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, copy_bidirectional};
-use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use super::shared::{Shared, Stream};
 use super::socks;
+use crate::unix_socket;
 
 /// The first bytes that mean SOCKS: 0x05 greets SOCKS5, 0x04 is a SOCKS4 CONNECT.
 const SOCKS: [u8; 2] = [0x04, 0x05];
@@ -61,8 +60,7 @@ impl Socket {
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("srt-mux-{}-{seq}.sock", std::process::id()));
         let _ = fs::remove_file(&path);
-        let listener = std::os::unix::net::UnixListener::bind(&path)?;
-        listener.set_nonblocking(true)?;
+        let listener = unix_socket::bind(&path)?;
         Ok((listener, Self(path)))
     }
 
@@ -104,7 +102,7 @@ pub(super) async fn dispatch<S: Stream>(mut client: S, socket: PathBuf, shared: 
 /// Pipes `client` to the HTTP backend, with the byte the front end peeked at
 /// written there first.
 async fn http<S: Stream>(mut client: S, socket: &Path, peeked: u8) -> io::Result<()> {
-    let mut backend = match UnixStream::connect(socket).await {
+    let mut backend = match unix_socket::connect(socket).await {
         Ok(backend) => backend,
         Err(error) => return refused(&mut client, &error).await,
     };

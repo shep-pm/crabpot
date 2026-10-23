@@ -8,6 +8,7 @@ use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
 mod filter;
+mod literal_groups;
 mod mandatory;
 mod proxy;
 mod rule;
@@ -38,8 +39,8 @@ sections!(
 /// # Errors
 ///
 /// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
-/// or is relative and there is no working directory. A rule written for it
-/// would be dropped, so there is no profile.
+/// or there is no working directory, which the mandatory write denies are
+/// under. A rule written for it would be dropped, so there is no profile.
 pub fn render(config: &Config, proxy_port: Option<u16>) -> Result<String, PathError> {
     let mut profile = String::from(
         "(version 1)

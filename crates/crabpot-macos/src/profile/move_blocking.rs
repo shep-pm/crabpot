@@ -10,8 +10,10 @@
 //! `getAncestorDirectories`. This section is the read half, for `denyRead`;
 //! `deny_write` adds the write half with [`filters`].
 
-use crabpot_core::paths::dirname;
+use core::iter;
+
 use crabpot_core::config::Config;
+use crabpot_core::paths::dirname;
 use crabpot_core::{PathError, ResolvedPath};
 
 use super::rule;
@@ -35,10 +37,18 @@ fn literal(path: &str) -> String {
     format!("(literal {})", rule::string(path))
 }
 
+/// The filters that pin `dir` and every directory above it.
+pub(super) fn pin_directory(dir: &str) -> Vec<String> {
+    iter::once(dir.to_owned())
+        .chain(ancestors(dir))
+        .map(|dir| literal(&dir))
+        .collect()
+}
+
 /// The filters that pin `entries`: each denied path, the directory a pattern is
 /// bounded by, and every directory above those. Duplicates are left for
 /// [`rule::render`] to drop.
-pub(super) fn filters(entries: &[ResolvedPath]) -> Vec<String> {
+pub(super) fn filters<'a>(entries: impl IntoIterator<Item = &'a ResolvedPath>) -> Vec<String> {
     let mut filters = Vec::new();
     for entry in entries {
         filters.push(rule::deny_filter(entry));
@@ -54,13 +64,13 @@ pub(super) fn filters(entries: &[ResolvedPath]) -> Vec<String> {
     filters
 }
 
-/// The rule that pins `entries`.
-pub(super) fn render(entries: &[ResolvedPath]) -> String {
-    rule::render("deny", &OPERATIONS, &filters(entries))
+/// The rule that denies the operations of a rename on `filters`.
+pub(super) fn deny_rule(filters: &[String]) -> String {
+    rule::render("deny", &OPERATIONS, filters)
 }
 
 pub(super) fn rules(config: &Config) -> Result<String, PathError> {
-    Ok(render(&config.filesystem.read_denies()?))
+    Ok(deny_rule(&filters(&config.filesystem.read_denies()?)))
 }
 
 #[cfg(test)]
@@ -154,6 +164,6 @@ mod tests {
 
     #[test]
     fn nothing_denied_pins_nothing() {
-        assert_eq!(render(&[]), "");
+        assert_eq!(deny_rule(&filters(&[])), "");
     }
 }

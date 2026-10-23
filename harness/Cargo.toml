@@ -9,6 +9,10 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Only the library: the probe binary calls `run_from_args`, and the `crabpot`
+# binary is not wanted here.
+crabpot = { path = "../crates/crabpot", default-features = false }
+serde_json.workspace = true
 
 [lints]
 workspace = true

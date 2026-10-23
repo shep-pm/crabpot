@@ -415,3 +415,35 @@ fn local_binding_other_host_still_refused() {
         "local-binding-other-host-still-refused.json",
     );
 }
+
+/// A worker's policy has no `allowLocalBinding`, so nothing it runs may take a
+/// port. With it, which is what a call that runs a dev server gets, the same
+/// probes are allowed.
+#[test]
+fn kelpie_loopback_bind() {
+    run("kelpie_loopback_bind", "kelpie-loopback-bind-refused.json");
+    run("kelpie_bind_allowed", "kelpie-loopback-bind-allowed.json");
+}
+
+#[test]
+fn kelpie_group_signal() {
+    run("kelpie_group_signal", "kelpie-group-signal.json");
+}
+
+#[test]
+fn kelpie_ps() {
+    run("kelpie_ps", "kelpie-ps.json");
+}
+
+#[test]
+fn kelpie_socket_path_104_bytes() {
+    run(
+        "kelpie_socket_path_104_bytes",
+        "kelpie-socket-path-104-bytes.json",
+    );
+}
+
+#[test]
+fn kelpie_full_policy() {
+    run("kelpie_full_policy", "kelpie-full-policy.json");
+}

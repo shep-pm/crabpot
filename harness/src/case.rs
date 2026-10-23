@@ -37,6 +37,10 @@ pub enum Probe {
     ConnectUnix(String),
     /// Bind a loopback listener, dial it and accept the dial.
     Loopback,
+    /// Signal the process group a child the probe started leads.
+    SignalGroup,
+    /// Ask `ps` whether a process runs.
+    Ps,
 }
 
 /// A proxy other than the HTTP one that a `connect` probe goes through.
@@ -204,6 +208,8 @@ impl Probe {
             Self::BindUnix(path) => vec!["bind-unix".to_owned(), path.clone()],
             Self::ConnectUnix(path) => vec!["connect-unix".to_owned(), path.clone()],
             Self::Loopback => vec!["loopback".to_owned()],
+            Self::SignalGroup => vec!["signal-group".to_owned()],
+            Self::Ps => vec!["ps".to_owned()],
         }
     }
 
@@ -245,6 +251,8 @@ impl Probe {
             "bind-unix" => Ok(Self::BindUnix(text("path")?)),
             "connect-unix" => Ok(Self::ConnectUnix(text("path")?)),
             "loopback" => Ok(Self::Loopback),
+            "signal-group" => Ok(Self::SignalGroup),
+            "ps" => Ok(Self::Ps),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -270,7 +278,9 @@ mod tests {
                 {"kind": "bind"},
                 {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"},
                 {"kind": "connect-unix", "path": "$ROOT/socks/live.sock"},
-                {"kind": "loopback"}
+                {"kind": "loopback"},
+                {"kind": "signal-group"},
+                {"kind": "ps"}
             ]
         }"#;
         let case = Case::parse(text, "/r").unwrap();
@@ -302,6 +312,8 @@ mod tests {
                 Probe::BindUnix("/r/socks/a.sock".to_owned()),
                 Probe::ConnectUnix("/r/socks/live.sock".to_owned()),
                 Probe::Loopback,
+                Probe::SignalGroup,
+                Probe::Ps,
             ]
         );
     }
@@ -446,6 +458,7 @@ mod tests {
                         assert!(lands(target), "{}: no folder for {target}", path.display())
                     }
                     Probe::Read(_) | Probe::Connect { .. } | Probe::Bind | Probe::Loopback => {}
+                    Probe::SignalGroup | Probe::Ps => {}
                 }
             }
         }

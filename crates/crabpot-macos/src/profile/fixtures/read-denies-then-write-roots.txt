@@ -1,0 +1,7 @@
+(deny file-write-unlink file-write-create
+  (subpath "/crabpot-nowhere/.shep")
+  (literal "/crabpot-nowhere")
+  (with message "crabpot"))
+(allow file-write-unlink file-write-create
+  (subpath "/crabpot-nowhere/.shep/worktree")
+  (with message "crabpot"))

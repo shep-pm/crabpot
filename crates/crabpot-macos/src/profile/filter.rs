@@ -49,6 +49,18 @@ impl Entry {
         }
     }
 
+    /// The path, or the pattern, as this entry spells it.
+    pub(super) fn path(&self) -> &str {
+        match self {
+            Self::Subpath(path) | Self::Pattern { path, .. } => path,
+        }
+    }
+
+    /// Whether this names one file or directory rather than a pattern.
+    pub(super) fn is_pattern(&self) -> bool {
+        matches!(self, Self::Pattern { .. })
+    }
+
     /// The SBPL filter that matches this entry.
     pub(super) fn filter(&self) -> String {
         match self {

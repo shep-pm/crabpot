@@ -4,3 +4,4 @@ pub mod case;
 pub mod probe;
 pub mod runner;
 pub mod serve;
+mod signal;

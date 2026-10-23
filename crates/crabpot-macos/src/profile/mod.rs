@@ -35,7 +35,8 @@ sections!(
     deny_write,
     unix_sockets,
     weaker_isolation,
-    local_binding
+    local_binding,
+    read_deny_unlink
 );
 
 /// Renders the profile `sandbox-exec -p` takes. A command under it reaches the

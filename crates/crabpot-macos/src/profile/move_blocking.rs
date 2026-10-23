@@ -9,11 +9,16 @@
 //! Upstream's `generateMoveBlockingRules`, `moveBlockingFilters` and
 //! `getAncestorDirectories`. This section is the read half, for `denyRead`;
 //! `deny_write` adds the write half with [`filters`].
+//!
+//! The pin is followed by the same two operations re-allowed for every write
+//! root. A deny of a named operation is not lifted by the write section's later
+//! `(allow file-write*)`, so without it a write root that sits under a denied
+//! region takes no new file and no `rm`.
 
 use core::iter;
 
 use crabpot_core::config::Config;
-use crabpot_core::paths::dirname;
+use crabpot_core::paths::{PathBase, dirname};
 use crabpot_core::{PathError, ResolvedPath};
 
 use super::rule;
@@ -23,7 +28,7 @@ const OPERATIONS: [&str; 2] = ["file-write-unlink", "file-write-create"];
 
 /// The directories above `path`, nearest first, down to but not including the
 /// root.
-fn ancestors(path: &str) -> Vec<String> {
+pub(super) fn ancestors(path: &str) -> Vec<String> {
     let mut ancestors = Vec::new();
     let mut current = dirname(path);
     while current != "/" && current != "." {
@@ -33,7 +38,7 @@ fn ancestors(path: &str) -> Vec<String> {
     ancestors
 }
 
-fn literal(path: &str) -> String {
+pub(super) fn literal(path: &str) -> String {
     format!("(literal {})", rule::string(path))
 }
 
@@ -70,12 +75,31 @@ pub(super) fn deny_rule(filters: &[String]) -> String {
 }
 
 pub(super) fn rules(config: &Config) -> Result<String, PathError> {
-    Ok(deny_rule(&filters(&config.filesystem.read_denies()?)))
+    rules_with(config, &PathBase::from_env())
+}
+
+/// The pin of the read denies, then the write roots re-opened for the two
+/// operations of a rename.
+fn rules_with(config: &Config, base: &PathBase) -> Result<String, PathError> {
+    let denied = deny_rule(&filters(&config.filesystem.read_denies()?));
+    let roots = super::allow_write::root_filters(config, base)?;
+    Ok(format!(
+        "{denied}{}",
+        rule::render("allow", &OPERATIONS, &roots)
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::write_roots::default_write_paths;
+
+    fn base() -> PathBase {
+        PathBase::new(
+            Some("/crabpot-test-home/me".to_owned()),
+            Some("/crabpot-test-work".to_owned()),
+        )
+    }
 
     fn name(path: &str) -> ResolvedPath {
         ResolvedPath::named(path)
@@ -127,7 +151,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            rules(&config).unwrap(),
+            deny_rule(&filters(&config.filesystem.read_denies().unwrap())),
             r#"(deny file-write-unlink file-write-create
   (regex "^/(.*/)?[^/]*\\.key(/.*)?$")
   (with message "crabpot"))
@@ -152,7 +176,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            rules(&config).unwrap(),
+            deny_rule(&filters(&config.filesystem.read_denies().unwrap())),
             r#"(deny file-write-unlink file-write-create
   (subpath "/crabpot-nowhere/secrets/key")
   (literal "/crabpot-nowhere/secrets")
@@ -165,5 +189,45 @@ mod tests {
     #[test]
     fn nothing_denied_pins_nothing() {
         assert_eq!(deny_rule(&filters(&[])), "");
+    }
+
+    /// A deny of a named operation is not lifted by a later
+    /// `(allow file-write*)`, so the read section re-allows the two operations
+    /// of a rename for every write root it just denied around. Without it a
+    /// write root under a denied region takes no new file at all.
+    ///
+    /// What upstream's `wrapCommandWithSandboxMacOS` at 0.0.81 renders for this
+    /// config as the two rules that end its read section, with its log tag
+    /// swapped for ours, and with the default write roots left out: they are
+    /// one list on every platform but not one set of filters, since macOS
+    /// resolves `/tmp/claude` through the `/tmp` symlink and it collapses into
+    /// `/private/tmp/claude`. [`default_write_paths`] pins the list.
+    #[test]
+    fn the_write_roots_are_re_allowed_after_the_read_denies_pin_them() {
+        let config = Config::from_json(
+            r#"{
+                "network": {"allowedDomains": [], "deniedDomains": []},
+                "filesystem": {
+                    "denyRead": ["/crabpot-nowhere/.shep"],
+                    "allowRead": ["/crabpot-nowhere/.shep/worktree/seed"],
+                    "allowWrite": ["/crabpot-nowhere/.shep/worktree"],
+                    "denyWrite": []
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let defaults = default_write_paths(&base(), &config).unwrap();
+        let rules: String = rules_with(&config, &base())
+            .unwrap()
+            .lines()
+            .filter(|line| !defaults.iter().any(|root| line.contains(root)))
+            .map(|line| format!("{line}\n"))
+            .collect();
+
+        assert_eq!(
+            rules,
+            include_str!("fixtures/read-denies-then-write-roots.txt")
+        );
     }
 }

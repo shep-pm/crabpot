@@ -10,7 +10,7 @@ use crabpot_core::{PathError, ResolvedPath};
 use super::rule;
 
 /// `filter` narrowed to match nothing the `carve_outs` match.
-fn carve(filter: String, carve_outs: &[String]) -> String {
+pub(super) fn carve(filter: String, carve_outs: &[String]) -> String {
     let mut unique: Vec<&String> = Vec::new();
     for carve_out in carve_outs {
         if !unique.contains(&carve_out) {

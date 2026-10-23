@@ -83,7 +83,12 @@ fn byte_5_goes_to_socks_and_anything_else_to_http() {
     socks
         .write_all(&connect_request([127, 0, 0, 1], socks_port))
         .unwrap();
-    assert_eq!(read_n::<2>(&mut socks), [5, 0], "a 0x05 greeting is SOCKS");
+    let reply = read_n::<10>(&mut socks);
+    assert_eq!(
+        reply[..4],
+        [5, 0, 0, 1],
+        "a 0x05 greeting is SOCKS, answered with the address it bound",
+    );
     socks.write_all(b"ping").unwrap();
     assert_eq!(&read_n::<4>(&mut socks), b"ping", "the SOCKS tunnel");
 

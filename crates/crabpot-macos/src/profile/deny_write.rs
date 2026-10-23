@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn a_deny_inside_an_allow_renders_after_it() {
-        let profile = render(&denying(r#"["/crabpot-nowhere/work/.env"]"#), None).unwrap();
+        let profile = render(&denying(r#"["/crabpot-nowhere/work/.env"]"#), None, None).unwrap();
 
         let allow = profile.find(r#"  (subpath "/crabpot-nowhere/work")"#).unwrap();
         let deny = profile

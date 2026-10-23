@@ -11,12 +11,7 @@ const NO_PROXY: &str =
 /// `token` from a client, as name and value pairs.
 #[must_use]
 pub fn vars(port: u16, username: &str, token: &str) -> Vec<(&'static str, String)> {
-    let user = if username == "srt" {
-        username.to_owned()
-    } else {
-        percent_encode(username)
-    };
-    let url = format!("http://{user}:{token}@localhost:{port}");
+    let url = format!("http://{}@localhost:{port}", login(username, token));
     let mut vars = vec![
         ("NO_PROXY", NO_PROXY.to_owned()),
         ("no_proxy", NO_PROXY.to_owned()),
@@ -34,6 +29,16 @@ pub fn vars(port: u16, username: &str, token: &str) -> Vec<(&'static str, String
         vars.push((name, url.clone()));
     }
     vars
+}
+
+/// `user:token` as a URL carries it, the username percent-encoded unless it is
+/// the bare label.
+pub(super) fn login(username: &str, token: &str) -> String {
+    if username == "srt" {
+        format!("{username}:{token}")
+    } else {
+        format!("{}:{token}", percent_encode(username))
+    }
 }
 
 /// What JavaScript's `encodeURIComponent` leaves alone is `A-Z a-z 0-9` and

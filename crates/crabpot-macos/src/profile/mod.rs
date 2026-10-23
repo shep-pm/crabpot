@@ -32,14 +32,19 @@ sections!(
 );
 
 /// Renders the profile `sandbox-exec -p` takes. A command under it reaches
-/// the network only through the proxy on `proxy_port`, if there is one.
+/// the network only through the HTTP proxy on `proxy_port` and the SOCKS5 proxy
+/// on `socks_port`, if there are any.
 ///
 /// # Errors
 ///
 /// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
 /// or is relative and there is no working directory. A rule written for it
 /// would be dropped, so there is no profile.
-pub fn render(config: &Config, proxy_port: Option<u16>) -> Result<String, PathError> {
+pub fn render(
+    config: &Config,
+    proxy_port: Option<u16>,
+    socks_port: Option<u16>,
+) -> Result<String, PathError> {
     let mut profile = String::from(
         "(version 1)
 ",
@@ -47,7 +52,7 @@ pub fn render(config: &Config, proxy_port: Option<u16>) -> Result<String, PathEr
     for rules in SECTIONS {
         profile.push_str(&rules(config)?);
     }
-    profile.push_str(&proxy::rules(proxy_port));
+    profile.push_str(&proxy::rules(proxy_port, socks_port));
     Ok(profile)
 }
 
@@ -57,7 +62,7 @@ mod tests {
 
     #[test]
     fn the_default_profile_denies_network_and_write() {
-        let profile = render(&Config::default(), None).unwrap();
+        let profile = render(&Config::default(), None, None).unwrap();
 
         assert!(profile.starts_with("(version 1)\n(deny default"));
         assert!(profile.contains("(allow file-read*)"));

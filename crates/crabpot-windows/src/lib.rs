@@ -36,14 +36,6 @@ pub use srt_win::{
     sid, state_db, token, user, util, wfp, winsta,
 };
 
-/// Throwaway: a lint only a Windows target compiles.
-#[cfg(windows)]
-#[allow(dead_code)]
-fn cross_gate_probe(x: u32) -> u32 {
-    let doubled = x * 2;
-    return doubled;
-}
-
 #[cfg(test)]
 mod tests {
     /// The patch list has to name the fixture the `cert_store` patch points at.

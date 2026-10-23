@@ -37,7 +37,6 @@ fn the_default_config_shape_loads() {
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
-    ("network.allowLocalBinding", "true"),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),
     ("network.socksProxyPort", "1080"),
@@ -365,7 +364,7 @@ fn what_upstream_accepts_loads() {
 fn a_bad_leaf_beats_an_unsupported_key() {
     let mut settings = minimal();
     settings["network"]["allowedDomains"] = json!(["*.com"]);
-    settings["network"]["allowLocalBinding"] = json!(true);
+    settings["network"]["allowAllUnixSockets"] = json!(true);
 
     assert!(matches!(
         Config::from_json(&settings.to_string()),

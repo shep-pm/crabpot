@@ -1,0 +1,15 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": [],
+      "deniedDomains": [],
+      "allowLocalBinding": true
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "loopback"},
+    {"kind": "connect", "host": "example.com", "port": 443}
+  ]
+}

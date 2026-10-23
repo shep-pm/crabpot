@@ -21,6 +21,8 @@ pub mod socks;
 use std::ffi::OsString;
 use std::process::Command;
 
+use crabpot_core::config::Config;
+
 /// Declares each part's module and lists them in the order they apply.
 macro_rules! parts {
     ($($name:ident),* $(,)?) => {
@@ -49,13 +51,18 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// Reads the inherited names from this process's environment, which is
-    /// the environment a wrapped command inherits from too.
-    pub fn from_process(loopback_reachable: bool) -> Self {
+    /// The facts of a sandbox that runs `config` with its network through the
+    /// proxy on `proxy_port`, which is what decides whether the command reaches
+    /// loopback. The inherited names come from this process's environment,
+    /// which is the environment a wrapped command inherits from too.
+    #[must_use]
+    pub fn for_sandbox(config: &Config, proxy_port: Option<u16>) -> Self {
         use std::env;
 
         Self {
-            loopback_reachable,
+            // The proxy's own port and `allowLocalBinding` are the two ways a
+            // profile lets a command reach loopback at all.
+            loopback_reachable: config.network.allows_local_binding() || proxy_port.is_some(),
             claude_code_tmpdir: env::var_os("CLAUDE_CODE_TMPDIR"),
             claude_tmpdir: env::var_os("CLAUDE_TMPDIR"),
             java_tool_options: env::var_os("JAVA_TOOL_OPTIONS"),

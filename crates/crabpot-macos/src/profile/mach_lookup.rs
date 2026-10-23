@@ -15,22 +15,27 @@ pub(super) fn rules(config: &Config) -> Result<String, PathError> {
         .allow_mach_lookup
         .as_deref()
         .unwrap_or_default();
+    Ok(section("Mach lookups", "allow", names))
+}
+
+/// A heading and one `verb` rule for each of `names`, or nothing for none.
+pub(super) fn section(heading: &str, verb: &str, names: &[String]) -> String {
     if names.is_empty() {
-        return Ok(String::new());
+        return String::new();
     }
 
-    let mut rules = String::from("\n; Mach lookups\n");
+    let mut rules = format!("\n; {heading}\n");
     for name in names {
         let (filter, service) = match name.strip_suffix('*') {
             Some(prefix) => ("global-name-prefix", prefix),
             None => ("global-name", name.as_str()),
         };
         rules.push_str(&format!(
-            "(allow mach-lookup ({filter} {}))\n",
+            "({verb} mach-lookup ({filter} {}))\n",
             rule::string(service)
         ));
     }
-    Ok(rules)
+    rules
 }
 
 #[cfg(test)]

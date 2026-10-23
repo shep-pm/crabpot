@@ -23,7 +23,7 @@ use serde_json::Value;
 pub use self::error::ConfigError;
 pub use self::keys::denied_resolved_addresses::AddressRange;
 pub use self::keys::mitm_proxy::MitmProxy;
-pub use crate::domain::{DomainEntry, DomainPattern};
+pub use crate::domain::{DomainEntry, DomainParseError, DomainPattern};
 pub use crate::path_entries::PathEntry;
 
 use self::keys::{

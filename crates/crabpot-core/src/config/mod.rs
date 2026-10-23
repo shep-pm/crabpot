@@ -100,6 +100,10 @@ pub struct Filesystem {
     /// `denyWrite`: paths a command may not write, which beat `allowWrite`.
     #[serde(deserialize_with = "deny_write::deserialize")]
     pub deny_write: Vec<PathEntry>,
+    /// `allowGitConfig`: lets a command write `.git/config`, which the
+    /// mandatory write denies otherwise cover.
+    #[serde(default, deserialize_with = "present")]
+    pub allow_git_config: Option<bool>,
 }
 
 impl Config {

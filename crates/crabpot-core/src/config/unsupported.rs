@@ -49,8 +49,6 @@ pub(super) const PATHS: &[&str] = &[
     "network.parentProxy",
     // Drops every filesystem rule and the mandatory write denies.
     "filesystem.disabled",
-    // Lets a command write `.git/config`.
-    "filesystem.allowGitConfig",
     // Files and variables masked or denied, and the proxy that swaps them.
     "credentials",
     // Violations the sandbox log reports that are left out.
@@ -109,7 +107,6 @@ const SHAPES: &[(&str, Shape)] = &[
     ("network.tlsTerminate", Shape::Object),
     ("network.parentProxy", Shape::Object),
     ("filesystem.disabled", Shape::Bool),
-    ("filesystem.allowGitConfig", Shape::Bool),
     ("credentials", Shape::Object),
     ("ignoreViolations", Shape::Object),
     ("allowPty", Shape::Bool),

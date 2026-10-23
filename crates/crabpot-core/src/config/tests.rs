@@ -58,7 +58,6 @@ const ASKING: &[(&str, &str)] = &[
     ("network.tlsTerminate", "{}"),
     ("network.parentProxy", r#"{"http": "http://proxy:3128"}"#),
     ("filesystem.disabled", "true"),
-    ("filesystem.allowGitConfig", "true"),
     (
         "credentials",
         r#"{"files": [{"path": "~/.aws", "mode": "deny"}]}"#,
@@ -109,6 +108,26 @@ fn a_key_that_asks_for_nothing_loads() {
         let loaded = Config::from_json(&with(path, value));
 
         assert!(loaded.is_ok(), "{path}: {loaded:?}");
+    }
+}
+
+#[test]
+fn allow_git_config_is_read_whichever_way_it_is_set() {
+    for (value, read) in [(json!(true), Some(true)), (json!(false), Some(false))] {
+        let config = Config::from_json(&with("filesystem.allowGitConfig", value)).unwrap();
+
+        assert_eq!(config.filesystem.allow_git_config, read);
+    }
+    assert_eq!(Config::default().filesystem.allow_git_config, None);
+}
+
+#[test]
+fn allow_git_config_that_is_not_a_boolean_is_invalid() {
+    for value in [json!("true"), json!(1), json!(null)] {
+        assert_eq!(
+            invalid_key(&with("filesystem.allowGitConfig", value)),
+            "filesystem.allowGitConfig"
+        );
     }
 }
 

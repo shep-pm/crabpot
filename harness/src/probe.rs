@@ -11,7 +11,7 @@ pub const REFUSED: u8 = 1;
 pub const ERROR: u8 = 2;
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 /// Why a probe could not tell whether the sandbox allowed its action.
@@ -120,10 +120,33 @@ fn connect(host: &str, port: &str, http_proxy: Option<&str>) -> Outcome {
 /// How long to wait on a proxy that has stopped answering before calling it an error.
 const PROXY_PATIENCE: Duration = Duration::from_secs(10);
 
+/// Dials the first of `address`'s endpoints that answers within [`PROXY_PATIENCE`].
+fn dial_proxy(address: &str) -> std::io::Result<TcpStream> {
+    let mut last = None;
+    for endpoint in address.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&endpoint, PROXY_PATIENCE) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "the proxy has no address")
+    }))
+}
+
+/// `host:port` as a `CONNECT` target, with an IPv6 literal in brackets.
+fn target(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 fn connect_through(url: &str, host: &str, port: u16) -> Outcome {
     let proxy = Proxy::parse(url)?;
     let io = Error::Io;
-    let mut stream = TcpStream::connect(&proxy.address).map_err(io)?;
+    let mut stream = dial_proxy(&proxy.address).map_err(io)?;
     stream.set_read_timeout(Some(PROXY_PATIENCE)).map_err(io)?;
     let auth = proxy.credentials.map_or_else(String::new, |credentials| {
         format!(
@@ -131,9 +154,10 @@ fn connect_through(url: &str, host: &str, port: u16) -> Outcome {
             base64(credentials.as_bytes())
         )
     });
+    let target = target(host, port);
     write!(
         stream,
-        "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n{auth}\r\n"
+        "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}\r\n"
     )
     .map_err(io)?;
     let mut status_line = String::new();
@@ -169,7 +193,11 @@ impl<'a> Proxy<'a> {
         if host_port.is_empty() {
             return Err(Error::BadProxy);
         }
-        let address = if host_port.contains(':') {
+        // A colon inside a bracketed IPv6 literal is not a port separator.
+        let after_host = host_port
+            .rsplit_once(']')
+            .map_or(host_port, |(_, rest)| rest);
+        let address = if after_host.contains(':') {
             host_port.to_owned()
         } else {
             format!("{host_port}:80")
@@ -341,5 +369,26 @@ mod tests {
     fn connect_with_unknown_arguments_exits_2() {
         assert_eq!(probe(&["connect", "example.com"]), 2);
         assert_eq!(probe(&["connect", "example.com", "https"]), 2);
+    }
+
+    #[test]
+    fn connect_to_an_ipv6_literal_through_a_proxy_brackets_the_target() {
+        let (url, seen) = stand_in_proxy("200 Connection established");
+        assert_eq!(probe_via(&["connect", "::1", "443"], Some(&url)), 0);
+        let request = seen.join().unwrap();
+        assert!(request.starts_with("CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n"));
+    }
+
+    #[test]
+    fn a_proxy_url_without_a_port_gets_port_80() {
+        for (url, address) in [
+            ("http://proxy", "proxy:80"),
+            ("http://u:p@proxy/", "proxy:80"),
+            ("http://[::1]", "[::1]:80"),
+            ("http://[::1]:3128", "[::1]:3128"),
+            ("http://proxy:3128", "proxy:3128"),
+        ] {
+            assert_eq!(Proxy::parse(url).unwrap().address, address, "{url}");
+        }
     }
 }

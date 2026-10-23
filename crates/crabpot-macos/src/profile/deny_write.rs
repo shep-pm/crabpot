@@ -1,7 +1,12 @@
 //! What `filesystem.denyWrite` takes back from the paths `allowWrite` opened.
 //!
-//! Upstream's deny half of `generateWriteRules`. Seatbelt takes the last rule
-//! that matches, so a deny follows the allow of the write section.
+//! Upstream's deny half of `generateWriteRules`, less the `file-write-unlink`
+//! rules that stop a denied path or its ancestors being moved. Those are slice
+//! 14 of #24, which reads `Filesystem::write_denies`. Until it lands, renaming
+//! a directory above a denied path steps around the deny.
+//!
+//! Seatbelt takes the last rule that matches, so a deny follows the allow of
+//! the write section.
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;

@@ -1,0 +1,21 @@
+{
+  "files": {
+    "$ROOT/[wip]/secret": "x",
+    "$ROOT/w/secret": "x",
+    "$ROOT/p/secret": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {
+      "denyRead": [{"path": "$ROOT/[wip]/secret", "literal": true}],
+      "allowRead": [],
+      "allowWrite": [],
+      "denyWrite": []
+    }
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/[wip]/secret"},
+    {"kind": "read", "path": "$ROOT/w/secret"},
+    {"kind": "read", "path": "$ROOT/p/secret"}
+  ]
+}

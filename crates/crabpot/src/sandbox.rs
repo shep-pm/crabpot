@@ -4,6 +4,7 @@
 use core::fmt;
 use std::process::Command;
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;
@@ -25,12 +26,14 @@ impl Sandbox {
     /// # Errors
     ///
     /// [`StartError::UnsupportedPlatform`] off macOS, where nothing
-    /// confines a command yet.
+    /// confines a command yet, and [`StartError::UnresolvedPath`] when a path
+    /// in `config` cannot be made absolute.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "macos")]
         {
             Ok(Self {
-                profile: crabpot_macos::profile::render(config),
+                profile: crabpot_macos::profile::render(config)
+                    .map_err(StartError::UnresolvedPath)?,
                 // No config crabpot accepts yet lets a command reach loopback:
                 // allowLocalBinding is refused, and no proxy port is open.
                 facts: Facts::from_process(false),
@@ -104,12 +107,17 @@ impl Sandbox {
 pub enum StartError {
     /// The platform has no sandbox yet: only macOS has one.
     UnsupportedPlatform,
+    /// A path in the settings starts with `~` and `HOME` is not set, or is
+    /// relative and there is no working directory. A rule written for it would
+    /// be dropped.
+    UnresolvedPath(PathError),
 }
 
 impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedPlatform => write!(f, "only macOS has a sandbox yet"),
+            Self::UnresolvedPath(error) => write!(f, "{error}"),
         }
     }
 }

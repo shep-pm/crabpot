@@ -25,6 +25,40 @@ pub(crate) enum Invocation {
     Shell(OsString),
 }
 
+/// The hidden first argument that makes the binary the helper inside bwrap
+/// (ADR-0014). It is followed by a [`HelperMode`], then the mode's own arguments.
+pub(crate) const HELPER_FLAG: &str = "--crabpot-helper";
+
+/// Which of the helper's jobs a re-entry asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HelperMode {
+    /// Runs the command, as PID 1 of the sandbox.
+    Init,
+    /// Relays a TCP port to the proxy's Unix socket.
+    Relay,
+    /// Connects standard input and output to the proxy's Unix socket.
+    Connect,
+}
+
+impl HelperMode {
+    /// The word that names the mode on the command line.
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Relay => "relay",
+            Self::Connect => "connect",
+        }
+    }
+}
+
+/// A re-entry as the helper: its mode and the mode's own arguments, which are
+/// not read as options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Helper {
+    pub(crate) mode: HelperMode,
+    pub(crate) args: Vec<OsString>,
+}
+
 /// Why the command line was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ArgsError {
@@ -36,6 +70,8 @@ pub(crate) enum ArgsError {
     Unsupported(&'static str),
     /// No `-c`, and nothing to run.
     NoCommand,
+    /// `--crabpot-helper` was followed by a word that names no mode.
+    UnknownHelperMode(OsString),
 }
 
 impl fmt::Display for ArgsError {
@@ -47,11 +83,37 @@ impl fmt::Display for ArgsError {
             }
             Self::Unsupported(what) => write!(f, "{what} is not supported yet"),
             Self::NoCommand => write!(f, "no command specified"),
+            Self::UnknownHelperMode(mode) => write!(f, "unknown helper mode {mode:?}"),
         }
     }
 }
 
 impl core::error::Error for ArgsError {}
+
+/// Reads the arguments after the program's name as a helper re-entry. `None`
+/// when the first one is not `--crabpot-helper`: it is recognised there and
+/// nowhere else, so the arguments of a command the host runs are never read.
+pub(crate) fn parse_helper(
+    args: impl IntoIterator<Item = OsString>,
+) -> Option<Result<Helper, ArgsError>> {
+    let mut args = args.into_iter();
+    if args.next()? != HELPER_FLAG {
+        return None;
+    }
+    let mode = match args.next() {
+        None => return Some(Err(ArgsError::MissingValue(HELPER_FLAG))),
+        Some(word) => match word.to_str() {
+            Some("init") => HelperMode::Init,
+            Some("relay") => HelperMode::Relay,
+            Some("connect") => HelperMode::Connect,
+            _ => return Some(Err(ArgsError::UnknownHelperMode(word))),
+        },
+    };
+    Some(Ok(Helper {
+        mode,
+        args: args.collect(),
+    }))
+}
 
 /// Reads the arguments after the program's name. The first one that is not an
 /// option begins the command, and everything from there is the command's own.
@@ -176,6 +238,49 @@ mod tests {
         assert_eq!(
             parse_strs(&["proxy", "start"]),
             Err(ArgsError::Unsupported("proxy"))
+        );
+    }
+
+    fn os(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_helper_argument_is_recognised_only_first() {
+        assert_eq!(
+            parse_helper(os(&["--crabpot-helper", "init", "sh", "-c", "exit 3"])),
+            Some(Ok(Helper {
+                mode: HelperMode::Init,
+                args: os(&["sh", "-c", "exit 3"]),
+            }))
+        );
+        for (mode, name) in [
+            (HelperMode::Relay, "relay"),
+            (HelperMode::Connect, "connect"),
+        ] {
+            assert_eq!(
+                parse_helper(os(&["--crabpot-helper", name])),
+                Some(Ok(Helper { mode, args: vec![] }))
+            );
+        }
+        assert_eq!(parse_helper(os(&["ls", "--crabpot-helper", "init"])), None);
+        assert_eq!(
+            parse_helper(os(&["--crabpot", "--crabpot-helper", "init"])),
+            None,
+            "the sandboxed command's own arguments are its own"
+        );
+        assert_eq!(parse_helper(os(&[])), None);
+    }
+
+    #[test]
+    fn an_unknown_helper_mode_is_refused() {
+        assert_eq!(
+            parse_helper(os(&["--crabpot-helper", "nope"])),
+            Some(Err(ArgsError::UnknownHelperMode("nope".into())))
+        );
+        assert_eq!(
+            parse_helper(os(&["--crabpot-helper"])),
+            Some(Err(ArgsError::MissingValue("--crabpot-helper")))
         );
     }
 }

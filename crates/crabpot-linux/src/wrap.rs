@@ -11,6 +11,10 @@ use crate::fs::Plan;
 /// The words that make a bwrap invocation, `bwrap` itself first, for a command
 /// under `config`.
 ///
+/// `helper` is the binary that runs the command inside the sandbox. It is bound
+/// read-only at its own path after the filesystem words, so no `denyRead` hides
+/// it.
+///
 /// `root_with_setfcap` is whether this process is uid 0 with `CAP_SETFCAP`,
 /// which [`is_root_with_setfcap_here`](crate::deps::is_root_with_setfcap_here)
 /// answers. The command follows them, after a `--`, as `argv::render` puts it.
@@ -22,10 +26,12 @@ use crate::fs::Plan;
 pub fn words(
     bwrap: &Path,
     config: &Config,
+    helper: &Path,
     root_with_setfcap: bool,
 ) -> Result<Vec<OsString>, PathError> {
     let mut words = vec![bwrap.as_os_str().to_owned()];
     words.extend_from_slice(Plan::build(config)?.words());
+    words.extend([OsString::from("--ro-bind"), helper.into(), helper.into()]);
     words.extend(capability_words(root_with_setfcap));
     Ok(words)
 }
@@ -48,12 +54,19 @@ mod tests {
 
     const BWRAP: &str = "/usr/bin/bwrap";
 
+    const HELPER: &str = "/opt/crabpot/bin/crabpot";
+
     fn words_for(root_with_setfcap: bool) -> Vec<String> {
-        words(Path::new(BWRAP), &Config::default(), root_with_setfcap)
-            .expect("the default config resolves")
-            .iter()
-            .map(|word| word.to_string_lossy().into_owned())
-            .collect()
+        words(
+            Path::new(BWRAP),
+            &Config::default(),
+            Path::new(HELPER),
+            root_with_setfcap,
+        )
+        .expect("the default config resolves")
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect()
     }
 
     #[test]
@@ -81,6 +94,21 @@ mod tests {
         assert!(
             position("--unshare-pid") < position("--proc"),
             "a proc mount needs the pid namespace it shows: {words:?}"
+        );
+    }
+
+    #[test]
+    fn the_helper_binary_is_bound_read_only_after_the_filesystem_words() {
+        let words = words_for(false);
+
+        let at = words
+            .windows(3)
+            .position(|run| run == ["--ro-bind", HELPER, HELPER])
+            .unwrap_or_else(|| panic!("{words:?}"));
+        let fs_words = Plan::build(&Config::default()).unwrap();
+        assert!(
+            at > fs_words.words().len(),
+            "a deny bind before it cannot hide it: {words:?}"
         );
     }
 

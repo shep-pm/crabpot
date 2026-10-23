@@ -53,6 +53,7 @@ fn answer(allowed: &[&str], token: &Token, sent: &[u8]) -> Vec<u8> {
         Filter::new(&entries, &[], false),
         Guard::new(&entries, &[], &[]),
         token.clone(),
+        None,
     );
     let runtime = Builder::new_current_thread().enable_time().build().unwrap();
     runtime.block_on(async {

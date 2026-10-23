@@ -16,10 +16,11 @@ use core::task::{Context, Poll};
 use std::io;
 use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional, join};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional, join};
 use tokio::net::TcpStream;
 
 use super::filter::Denial;
+use super::mitm;
 use super::shared::{DialError, Shared, dial, drain};
 
 /// A request head longer than this is refused with 431, as Node's default.
@@ -158,6 +159,9 @@ fn undialed(error: &DialError, tunnel: bool) -> String {
 }
 
 /// A `CONNECT`: the tunnel to `host:port` if the filter allows it.
+/// A `CONNECT`: the tunnel to `host:port` if the filter allows it, through the
+/// mitm socket when that route covers the host and through the guarded dial
+/// otherwise.
 async fn tunnel(
     client: &mut TcpStream,
     shared: &Shared,
@@ -174,19 +178,37 @@ async fn tunnel(
         Ok(host) => host,
         Err(denial) => return end(client, &denied(denial.reason())).await,
     };
-    let mut upstream = match dial(&shared.guard, &host, port).await {
-        Ok(upstream) => upstream,
-        Err(error) => return end(client, &undialed(&error, true)).await,
-    };
+    match shared.socket_for(&host) {
+        Some(path) => match mitm::open_tunnel(path, &host, port).await {
+            Ok(mut upstream) => established(client, &mut upstream, &early).await,
+            Err(_) => end(client, BAD_GATEWAY).await,
+        },
+        None => match dial(&shared.guard, &host, port).await {
+            Ok(mut upstream) => established(client, &mut upstream, &early).await,
+            Err(error) => end(client, &undialed(&error, true)).await,
+        },
+    }
+}
+
+/// The client is told its tunnel is open, and the bytes start flowing.
+async fn established<U: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut TcpStream,
+    upstream: &mut U,
+    early: &[u8],
+) -> io::Result<()> {
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
-    pipe(client, &mut upstream, &early).await
+    pipe(client, upstream, early).await
 }
 
 /// Passes bytes both ways until both sides are done. `early` is what the
 /// client sent in the packet of its head.
-async fn pipe(client: &mut TcpStream, upstream: &mut TcpStream, early: &[u8]) -> io::Result<()> {
+async fn pipe<U: AsyncRead + AsyncWrite + Unpin>(
+    client: &mut TcpStream,
+    upstream: &mut U,
+    early: &[u8],
+) -> io::Result<()> {
     upstream.write_all(early).await?;
     copy_bidirectional(client, upstream).await.map(drop)
 }
@@ -216,23 +238,36 @@ async fn forward(
         Ok(length) => length,
         Err(refusal) => return end(client, refusal).await,
     };
-    let mut upstream = match dial(&shared.guard, &host, target.port).await {
-        Ok(upstream) => upstream,
-        Err(error) => return end(client, &undialed(&error, false)).await,
+    let socket = shared.socket_for(&host);
+    let authority = authority(&host, target.port);
+    // A request handed to another proxy names the whole target, which upstream
+    // rebuilds from the host it allowlist-checked. One dialed to the origin
+    // names only its path, with the authority in `Host`.
+    let request_target = match socket {
+        Some(_) => format!("http://{authority}{}", target.path),
+        None => target.path.clone(),
     };
-    let mut request = format!("{} {} HTTP/1.1\r\n", head.method, target.path).into_bytes();
+    let mut request = format!("{} {} HTTP/1.1\r\n", head.method, request_target).into_bytes();
     for (name, value) in forwarded_headers(head) {
         request.extend_from_slice(name.as_bytes());
         request.extend_from_slice(b": ");
         request.extend_from_slice(value);
         request.extend_from_slice(b"\r\n");
     }
-    let authority = authority(&host, target.port);
     request.extend_from_slice(format!("Host: {authority}\r\nConnection: close\r\n\r\n").as_bytes());
     let in_head_packet = early.len().min(usize::try_from(body).unwrap_or(usize::MAX));
     request.extend_from_slice(&early[..in_head_packet]);
     let body_left = body - in_head_packet as u64;
-    relay(client, &mut upstream, &request, body_left).await?;
+    match socket {
+        Some(path) => match mitm::open_socket(path).await {
+            Ok(mut upstream) => relay(client, &mut upstream, &request, body_left).await,
+            Err(_) => end(client, BAD_GATEWAY).await,
+        },
+        None => match dial(&shared.guard, &host, target.port).await {
+            Ok(mut upstream) => relay(client, &mut upstream, &request, body_left).await,
+            Err(error) => end(client, &undialed(&error, false)).await,
+        },
+    }?;
     drain(client).await;
     Ok(())
 }
@@ -261,18 +296,18 @@ fn body_length(head: &Head) -> Result<u64, &'static str> {
         .ok_or(BAD_REQUEST)
 }
 
-/// Writes `request` to the origin, then passes `body_left` more bytes from the
-/// client and the whole answer back. The origin's write side stays open, since
-/// some servers take a half-close for a client that left.
-async fn relay(
+/// Writes `request` to the upstream, then passes `body_left` more bytes from
+/// the client and the whole answer back. The upstream's write side stays open,
+/// since some servers take a half-close for a client that left.
+async fn relay<U: AsyncRead + AsyncWrite + Unpin>(
     client: &mut TcpStream,
-    upstream: &mut TcpStream,
+    upstream: &mut U,
     request: &[u8],
     body_left: u64,
 ) -> io::Result<()> {
     upstream.write_all(request).await?;
     let (client_read, client_write) = client.split();
-    let (upstream_read, upstream_write) = upstream.split();
+    let (upstream_read, upstream_write) = tokio::io::split(&mut *upstream);
     let mut client = join(client_read.take(body_left), client_write);
     let mut upstream = join(upstream_read, KeepOpen(upstream_write));
     copy_bidirectional(&mut client, &mut upstream)

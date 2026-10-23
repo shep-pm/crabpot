@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 
 use crate::case::{self, Case, Probe};
-use crate::probe;
+use crate::{probe, serve};
 
 /// Something that runs one probe in a sandbox and reports the probe's exit code.
 pub trait Runner {
@@ -246,13 +246,13 @@ fn code(runner: &dyn Runner, settings: &Path, probe: &Probe) -> Result<u8, Error
 }
 
 /// Runs the case file's `text` in a fresh root named after `name`: creates its
-/// files and its settings file, then compares its probes, restoring the root
-/// before each run.
+/// files and its settings file, serves whatever socket it asks for, then
+/// compares its probes, restoring the root before each run.
 ///
 /// # Errors
 ///
-/// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root or its
-/// files cannot be created, and what [`compare`] returns.
+/// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root, its
+/// files or a served socket cannot be created, and what [`compare`] returns.
 pub fn run_case(
     text: &str,
     name: &str,
@@ -262,8 +262,18 @@ pub fn run_case(
     let root = Root::new(name).map_err(Error::Io)?;
     let case = Case::parse(text, &root.0).map_err(Error::Case)?;
     let settings = Path::new(&root.0).join("settings.json");
+    let served = case
+        .serve
+        .as_ref()
+        .map(|serve| serve::Served::start(Path::new(&serve.unix_socket), &serve.status))
+        .transpose()
+        .map_err(Error::Io)?;
+    let keep: &Path = case
+        .serve
+        .as_ref()
+        .map_or(Path::new(""), |serve| Path::new(&serve.unix_socket));
     let restore = || {
-        root.empty().map_err(Error::Io)?;
+        root.empty(keep).map_err(Error::Io)?;
         for (path, contents) in &case.files {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(Error::Io)?;
@@ -276,11 +286,13 @@ pub fn run_case(
             other => fs::write(&settings, other.to_string()).map_err(Error::Io),
         }
     };
-    if case.refused {
+    let outcome = if case.refused {
         compare_refused(&case, &settings, &restore, upstream, crabpot)
     } else {
         compare(&case, &settings, &restore, upstream, crabpot)
-    }
+    };
+    drop(served);
+    outcome
 }
 
 /// A fresh folder, its path as `pwd -P` prints it, removed on drop.
@@ -301,10 +313,20 @@ impl Root {
         Ok(Self(text.to_owned()))
     }
 
-    /// Removes everything in the folder and leaves the folder.
-    fn empty(&self) -> std::io::Result<()> {
-        fs::remove_dir_all(&self.0)?;
-        fs::create_dir(&self.0)
+    /// Removes everything in the folder but `keep`, and leaves the folder.
+    fn empty(&self, keep: &Path) -> std::io::Result<()> {
+        for entry in fs::read_dir(&self.0)? {
+            let path = entry?.path();
+            if path == keep {
+                continue;
+            }
+            if path.is_dir() {
+                fs::remove_dir_all(&path)?;
+            } else {
+                fs::remove_file(&path)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -523,6 +545,7 @@ mod tests {
             files: Vec::new(),
             settings: json!({}),
             refused: false,
+            serve: None,
             probes: vec![Probe::Read("/r/in".to_owned()), Probe::Bind],
         }
     }

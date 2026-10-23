@@ -88,7 +88,7 @@ pub struct Network {
     /// the macOS profile denies last, over every allow. A key of crabpot's own.
     #[serde(default, deserialize_with = "deny_mach_lookup::deserialize")]
     pub deny_mach_lookup: Option<Vec<String>>,
-    /// `mitmProxy`, which is not read yet.
+    /// `mitmProxy`: the domains sent to an upstream proxy over a Unix socket.
     #[serde(default, deserialize_with = "present")]
     pub mitm_proxy: Option<MitmProxy>,
 }

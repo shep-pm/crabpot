@@ -36,6 +36,10 @@ const LINUX_READY: &[&str] = &[
     "deny_read_glob",
     "deny_read_literal",
     "deny_read_tilde",
+    "allow_read_file",
+    "allow_read_folder",
+    "allow_read_glob",
+    "allow_read_folder_alone_glob",
 ];
 
 /// Runs the case file `harness/cases/<file>`.

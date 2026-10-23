@@ -22,7 +22,7 @@ macro_rules! sections {
     };
 }
 
-sections!(base, deny_read);
+sections!(base, deny_read, allow_read);
 
 /// The words a config's filesystem policy comes to, in the order bwrap reads
 /// them.

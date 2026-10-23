@@ -44,17 +44,25 @@ impl Drop for Tree {
     }
 }
 
-fn denying(entries: &[&str]) -> Config {
-    let list = entries
-        .iter()
-        .map(|entry| format!("\"{entry}\""))
-        .collect::<Vec<_>>()
-        .join(",");
+/// A config whose read settings are `denyRead` and `allowRead`.
+fn reading(deny: &[&str], allow: &[&str]) -> Config {
+    let list = |entries: &[&str]| {
+        entries
+            .iter()
+            .map(|entry| format!("\"{entry}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     Config::from_json(&format!(
         r#"{{
             "network": {{"allowedDomains": [], "deniedDomains": []}},
-            "filesystem": {{"denyRead": [{list}], "allowWrite": [], "denyWrite": []}}
-        }}"#
+            "filesystem": {{
+                "denyRead": [{}], "allowRead": [{}],
+                "allowWrite": [], "denyWrite": []
+            }}
+        }}"#,
+        list(deny),
+        list(allow)
     ))
     .expect("a config")
 }
@@ -68,10 +76,16 @@ fn words_of(config: &Config) -> Vec<String> {
         .collect()
 }
 
+/// The words `denyRead` and `allowRead` add to what a config denying nothing
+/// has.
+fn read_words(deny: &[&str], allow: &[&str]) -> Vec<String> {
+    let nothing = words_of(&reading(&[], &[])).len();
+    words_of(&reading(deny, allow)).split_off(nothing)
+}
+
 /// The words `denyRead` adds to what a config denying nothing has.
 fn denied_words(entries: &[&str]) -> Vec<String> {
-    let nothing = words_of(&denying(&[])).len();
-    words_of(&denying(entries)).split_off(nothing)
+    read_words(entries, &[])
 }
 
 #[test]
@@ -135,6 +149,41 @@ fn a_glob_that_matches_nothing_adds_no_word() {
     let pattern = tree.at("**/*.key");
 
     assert_eq!(denied_words(&[&pattern]), Vec::<String>::new());
+}
+
+#[test]
+fn an_allowed_path_is_bound_back_over_a_tmpfs() {
+    let tree = Tree::new("allow-back");
+    let secrets = tree.dir("secrets");
+    let ok = tree.file("secrets/ok.txt");
+
+    assert_eq!(
+        read_words(&[&secrets], &[&ok]),
+        ["--tmpfs", &secrets, "--ro-bind", &ok, &ok]
+    );
+}
+
+#[test]
+fn an_allowed_path_outside_a_denial_adds_no_word() {
+    let tree = Tree::new("allow-outside");
+    let secrets = tree.dir("secrets");
+    let open = tree.dir("open");
+
+    assert_eq!(read_words(&[&secrets], &[&open]), ["--tmpfs", &secrets]);
+}
+
+#[test]
+fn an_allow_glob_expands_on_disk() {
+    let tree = Tree::new("allow-glob");
+    let secrets = tree.dir("secrets");
+    let txt = tree.file("secrets/a.txt");
+    tree.file("secrets/b.log");
+    let pattern = tree.at("secrets/*.txt");
+
+    assert_eq!(
+        read_words(&[&secrets], &[&pattern]),
+        ["--tmpfs", &secrets, "--ro-bind", &txt, &txt]
+    );
 }
 
 #[cfg(target_os = "linux")]

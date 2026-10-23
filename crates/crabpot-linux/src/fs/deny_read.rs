@@ -17,6 +17,15 @@ use crabpot_core::config::Config;
 use super::glob_walk::{self, KERNEL_MOUNTS};
 
 pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
+    Ok(collapse(located(config)?)
+        .into_iter()
+        .flat_map(|(path, is_dir)| mount(path, is_dir))
+        .collect())
+}
+
+/// The located paths of `config`'s `denyRead`, each with whether it is a
+/// directory, as [`locate`] finds them on disk.
+pub(super) fn located(config: &Config) -> Result<BTreeMap<PathBuf, bool>, PathError> {
     let mut found = BTreeMap::new();
     for entry in config.filesystem.read_denies()? {
         for path in glob_walk::matches(&entry) {
@@ -25,17 +34,14 @@ pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
             }
         }
     }
-    Ok(collapse(found)
-        .into_iter()
-        .flat_map(|(path, is_dir)| mount(path, is_dir))
-        .collect())
+    Ok(found)
 }
 
 /// Where `path` is mounted over, and whether it is a directory; `None` when it
 /// is not there. Links are resolved, so two spellings of one path mount once.
 /// A path in a kernel mount keeps its spelling: `/proc/self` resolves to a host
 /// pid the sandbox's own `/proc` does not hold.
-fn locate(path: PathBuf) -> Option<(PathBuf, bool)> {
+pub(super) fn locate(path: PathBuf) -> Option<(PathBuf, bool)> {
     if KERNEL_MOUNTS.iter().any(|mount| path.starts_with(mount)) {
         let is_dir = fs::metadata(&path).ok()?.is_dir();
         return Some((path, is_dir));

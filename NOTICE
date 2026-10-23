@@ -8,3 +8,9 @@ A copy of that licence is in LICENSE-APACHE.
 
 crabpot is a rewrite of that project in Rust. Its source has been changed
 from the original throughout.
+
+The one part taken in as it is: crates/crabpot-windows/srt-win/ holds upstream's
+`srt-win` crate, byte for byte at commit
+aceba124fd725f4a43d7016ed3f5651d61f83115, with the changes listed in
+crates/crabpot-windows/PATCHES.md. It carries the same Apache License, Version
+2.0, and ADR-0005 records why crabpot ships it under its own name.

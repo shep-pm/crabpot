@@ -45,12 +45,17 @@ fn capability_words(root_with_setfcap: bool) -> impl Iterator<Item = OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crabpot_core::config::PathEntry;
 
     const BWRAP: &str = "/usr/bin/bwrap";
 
     fn words_for(root_with_setfcap: bool) -> Vec<String> {
-        words(Path::new(BWRAP), &Config::default(), root_with_setfcap)
-            .expect("the default config resolves")
+        words_at(&Config::default(), root_with_setfcap)
+    }
+
+    fn words_at(config: &Config, root_with_setfcap: bool) -> Vec<String> {
+        words(Path::new(BWRAP), config, root_with_setfcap)
+            .expect("the config resolves")
             .iter()
             .map(|word| word.to_string_lossy().into_owned())
             .collect()
@@ -82,6 +87,31 @@ mod tests {
             position("--unshare-pid") < position("--proc"),
             "a proc mount needs the pid namespace it shows: {words:?}"
         );
+    }
+
+    /// bwrap applies its mounts in the order it reads them, and the sandbox's
+    /// own `/dev` and `/proc` are the last mounts in the plan. No write bind,
+    /// not one of the whole root, lands over them.
+    #[test]
+    fn the_private_mounts_follow_every_bind() {
+        let mut config = Config::default();
+        config.filesystem.allow_write = vec![PathEntry::Spelled("/".to_owned())];
+
+        let words = words_at(&config, false);
+        let last_bind = words
+            .iter()
+            .rposition(|word| word == "--bind")
+            .expect("the bind of the root");
+        for mount in [["--dev", "/dev"], ["--proc", "/proc"]] {
+            let at = words
+                .windows(2)
+                .position(|pair| pair == mount)
+                .unwrap_or_else(|| panic!("{mount:?}: {words:?}"));
+            assert!(
+                last_bind < at,
+                "{mount:?} is the plan's own mount: {words:?}"
+            );
+        }
     }
 
     #[test]

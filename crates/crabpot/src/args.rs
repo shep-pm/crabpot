@@ -58,7 +58,7 @@ impl core::error::Error for ArgsError {}
 /// A `-c` line runs instead of any program named beside it, as upstream's does.
 pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, ArgsError> {
     let mut args = args.into_iter();
-    let mut settings = None;
+    let mut settings: Option<PathBuf> = None;
     let mut debug = false;
     let mut shell = None;
     let mut argv = Vec::new();
@@ -95,7 +95,8 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, Ar
         None => Invocation::Argv(argv),
     };
     Ok(Args {
-        settings,
+        // Upstream tests the option for truthiness, so `-s ""` names no file.
+        settings: settings.filter(|path| !path.as_os_str().is_empty()),
         debug,
         command,
     })
@@ -144,6 +145,18 @@ mod tests {
             parse_strs(&["--", "-d"]).map(|args| args.command),
             Ok(argv(&["-d"])),
             "`--` lets a program's name look like an option"
+        );
+    }
+
+    #[test]
+    fn an_empty_settings_path_names_no_file() {
+        assert_eq!(
+            parse_strs(&["-s", "", "ls"]).map(|args| args.settings),
+            Ok(None)
+        );
+        assert_eq!(
+            parse_strs(&["--settings=", "ls"]).map(|args| args.settings),
+            Ok(None)
         );
     }
 

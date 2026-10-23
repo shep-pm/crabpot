@@ -4,13 +4,11 @@
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
-use std::fs;
-use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use crabpot_core::config::Config;
+use crabpot_core::config::{Config, ConfigError};
 
 use tokio::runtime::Builder;
 use tokio::signal::unix::{SignalKind, signal};
@@ -64,7 +62,7 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
 /// The sandbox, which has to outlive the command, and the command wrapped in it.
 fn prepare(args: impl IntoIterator<Item = OsString>) -> Result<(Sandbox, Command), Box<dyn Error>> {
     let args = args::parse(args)?;
-    let config = load_config(args.settings.as_deref())?;
+    let config = load_config(args.settings.as_deref(), env::var_os("HOME"))?;
     let sandbox = Sandbox::start(&config)?;
     let command = match args.command {
         Invocation::Argv(argv) => {
@@ -85,20 +83,19 @@ fn prepare(args: impl IntoIterator<Item = OsString>) -> Result<(Sandbox, Command
     Ok((sandbox, wrapped))
 }
 
-/// Reads the settings file, as upstream does: a file that is not there is the
-/// default config, and one that is there and wrong is refused.
-fn load_config(settings: Option<&Path>) -> Result<Config, Box<dyn Error>> {
-    let path = match (settings, env::var_os("HOME")) {
+/// Reads the settings file, as upstream does: a default file that is not there
+/// is the default config, and any other file that is not there, or is empty,
+/// unreadable or invalid, is refused.
+fn load_config(settings: Option<&Path>, home: Option<OsString>) -> Result<Config, Box<dyn Error>> {
+    let path = match (settings, home) {
         (Some(path), _) => path.to_owned(),
         (None, Some(home)) => PathBuf::from(home).join(DEFAULT_SETTINGS),
         (None, None) => return Ok(Config::default()),
     };
-    match fs::read_to_string(&path) {
-        Ok(text) => Config::from_json(&text).map_err(|e| format!("{}: {e}", path.display()).into()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound && settings.is_none() => {
-            Ok(Config::default())
-        }
-        Err(e) => Err(format!("cannot read {}: {e}", path.display()).into()),
+    match Config::from_file(&path) {
+        Ok(config) => Ok(config),
+        Err(ConfigError::Missing) if settings.is_none() => Ok(Config::default()),
+        Err(e) => Err(format!("{}: {e}", path.display()).into()),
     }
 }
 
@@ -185,6 +182,7 @@ fn exit_code(status: ExitStatus) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Mutex;
 
     use super::*;
@@ -215,11 +213,81 @@ mod tests {
         assert_eq!(run_status(args(&["-d"])), 1, "no command is refused");
     }
 
-    #[test]
-    fn a_settings_file_that_is_named_and_missing_is_refused() {
-        let missing = Path::new("/no/such/settings.json");
+    /// A folder of its own, removed on drop.
+    struct Dir(PathBuf);
 
-        assert!(load_config(Some(missing)).is_err());
+    impl Dir {
+        fn new(test: &str) -> Self {
+            let dir = env::temp_dir().join(format!("crabpot-run-{}-{test}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_four_file_refusals_exit_1() {
+        let dir = Dir::new("refusals");
+        let empty = dir.0.join("empty.json");
+        let invalid = dir.0.join("invalid.json");
+        fs::write(&empty, "  \n").unwrap();
+        fs::write(&invalid, "{not json").unwrap();
+        let marker = dir.0.join("ran");
+        let script = format!("touch {}", marker.display());
+
+        for (name, settings) in [
+            ("missing", dir.0.join("none.json")),
+            ("empty", empty),
+            ("unreadable", dir.0.clone()),
+            ("invalid", invalid),
+        ] {
+            let args = [
+                OsString::from("--settings"),
+                settings.into(),
+                "--".into(),
+                "sh".into(),
+                "-c".into(),
+                script.clone().into(),
+            ];
+
+            assert_eq!(run_status(args), 1, "{name}");
+            assert!(!marker.exists(), "{name}: the command ran");
+        }
+    }
+
+    #[test]
+    fn a_default_settings_file_that_is_missing_runs_the_default_config() {
+        let home = Dir::new("home");
+
+        assert_eq!(
+            load_config(None, Some(home.0.clone().into())).unwrap(),
+            Config::default()
+        );
+        fs::write(home.0.join(DEFAULT_SETTINGS), "").unwrap();
+        assert!(
+            load_config(None, Some(home.0.clone().into())).is_err(),
+            "a default file that is there and empty is refused"
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_the_file_and_why() {
+        let dir = Dir::new("messages");
+        let invalid = dir.0.join("invalid.json");
+        fs::write(&invalid, r#"{"network": {"allowedDomains": ["*.com"]}}"#).unwrap();
+        let text = |settings: &Path| load_config(Some(settings), None).unwrap_err().to_string();
+
+        assert_eq!(
+            text(&dir.0.join("none.json")),
+            format!("{}: does not exist", dir.0.join("none.json").display())
+        );
+        assert!(text(&invalid).contains("network.allowedDomains"));
     }
 
     #[test]

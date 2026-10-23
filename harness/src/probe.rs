@@ -14,19 +14,27 @@ pub const ERROR: u8 = 2;
 /// What the `probe` binary prints to stdout, before its code, once it has run.
 pub const REPORT: &str = "probe exited ";
 
+mod socks;
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
 /// Why a probe could not tell whether the sandbox allowed its action.
 #[derive(Debug)]
 pub enum Error {
-    /// The arguments are not one of the four actions with their operands.
+    /// The arguments are not one of the probe actions with their operands.
     Usage,
     /// `HTTP_PROXY` is not an `http://` URL with a host.
     BadProxy,
+    /// `FTP_PROXY`, which holds the SOCKS5 proxy's URL, is not a `socks5://`
+    /// or `socks5h://` URL with a host.
+    BadSocksProxy,
     /// The proxy's answer to `CONNECT` does not start with an HTTP status line.
     BadAnswer(String),
+    /// The SOCKS5 proxy's answer does not start with version 5.
+    BadSocksAnswer(Vec<u8>),
     /// The action failed with an error that is not a refusal, such as a missing file.
     Io(std::io::Error),
 }
@@ -35,10 +43,17 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Usage => f.write_str(
-                "usage: probe read <path> | write <path> | connect <host> <port> | bind",
+                "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> \
+                 <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path>",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
+            Self::BadSocksProxy => {
+                f.write_str("FTP_PROXY is not a socks5:// or socks5h:// URL with a host")
+            }
             Self::BadAnswer(line) => write!(f, "the proxy answered {line:?}, not a status line"),
+            Self::BadSocksAnswer(bytes) => {
+                write!(f, "the proxy answered {bytes:?}, not a SOCKS5 reply")
+            }
             Self::Io(source) => write!(f, "{source}"),
         }
     }
@@ -47,7 +62,11 @@ impl core::fmt::Display for Error {
 impl core::error::Error for Error {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Usage | Self::BadProxy | Self::BadAnswer(_) => None,
+            Self::Usage
+            | Self::BadProxy
+            | Self::BadSocksProxy
+            | Self::BadAnswer(_)
+            | Self::BadSocksAnswer(_) => None,
             Self::Io(source) => Some(source),
         }
     }
@@ -58,9 +77,11 @@ type Outcome = Result<bool, Error>;
 
 /// Runs the probe for `args` (the words after `probe`) and returns its exit code.
 ///
-/// `http_proxy` is the value of `HTTP_PROXY`. A diagnostic for an [`ERROR`] goes to stderr.
-pub fn run(args: &[String], http_proxy: Option<&str>) -> u8 {
-    match attempt(args, http_proxy) {
+/// `http_proxy` is the value of `HTTP_PROXY`, and `socks_proxy` the value of
+/// `FTP_PROXY`, which holds the SOCKS5 proxy's URL. A diagnostic for an [`ERROR`]
+/// goes to stderr.
+pub fn run(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>) -> u8 {
+    match attempt(args, http_proxy, socks_proxy) {
         Ok(true) => ALLOWED,
         Ok(false) => REFUSED,
         Err(error) => {
@@ -70,13 +91,17 @@ pub fn run(args: &[String], http_proxy: Option<&str>) -> u8 {
     }
 }
 
-fn attempt(args: &[String], http_proxy: Option<&str>) -> Outcome {
+fn attempt(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>) -> Outcome {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["read", path] => read(path),
         ["write", path] => write(path),
+        ["rename", from, to] => rename(from, to),
         ["connect", host, port] => connect(host, port, http_proxy),
+        ["connect", host, port, "--via", "socks5"] => connect_socks(host, port, socks_proxy),
         ["bind"] => bind(),
+        ["bind-unix", path] => bind_unix(path),
+        ["connect-unix", path] => connect_unix(path),
         _ => Err(Error::Usage),
     }
 }
@@ -120,6 +145,10 @@ fn write(path: &str) -> Outcome {
     judge(opened.map(drop), WRITE_REFUSED)
 }
 
+fn rename(from: &str, to: &str) -> Outcome {
+    judge(std::fs::rename(from, to), WRITE_REFUSED)
+}
+
 /// Dials `host:port` directly, or asks the proxy at `http_proxy` for a tunnel to it.
 fn connect(host: &str, port: &str, http_proxy: Option<&str>) -> Outcome {
     let port: u16 = port.parse().map_err(|_| Error::Usage)?;
@@ -155,8 +184,31 @@ fn target(host: &str, port: u16) -> String {
     }
 }
 
+/// Asks the SOCKS5 proxy at `socks_proxy` for a tunnel to `host:port`.
+fn connect_socks(host: &str, port: &str, socks_proxy: Option<&str>) -> Outcome {
+    let port: u16 = port.parse().map_err(|_| Error::Usage)?;
+    let proxy = socks_proxy
+        .and_then(Proxy::parse_socks)
+        .ok_or(Error::BadSocksProxy)?;
+    let io = Error::Io;
+    let mut stream = dial(&proxy.address).map_err(io)?;
+    stream.set_read_timeout(Some(PATIENCE)).map_err(io)?;
+    let login = proxy
+        .credentials
+        .map(|credentials| credentials.split_once(':').unwrap_or((credentials, "")))
+        .map(|(user, password)| (socks::percent_decode(user), socks::percent_decode(password)));
+    socks::connect(
+        &mut stream,
+        login
+            .as_ref()
+            .map(|(user, password)| (user.as_str(), password.as_str())),
+        host,
+        port,
+    )
+}
+
 fn connect_through(url: &str, host: &str, port: u16) -> Outcome {
-    let proxy = Proxy::parse(url)?;
+    let proxy = Proxy::parse(url).ok_or(Error::BadProxy)?;
     let io = Error::Io;
     let mut stream = dial(&proxy.address).map_err(io)?;
     stream.set_read_timeout(Some(PATIENCE)).map_err(io)?;
@@ -186,24 +238,34 @@ fn connect_through(url: &str, host: &str, port: u16) -> Outcome {
     Ok((200..300).contains(&status))
 }
 
-/// The parts of an `http://[user:pass@]host[:port][/]` URL that a tunnel needs.
+/// The parts of a `scheme://[user:pass@]host[:port][/]` URL that a tunnel needs.
 struct Proxy<'a> {
-    /// `host:port`, the port defaulting to 80.
+    /// `host:port`, the port defaulting to the scheme's.
     address: String,
     /// The `user:pass` of the URL, as written.
     credentials: Option<&'a str>,
 }
 
 impl<'a> Proxy<'a> {
-    fn parse(url: &'a str) -> Result<Self, Error> {
-        let rest = url.strip_prefix("http://").ok_or(Error::BadProxy)?;
+    /// An `http://` URL, whose port defaults to 80.
+    fn parse(url: &'a str) -> Option<Self> {
+        Self::parse_scheme(url, &["http://"], 80)
+    }
+
+    /// A `socks5://` or `socks5h://` URL, whose port defaults to 1080.
+    fn parse_socks(url: &'a str) -> Option<Self> {
+        Self::parse_scheme(url, &["socks5h://", "socks5://"], 1080)
+    }
+
+    fn parse_scheme(url: &'a str, schemes: &[&str], default_port: u16) -> Option<Self> {
+        let rest = schemes.iter().find_map(|scheme| url.strip_prefix(scheme))?;
         let authority = rest.split('/').next().unwrap_or_default();
         let (credentials, host_port) = match authority.rsplit_once('@') {
             Some((credentials, host_port)) => (Some(credentials), host_port),
             None => (None, authority),
         };
         if host_port.is_empty() {
-            return Err(Error::BadProxy);
+            return None;
         }
         // A colon inside a bracketed IPv6 literal is not a port separator.
         let after_host = host_port
@@ -212,9 +274,9 @@ impl<'a> Proxy<'a> {
         let address = if after_host.contains(':') {
             host_port.to_owned()
         } else {
-            format!("{host_port}:80")
+            format!("{host_port}:{default_port}")
         };
-        Ok(Self {
+        Some(Self {
             address,
             credentials,
         })
@@ -249,6 +311,29 @@ fn bind() -> Outcome {
     )
 }
 
+/// A socket the sandbox will not let the command use answers `EPERM`, which is
+/// what a refused `bind` or `connect` on `AF_UNIX` gives back.
+const UNIX_BIND_REFUSED: &[std::io::ErrorKind] = &[std::io::ErrorKind::PermissionDenied];
+
+/// A dial of a socket file nobody is listening on is answered, and an answer
+/// is not a refusal.
+const UNIX_CONNECT_REFUSED: &[std::io::ErrorKind] = &[
+    std::io::ErrorKind::PermissionDenied,
+    std::io::ErrorKind::ConnectionRefused,
+];
+
+/// Binds a Unix socket at `path`, which is how a command takes a path the
+/// profile lists for it.
+fn bind_unix(path: &str) -> Outcome {
+    judge(UnixListener::bind(path).map(drop), UNIX_BIND_REFUSED)
+}
+
+/// Dials the Unix socket at `path`, which is how a command reaches a socket
+/// the profile lists for it.
+fn connect_unix(path: &str) -> Outcome {
+    judge(UnixStream::connect(path).map(drop), UNIX_CONNECT_REFUSED)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +341,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
     use std::thread;
 
@@ -292,7 +378,7 @@ mod tests {
 
     fn probe_via(args: &[&str], http_proxy: Option<&str>) -> u8 {
         let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-        run(&args, http_proxy)
+        run(&args, http_proxy, None)
     }
 
     /// A proxy on a free port that answers one request with `status`.
@@ -357,8 +443,87 @@ mod tests {
     }
 
     #[test]
+    fn rename_in_a_writable_folder_exits_0_and_moves_the_file() {
+        let fixture = Fixture::new("rename-ok");
+        let from = fixture.path().join("from");
+        let to = fixture.path().join("to");
+        fs::write(&from, "x").unwrap();
+        assert_eq!(
+            probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            0
+        );
+        assert!(to.exists() && !from.exists());
+    }
+
+    #[test]
+    fn rename_in_a_read_only_folder_exits_1() {
+        let fixture = Fixture::new("rename-denied");
+        let from = fixture.path().join("from");
+        fs::write(&from, "x").unwrap();
+        fixture.set_mode(fixture.path(), 0o555);
+        let to = fixture.path().join("to");
+        assert_eq!(
+            probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            1
+        );
+    }
+
+    #[test]
+    fn rename_of_a_missing_file_exits_2() {
+        let fixture = Fixture::new("rename-missing");
+        let from = fixture.path().join("absent");
+        let to = fixture.path().join("to");
+        assert_eq!(
+            probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            2
+        );
+    }
+
+    #[test]
     fn bind_exits_0() {
         assert_eq!(probe(&["bind"]), 0);
+    }
+
+    #[test]
+    fn bind_unix_and_connect_unix_exit_0_on_a_free_path() {
+        let fixture = Fixture::new("unix-ok");
+        let bound = fixture.path().join("bound.sock");
+        assert_eq!(probe_path("bind-unix", &bound), 0);
+
+        let live = fixture.path().join("live.sock");
+        let listener = UnixListener::bind(&live).unwrap();
+        assert_eq!(probe_path("connect-unix", &live), 0);
+        drop(listener);
+    }
+
+    #[test]
+    fn connect_unix_to_a_socket_nobody_listens_on_exits_1() {
+        // The file is left behind by a listener that has gone, so the dial
+        // reaches it and is answered.
+        let fixture = Fixture::new("unix-dead");
+        let dead = fixture.path().join("dead.sock");
+        UnixListener::bind(&dead).unwrap();
+        assert_eq!(probe_path("connect-unix", &dead), 1);
+    }
+
+    #[test]
+    fn a_unix_probe_that_reaches_no_socket_exits_2() {
+        let fixture = Fixture::new("unix-absent");
+
+        assert_eq!(
+            probe_path("bind-unix", &fixture.path().join("none/absent.sock")),
+            2
+        );
+        assert_eq!(
+            probe_path("connect-unix", &fixture.path().join("absent.sock")),
+            2
+        );
+    }
+
+    #[test]
+    fn a_unix_probe_without_a_path_exits_2() {
+        assert_eq!(probe(&["bind-unix"]), 2);
+        assert_eq!(probe(&["connect-unix"]), 2);
     }
 
     #[test]
@@ -402,6 +567,28 @@ mod tests {
         ] {
             assert_eq!(Proxy::parse(url).unwrap().address, address, "{url}");
         }
+    }
+
+    #[test]
+    fn a_socks_proxy_url_without_a_port_gets_port_1080() {
+        for (url, address) in [
+            ("socks5h://proxy", "proxy:1080"),
+            ("socks5://u:p@proxy/", "proxy:1080"),
+            ("socks5h://u:p@localhost:51235", "localhost:51235"),
+        ] {
+            assert_eq!(Proxy::parse_socks(url).unwrap().address, address, "{url}");
+        }
+        assert!(Proxy::parse_socks("http://proxy").is_none());
+        assert!(Proxy::parse_socks("socks5h://").is_none());
+    }
+
+    #[test]
+    fn connect_via_socks5_without_a_socks_proxy_exits_2() {
+        let args = ["connect", "example.com", "443", "--via", "socks5"];
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+
+        assert_eq!(run(&args, None, None), 2);
+        assert_eq!(run(&args, None, Some("http://localhost:1")), 2);
     }
 
     #[test]

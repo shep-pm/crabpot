@@ -11,15 +11,37 @@ pub enum Probe {
     Read(String),
     /// Open the path for writing, creating it.
     Write(String),
+    /// Rename `from` to `to`.
+    Rename {
+        /// The path to move.
+        from: String,
+        /// The path to move it to.
+        to: String,
+    },
     /// Connect to the host and port.
     Connect {
         /// The host to dial.
         host: String,
         /// The port to dial.
         port: u16,
+        /// The proxy to ask for the connection, if not the HTTP proxy.
+        via: Option<Via>,
     },
     /// Bind a loopback socket.
     Bind,
+    /// Bind a Unix socket at the path. A relative one names a place under the
+    /// case root, which is where each wrapper runs.
+    BindUnix(String),
+    /// Dial the Unix socket at the path, named as `BindUnix` names it. The
+    /// harness serves it, so a case must not hold a file at that path itself.
+    ConnectUnix(String),
+}
+
+/// A proxy other than the HTTP one that a `connect` probe goes through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// The SOCKS5 proxy.
+    Socks5,
 }
 
 /// A peer the harness serves while a case's probes run.
@@ -56,7 +78,7 @@ pub enum Error {
     Json(String),
     /// A field is missing or is not the kind of value it should be.
     Shape(String),
-    /// A probe's `kind` is not `read`, `write`, `connect` or `bind`.
+    /// A probe's `kind` is not one of the kinds in [`Probe`].
     UnknownProbe(String),
 }
 
@@ -168,10 +190,17 @@ impl Probe {
         match self {
             Self::Read(path) => vec!["read".to_owned(), path.clone()],
             Self::Write(path) => vec!["write".to_owned(), path.clone()],
-            Self::Connect { host, port } => {
-                vec!["connect".to_owned(), host.clone(), port.to_string()]
+            Self::Rename { from, to } => vec!["rename".to_owned(), from.clone(), to.clone()],
+            Self::Connect { host, port, via } => {
+                let mut args = vec!["connect".to_owned(), host.clone(), port.to_string()];
+                if let Some(Via::Socks5) = via {
+                    args.extend(["--via".to_owned(), "socks5".to_owned()]);
+                }
+                args
             }
             Self::Bind => vec!["bind".to_owned()],
+            Self::BindUnix(path) => vec!["bind-unix".to_owned(), path.clone()],
+            Self::ConnectUnix(path) => vec!["connect-unix".to_owned(), path.clone()],
         }
     }
 
@@ -187,6 +216,10 @@ impl Probe {
         match kind.as_str() {
             "read" => Ok(Self::Read(text("path")?)),
             "write" => Ok(Self::Write(text("path")?)),
+            "rename" => Ok(Self::Rename {
+                from: text("from")?,
+                to: text("to")?,
+            }),
             "connect" => Ok(Self::Connect {
                 host: text("host")?,
                 port: field("port")
@@ -195,8 +228,19 @@ impl Probe {
                     .ok_or_else(|| {
                         Error::Shape("a probe without a `port` that fits 16 bits".to_owned())
                     })?,
+                via: match field("via") {
+                    None => None,
+                    Some(Value::String(via)) if via == "socks5" => Some(Via::Socks5),
+                    Some(_) => {
+                        return Err(Error::Shape(
+                            "a probe with a `via` that is not \"socks5\"".to_owned(),
+                        ));
+                    }
+                },
             }),
             "bind" => Ok(Self::Bind),
+            "bind-unix" => Ok(Self::BindUnix(text("path")?)),
+            "connect-unix" => Ok(Self::ConnectUnix(text("path")?)),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -206,6 +250,7 @@ impl Probe {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn a_case_file_parses_and_expands_root() {
@@ -215,8 +260,12 @@ mod tests {
             "probes": [
                 {"kind": "read", "path": "$ROOT/in"},
                 {"kind": "write", "path": "$ROOT/out"},
+                {"kind": "rename", "from": "$ROOT/in", "to": "$ROOT/moved"},
                 {"kind": "connect", "host": "example.com", "port": 443},
-                {"kind": "bind"}
+                {"kind": "connect", "host": "example.com", "port": 443, "via": "socks5"},
+                {"kind": "bind"},
+                {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"},
+                {"kind": "connect-unix", "path": "$ROOT/socks/live.sock"}
             ]
         }"#;
         let case = Case::parse(text, "/r").unwrap();
@@ -230,11 +279,45 @@ mod tests {
             [
                 Probe::Read("/r/in".to_owned()),
                 Probe::Write("/r/out".to_owned()),
+                Probe::Rename {
+                    from: "/r/in".to_owned(),
+                    to: "/r/moved".to_owned()
+                },
                 Probe::Connect {
                     host: "example.com".to_owned(),
-                    port: 443
+                    port: 443,
+                    via: None,
+                },
+                Probe::Connect {
+                    host: "example.com".to_owned(),
+                    port: 443,
+                    via: Some(Via::Socks5),
                 },
                 Probe::Bind,
+                Probe::BindUnix("/r/socks/a.sock".to_owned()),
+                Probe::ConnectUnix("/r/socks/live.sock".to_owned()),
+            ]
+        );
+    }
+
+    /// A socket probe may name its socket against the case root instead, which
+    /// is where each wrapper runs and where the harness serves it.
+    #[test]
+    fn a_socket_probe_named_against_the_case_root_stays_relative() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "probes": [
+                {"kind": "bind-unix", "path": "socks/a.sock"},
+                {"kind": "connect-unix", "path": "socks/live.sock"}
+            ]
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+        assert_eq!(
+            case.probes,
+            [
+                Probe::BindUnix("socks/a.sock".to_owned()),
+                Probe::ConnectUnix("socks/live.sock".to_owned()),
             ]
         );
     }
@@ -312,5 +395,53 @@ mod tests {
             parsed += 1;
         }
         assert!(parsed >= 4, "only {parsed} case files found");
+    }
+
+    #[test]
+    fn every_write_and_rename_in_a_case_file_has_a_folder_to_land_in() {
+        let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/cases");
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let case = Case::parse(&text, "/r").unwrap();
+            let mut folders = std::collections::HashSet::new();
+            let mut sources = std::collections::HashSet::new();
+            for (file, _) in &case.files {
+                sources.insert(file.clone());
+                for ancestor in file.ancestors().skip(1) {
+                    folders.insert(ancestor.to_owned());
+                    sources.insert(ancestor.to_owned());
+                }
+            }
+            // A probe cannot tell a missing folder from a refusal, so one
+            // that lands in a folder the case never made exits 2.
+            let lands = |target: &str| match Path::new(target).parent() {
+                Some(parent) => {
+                    !target.starts_with("/r/")
+                        || folders.contains(parent)
+                        || parent == Path::new("/r")
+                }
+                None => true,
+            };
+            for probe in &case.probes {
+                match probe {
+                    Probe::Write(target) => {
+                        assert!(lands(target), "{}: no folder for {target}", path.display())
+                    }
+                    Probe::Rename { from, to } => {
+                        assert!(
+                            !from.starts_with("/r/") || sources.contains(Path::new(from)),
+                            "{}: nothing to move at {from}",
+                            path.display()
+                        );
+                        assert!(lands(to), "{}: no folder for {to}", path.display());
+                    }
+                    Probe::BindUnix(target) | Probe::ConnectUnix(target) => {
+                        assert!(lands(target), "{}: no folder for {target}", path.display())
+                    }
+                    Probe::Read(_) | Probe::Connect { .. } | Probe::Bind => {}
+                }
+            }
+        }
     }
 }

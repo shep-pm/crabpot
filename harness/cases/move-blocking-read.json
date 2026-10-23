@@ -1,0 +1,15 @@
+{
+  "files": {
+    "$ROOT/secrets/key": "x",
+    "$ROOT/open/readable": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": ["$ROOT/secrets/key"], "allowRead": [], "allowWrite": ["$ROOT"], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "rename", "from": "$ROOT/secrets/key", "to": "$ROOT/moved"},
+    {"kind": "rename", "from": "$ROOT/secrets", "to": "$ROOT/moved"},
+    {"kind": "rename", "from": "$ROOT/open", "to": "$ROOT/open2"}
+  ]
+}

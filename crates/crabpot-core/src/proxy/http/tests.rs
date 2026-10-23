@@ -1,55 +1,10 @@
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::thread;
-use std::time::Duration;
+use std::net::{Ipv4Addr, TcpStream};
 
+use super::super::testing::{origin, proxy_allowing};
 use super::super::token::base64_encode;
 use super::super::{Proxy, username_for};
 use super::{Absolute, parse_connect_target};
-use crate::domain::DomainEntry;
-
-fn proxy_allowing(entries: &[&str]) -> Proxy {
-    let entries: Vec<DomainEntry> = entries
-        .iter()
-        .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
-        .collect();
-    Proxy::start(&entries, &[], false, None).unwrap()
-}
-
-/// A server on a loopback port that answers its first client with `reply`,
-/// or echoes it when there is none, and hands back what it read. With a
-/// reply it goes on reading for a moment after it has answered.
-fn origin(reply: Option<&'static str>) -> (u16, thread::JoinHandle<Vec<u8>>) {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let seen = thread::spawn(move || {
-        let (mut client, _) = listener.accept().unwrap();
-        let mut seen = Vec::new();
-        let mut buf = [0u8; 1024];
-        loop {
-            let n = client.read(&mut buf).unwrap();
-            if n == 0 {
-                return seen;
-            }
-            seen.extend_from_slice(&buf[..n]);
-            match reply {
-                None => client.write_all(&buf[..n]).unwrap(),
-                Some(reply) if seen.windows(4).any(|w| w == b"\r\n\r\n") => {
-                    client.write_all(reply.as_bytes()).unwrap();
-                    client
-                        .set_read_timeout(Some(Duration::from_millis(300)))
-                        .unwrap();
-                    while let Ok(n @ 1..) = client.read(&mut buf) {
-                        seen.extend_from_slice(&buf[..n]);
-                    }
-                    return seen;
-                }
-                Some(_) => {}
-            }
-        }
-    });
-    (port, seen)
-}
 
 fn credential(proxy: &Proxy) -> String {
     let user = username_for("test");
@@ -317,7 +272,7 @@ mod mitm {
 
     use super::*;
     use crate::config::MitmProxy;
-    use crate::domain::DomainPattern;
+    use crate::domain::{DomainEntry, DomainPattern};
 
     /// A Unix socket of this test's own, in a folder of its own, removed on drop.
     struct Socket(PathBuf);

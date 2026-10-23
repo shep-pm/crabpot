@@ -1,0 +1,14 @@
+{
+  "files": {
+    "$ROOT/socks/seed": "x",
+    "$ROOT/other/seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": [], "allowUnixSockets": ["$ROOT/socks"]},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "bind-unix", "path": "$ROOT/other/b.sock"},
+    {"kind": "connect-unix", "path": "$ROOT/other/live.sock"}
+  ]
+}

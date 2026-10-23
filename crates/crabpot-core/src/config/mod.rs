@@ -27,8 +27,8 @@ pub use crate::domain::{DomainEntry, DomainParseError, DomainPattern};
 pub use crate::path_entries::PathEntry;
 
 use self::keys::{
-    allow_mach_lookup, allow_read, allow_write, allowed_domains, denied_domains,
-    denied_resolved_addresses, deny_read, deny_write, mitm_proxy, strict_allowlist,
+    allow_mach_lookup, allow_read, allow_unix_sockets, allow_write, allowed_domains,
+    denied_domains, denied_resolved_addresses, deny_read, deny_write, mitm_proxy, strict_allowlist,
 };
 use self::leaf::present;
 
@@ -66,8 +66,9 @@ pub struct Network {
     /// `deniedResolvedAddresses`, which is not read yet.
     #[serde(default, deserialize_with = "denied_resolved_addresses::deserialize")]
     pub denied_resolved_addresses: Option<Vec<AddressRange>>,
-    /// `allowUnixSockets`, which is not read yet.
-    #[serde(default, deserialize_with = "present")]
+    /// `allowUnixSockets`: the Unix socket paths a command may use, which the
+    /// macOS profile opens for binding and for dialing.
+    #[serde(default, deserialize_with = "allow_unix_sockets::deserialize")]
     pub allow_unix_sockets: Option<Vec<String>>,
     /// `allowLocalBinding`, which is not read yet.
     #[serde(default, deserialize_with = "present")]
@@ -102,6 +103,10 @@ pub struct Filesystem {
     /// `denyWrite`: paths a command may not write, which beat `allowWrite`.
     #[serde(deserialize_with = "deny_write::deserialize")]
     pub deny_write: Vec<PathEntry>,
+    /// `allowGitConfig`: lets a command write `.git/config`, which the
+    /// mandatory write denies otherwise cover.
+    #[serde(default, deserialize_with = "present")]
+    pub allow_git_config: Option<bool>,
 }
 
 impl Config {

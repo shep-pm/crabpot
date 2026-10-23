@@ -21,10 +21,12 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "io-
 # Parses the head of a proxied request.
 httparse = { version = "1", default-features = false }
 
-# Lists this host's interface addresses, which std cannot, through a safe call,
-# so this crate stays free of unsafe.
 [target.'cfg(unix)'.dependencies]
+# Lists this host's interface addresses, which std cannot, through a safe call.
 nix = { version = "0.31", default-features = false, features = ["net"] }
+# The socket calls `unix_socket` makes, because neither std nor nix binds a
+# path longer than `sun_path`.
+libc = { version = "0.2", default-features = false }
 
 [lints]
 workspace = true

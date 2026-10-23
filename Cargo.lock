@@ -46,6 +46,7 @@ name = "crabpot-core"
 version = "0.1.0"
 dependencies = [
  "httparse",
+ "libc",
  "nix",
  "serde",
  "serde_json",

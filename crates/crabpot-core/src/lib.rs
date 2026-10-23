@@ -11,6 +11,8 @@ pub mod proxy;
 mod resolved_path;
 #[cfg(all(test, unix))]
 mod test_tree;
+#[cfg(unix)]
+mod unix_socket;
 
 pub use path::PathError;
 pub use resolved_path::ResolvedPath;

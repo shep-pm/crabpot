@@ -33,16 +33,21 @@ pub const BWRAP: &str = "/usr/bin/bwrap";
 /// instead of handing bwrap a line no `exec` takes.
 pub const BWRAP_MAX_ARGS: usize = 9_000;
 
-/// The longest one word an `exec` call takes: Linux's `MAX_ARG_STRLEN`, 32
-/// pages, less the NUL that ends the word.
+/// The bytes a command may carry: Linux's `MAX_ARG_STRLEN`, 32 pages of 4 KiB,
+/// less the NUL that ends a word.
+///
+/// Upstream caps its whole quoted line at this figure, which is the one `exec`
+/// argument it sends. crabpot builds no such argument, so it caps the two
+/// things the figure is really about: the whole direct line, and the command,
+/// which stays on the line in either form. A command past it is refused here
+/// rather than handed to an `exec` that answers E2BIG.
 ///
 /// Upstream reads the page size from `/proc/self/auxv` and so takes 2 MiB on a
 /// 64 KiB-page host. crabpot takes the 4 KiB floor, which only moves a profile
 /// to the args file sooner than it had to.
 ///
-/// The args file lifts this limit off the flags `bwrap` reads from it, and off
-/// none of the words `bwrap` hands to `exec` when it runs the command: a
-/// command word past it is refused in either form.
+/// The args file lifts this figure off the flags `bwrap` reads from it, and off
+/// none of the words `bwrap` hands to `exec` when it runs the command.
 pub const MAX_ARG_STRLEN: usize = 32 * 4096 - 1;
 
 /// The fd `bwrap` reads its `--args` words from, and the fd the args-file form
@@ -107,6 +112,9 @@ pub struct Rendered {
 ///
 /// `args_dir` is the directory the args file is opened in when the line the
 /// words make is too long for one `exec` argument.
+///
+/// The command's own bytes are capped at [`MAX_ARG_STRLEN`] in either form,
+/// since the command stays on the line in both.
 pub fn render(
     words: &[OsString],
     command: &[OsString],
@@ -126,22 +134,21 @@ pub fn render(
         }
     }
 
-    if let Some(longest) = command
-        .iter()
-        .map(|word| word.len())
-        .filter(|bytes| *bytes > MAX_ARG_STRLEN)
-        .max()
-    {
-        return Err(ArgvError::CommandTooLong { bytes: longest });
+    // The command stays on the line in either form, so its own bytes are
+    // capped. Checking them one word at a time is not enough: 20 words of
+    // 120_000 bytes each fit every word limit and overflow the exec call that
+    // has to take them.
+    let command_bytes = command.iter().map(|word| word.len() + 1).sum::<usize>();
+    if command_bytes > MAX_ARG_STRLEN {
+        return Err(ArgvError::CommandTooLong {
+            bytes: command_bytes,
+        });
     }
 
-    let inline_bytes = words
-        .iter()
-        .chain(command)
-        .map(|word| word.len() + 1)
-        .sum::<usize>()
+    let inline_bytes = words.iter().map(|word| word.len() + 1).sum::<usize>()
         + SEPARATOR.len()
-        + 1;
+        + 1
+        + command_bytes;
 
     if inline_bytes + ARG_HEADROOM_BYTES <= MAX_ARG_STRLEN {
         let mut bwrap = Command::new(&words[0]);
@@ -232,10 +239,10 @@ pub enum ArgvError {
         /// The word that holds one.
         word: OsString,
     },
-    /// The command carries a word longer than [`MAX_ARG_STRLEN`], which no
-    /// form of the invocation can hand to `exec`.
+    /// The command carries more bytes than [`MAX_ARG_STRLEN`], which no form
+    /// of the invocation can hand to `exec`.
     CommandTooLong {
-        /// How long the word is.
+        /// How many bytes its words and the NUL that ends each one take.
         bytes: usize,
     },
     /// The args file the words had to move to could not be opened.
@@ -261,7 +268,7 @@ impl fmt::Display for ArgvError {
             ),
             Self::CommandTooLong { bytes } => write!(
                 f,
-                "the command carries a word of {bytes} bytes, and an `exec` argument is {MAX_ARG_STRLEN} at most"
+                "the command carries {bytes} bytes, and {MAX_ARG_STRLEN} is the most an `exec` line takes here"
             ),
             Self::ArgsFileUnavailable { dir, reason } => write!(
                 f,
@@ -315,10 +322,13 @@ mod tests {
         );
     }
 
-    /// A command long enough that the line no longer fits one `exec` argument.
+    /// A command long enough that the line no longer fits one `exec` argument,
+    /// and short enough that the command on its own still fits. Its 1150 words
+    /// of 110 bytes are 127_650 of the 131_071 a command may carry, and the
+    /// flags put the whole line past the 126_975 that stays on the line.
     fn long_command() -> Vec<OsString> {
-        (0..1_200)
-            .map(|n| OsString::from(format!("--input-{n}-{}", "x".repeat(100))))
+        (0..1_150)
+            .map(|n| OsString::from(format!("{n:0<110}")))
             .collect()
     }
 
@@ -441,7 +451,25 @@ mod tests {
         assert_eq!(
             error,
             ArgvError::CommandTooLong {
-                bytes: MAX_ARG_STRLEN + 1
+                bytes: MAX_ARG_STRLEN + 2
+            }
+        );
+    }
+
+    #[test]
+    fn many_words_past_the_string_limit_together_are_refused() {
+        // Each word is short enough for one `exec` argument on its own, and
+        // together they are more than any `exec` call takes.
+        let long = (0..20)
+            .map(|_| OsString::from("x".repeat(120_000)))
+            .collect::<Vec<_>>();
+
+        let error = render(&words(), &long, Path::new("/tmp"))
+            .expect_err("20 words of 120_000 bytes overflow the exec line");
+        assert_eq!(
+            error,
+            ArgvError::CommandTooLong {
+                bytes: 20 * (120_000 + 1)
             }
         );
     }

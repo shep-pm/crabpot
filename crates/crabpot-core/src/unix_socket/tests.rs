@@ -138,3 +138,32 @@ fn a_listener_is_close_on_exec_and_non_blocking() {
     assert_ne!(descriptor & libc::FD_CLOEXEC, 0, "close-on-exec");
     assert_ne!(status & libc::O_NONBLOCK, 0, "non-blocking");
 }
+
+/// A write to a peer that has left must come back as `EPIPE`, not as a SIGPIPE
+/// that ends a host which does not ignore it.
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_dialled_stream_does_not_raise_sigpipe() {
+    let fixture = Fixture::new("nosigpipe");
+    let path = fixture.socket_of(100);
+    let listener = bind(&path).unwrap();
+    let runtime = Builder::new_current_thread().enable_io().build().unwrap();
+    let stream = runtime.block_on(connect(&path)).unwrap();
+
+    let mut value: libc::c_int = 0;
+    let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `value` and `len` are the int and its size `SO_NOSIGPIPE` reads
+    // into, and the descriptor is open.
+    let got = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_NOSIGPIPE,
+            (&raw mut value).cast(),
+            &mut len,
+        )
+    };
+    assert_eq!(got, 0);
+    assert_ne!(value, 0, "SO_NOSIGPIPE");
+    drop(listener);
+}

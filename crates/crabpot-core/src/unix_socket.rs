@@ -139,6 +139,26 @@ fn socket() -> io::Result<OwnedFd> {
             return Err(io::Error::last_os_error());
         }
     }
+    // A write to a peer that has left is an `EPIPE` error, and not a SIGPIPE
+    // that ends a host which does not ignore it, as std and mio have it.
+    #[cfg(target_vendor = "apple")]
+    {
+        let on: libc::c_int = 1;
+        // SAFETY: `on` is the int, and its size the length, that `SO_NOSIGPIPE`
+        // reads, and the descriptor is open.
+        let set = unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_NOSIGPIPE,
+                (&raw const on).cast(),
+                size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if set < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
     Ok(socket)
 }
 

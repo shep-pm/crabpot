@@ -36,7 +36,7 @@ _Avoid_: scenario, fixture (for the whole case), test
 
 **Probe**:
 One action a case runs inside the sandbox (read, write, rename, connect, bind, bind-unix,
-connect-unix, loopback), whose outcome is allowed or refused.
+connect-unix, loopback, signal-group, ps), whose outcome is allowed or refused.
 _Avoid_: check, assertion
 
 ### Running

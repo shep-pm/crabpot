@@ -19,8 +19,12 @@ mod socks;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::signal;
 
 /// Why a probe could not tell whether the sandbox allowed its action.
 #[derive(Debug)]
@@ -45,7 +49,8 @@ impl core::fmt::Display for Error {
         match self {
             Self::Usage => f.write_str(
                 "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> \
-                 <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path> | loopback",
+                 <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path> | loopback \
+                 | signal-group | ps",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadSocksProxy => {
@@ -104,6 +109,8 @@ fn attempt(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>)
         ["bind-unix", path] => bind_unix(path),
         ["connect-unix", path] => connect_unix(path),
         ["loopback"] => loopback(),
+        ["signal-group"] => signal_group(),
+        ["ps"] => ps(),
         _ => Err(Error::Usage),
     }
 }
@@ -366,6 +373,19 @@ fn accept(listener: &TcpListener) -> Outcome {
     }
 }
 
+/// The longest path a Unix socket can be named by. `sun_path` is 104 bytes on
+/// macOS and 108 on Linux, and the last byte of it is the terminator, so a path
+/// of that length or more does not fit at all. Rust's own socket types answer
+/// such a path before the kernel is asked, and the probe answers it the way a
+/// refusal reads: the command cannot use that socket path. Upstream keeps the
+/// limit where it hits it, and so does crabpot (ADR-0003).
+const SOCKET_PATH_LIMIT: usize = if cfg!(target_os = "macos") { 104 } else { 108 };
+
+/// Whether `path` is too long for a Unix socket to be named by.
+fn socket_path_too_long(path: &str) -> bool {
+    path.len() >= SOCKET_PATH_LIMIT
+}
+
 /// A socket the sandbox will not let the command use answers `EPERM`, which is
 /// what a refused `bind` or `connect` on `AF_UNIX` gives back.
 const UNIX_BIND_REFUSED: &[std::io::ErrorKind] = &[std::io::ErrorKind::PermissionDenied];
@@ -380,13 +400,93 @@ const UNIX_CONNECT_REFUSED: &[std::io::ErrorKind] = &[
 /// Binds a Unix socket at `path`, which is how a command takes a path the
 /// profile lists for it.
 fn bind_unix(path: &str) -> Outcome {
+    if socket_path_too_long(path) {
+        return Ok(false);
+    }
     judge(UnixListener::bind(path).map(drop), UNIX_BIND_REFUSED)
 }
 
 /// Dials the Unix socket at `path`, which is how a command reaches a socket
 /// the profile lists for it.
 fn connect_unix(path: &str) -> Outcome {
+    if socket_path_too_long(path) {
+        return Ok(false);
+    }
     judge(UnixStream::connect(path).map(drop), UNIX_CONNECT_REFUSED)
+}
+
+/// The program the probe starts as the member of the group it means to signal.
+const SLEEP: &str = "/bin/sleep";
+
+/// The program that names a process and how it runs, which a host asks when it
+/// decides whether a session it attached to still holds.
+const PS: &str = "/bin/ps";
+
+/// How long the probe's child lives on its own, in seconds. A sandbox that
+/// refuses both the group signal and the signal to the child alone still leaves
+/// nothing behind once this runs out.
+const CHILD_LIFE: &str = "5";
+
+/// Starts `sleep` as the leader of a process group of its own, which is how a
+/// host leads a group it means to signal: the child's pid is the group's.
+fn start_group() -> Result<Child, Error> {
+    Command::new(SLEEP)
+        .arg(CHILD_LIFE)
+        .process_group(0)
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(Error::Io)
+}
+
+/// Signals the process group the probe started, and asks whether it took the
+/// signal.
+///
+/// Allowed when the group died by it, refused when the sandbox would not let a
+/// group signal through, which is what a host meets when it ends a call it
+/// started inside a worker.
+fn signal_group() -> Outcome {
+    let mut child = start_group()?;
+    let group = child.id();
+    match signal::signal_group(group, signal::TERM) {
+        Ok(()) => {
+            let ended = child.wait().map_err(Error::Io)?;
+            Ok(ended.signal() == Some(signal::TERM as i32))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            // The group is out of reach. End the child on its own so the run
+            // leaves nothing behind, and report what the group signal answered.
+            let _ = child.kill();
+            let _ = child.wait();
+            Ok(false)
+        }
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+/// Asks `ps` whether a process runs, which is how a host tells whether a
+/// session it attached to still holds.
+///
+/// Allowed when `ps` names the process. Refused when `ps` cannot run at all or
+/// runs and names nothing: macOS answers `EPERM` to a sandboxed command that
+/// tries to run it, which is the sandbox refusing the action and not the probe
+/// failing to run.
+fn ps() -> Outcome {
+    let mut child = start_group()?;
+    let pid = child.id();
+    let asked = Command::new(PS)
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output();
+    // Whatever `ps` answered, end the child the probe started.
+    let _ = child.kill();
+    let _ = child.wait();
+    match asked {
+        Ok(output) => {
+            Ok(output.status.success()
+                && output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
+        Err(error) => Err(Error::Io(error)),
+    }
 }
 
 #[cfg(test)]
@@ -537,6 +637,15 @@ mod tests {
         assert_eq!(probe(&["bind"]), 0);
     }
 
+    /// Nothing refuses them here: the probe starts a process group, signals it,
+    /// and asks `ps` about a process. Under a sandbox either can be refused,
+    /// which is what the `kelpie-group-signal` and `kelpie-ps` cases pin.
+    #[test]
+    fn signal_group_and_ps_exit_0_unsandboxed() {
+        assert_eq!(probe(&["signal-group"]), 0);
+        assert_eq!(probe(&["ps"]), 0);
+    }
+
     #[test]
     fn loopback_exits_0() {
         assert_eq!(probe(&["loopback"]), 0);
@@ -582,6 +691,33 @@ mod tests {
     fn a_unix_probe_without_a_path_exits_2() {
         assert_eq!(probe(&["bind-unix"]), 2);
         assert_eq!(probe(&["connect-unix"]), 2);
+    }
+
+    /// A socket path of `sun_path` bytes or more is a refusal, and one byte
+    /// under it is allowed. The case root a differential run names its sockets
+    /// against is under the same temp folder, so the room here is the room a
+    /// case has.
+    #[test]
+    fn a_socket_path_at_the_limit_is_refused_and_one_byte_under_is_not() {
+        let fixture = Fixture::new("socket-limit");
+        let dir = fixture.path().to_str().unwrap();
+        // The name length that makes a path in `dir` exactly `SOCKET_PATH_LIMIT`.
+        let at_the_limit = SOCKET_PATH_LIMIT - dir.len() - 1;
+        assert!(
+            at_the_limit > 1,
+            "the temp folder {dir} leaves no room for the test"
+        );
+
+        let under = fixture.path().join("s".repeat(at_the_limit - 1));
+        let at = fixture.path().join("s".repeat(at_the_limit));
+        assert_eq!(
+            under.as_os_str().to_string_lossy().len(),
+            SOCKET_PATH_LIMIT - 1
+        );
+        assert_eq!(at.as_os_str().to_string_lossy().len(), SOCKET_PATH_LIMIT);
+
+        assert_eq!(probe_path("bind-unix", &under), 0);
+        assert_eq!(probe_path("bind-unix", &at), 1);
     }
 
     #[test]

@@ -13,6 +13,10 @@ publish = false
 # binary is not wanted here.
 crabpot = { path = "../crates/crabpot", default-features = false }
 serde_json.workspace = true
+# The probe signals a process group, which `std` has no call for. Only the
+# `signal` module reads it, and the version is the one `crabpot-core` already
+# pulls into the lock.
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [lints]
 workspace = true

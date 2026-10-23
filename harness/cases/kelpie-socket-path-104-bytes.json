@@ -1,0 +1,26 @@
+{
+  "files": {
+    "$ROOT/s/seed": "x",
+    "$ROOT/scratch/worker-scratch-folder-that-is-long-on-purpose-0123456789/seed": "x"
+  },
+  "settings": {
+    "network": {
+      "allowedDomains": [],
+      "deniedDomains": [],
+      "allowUnixSockets": [
+        "$ROOT/s",
+        "$ROOT/scratch/worker-scratch-folder-that-is-long-on-purpose-0123456789"
+      ]
+    },
+    "filesystem": {
+      "denyRead": [],
+      "allowRead": [],
+      "allowWrite": ["$ROOT/s", "$ROOT/scratch"],
+      "denyWrite": []
+    }
+  },
+  "probes": [
+    {"kind": "bind-unix", "path": "$ROOT/s/s.sock"},
+    {"kind": "bind-unix", "path": "$ROOT/scratch/worker-scratch-folder-that-is-long-on-purpose-0123456789/crabpot-kelpie-lease.sock"}
+  ]
+}

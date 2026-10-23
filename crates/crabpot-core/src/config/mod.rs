@@ -139,6 +139,7 @@ impl Config {
     fn from_value(settings: &Value) -> Result<Self, ConfigError> {
         require_objects(settings)?;
         let Shape(config) = serde_path_to_error::deserialize(settings).map_err(|e| invalid(&e))?;
+        unsupported::check_shapes(settings)?;
         unsupported::refuse(settings)?;
         Ok(config)
     }

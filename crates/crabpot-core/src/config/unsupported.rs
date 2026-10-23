@@ -3,8 +3,9 @@
 //!
 //! A key asks for something when its value is `true`, a number, a non-empty
 //! string or list, or an object, so the empty lists upstream requires still
-//! load. A key that is not an object where it should be is wrong, and the
-//! typed read has refused it before this runs.
+//! load. A key of the wrong type is invalid, as upstream's schema has it, and
+//! [`check_shapes`] refuses it first, so a `false` where an object belongs is
+//! never read as asking for nothing.
 //!
 //! The list is upstream's schema at aceba124 (`src/sandbox/sandbox-config.ts`)
 //! less what upstream applies nowhere on macOS. Each key leaves it when it is
@@ -70,6 +71,74 @@ pub(super) const PATHS: &[&str] = &[
     // Directories git is told are safe through `GIT_CONFIG_*`.
     "git.safeDirectories",
 ];
+
+/// What type upstream's schema gives a key in [`PATHS`] that the typed read
+/// does not cover.
+#[derive(Clone, Copy)]
+enum Shape {
+    Bool,
+    Number,
+    Object,
+    Strings,
+}
+
+impl Shape {
+    fn holds(self, value: &Value) -> bool {
+        match self {
+            Self::Bool => value.is_boolean(),
+            Self::Number => value.is_number(),
+            Self::Object => value.is_object(),
+            Self::Strings => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string)),
+        }
+    }
+
+    fn expected(self) -> &'static str {
+        match self {
+            Self::Bool => "expected a boolean",
+            Self::Number => "expected a number",
+            Self::Object => "expected an object",
+            Self::Strings => "expected an array of strings",
+        }
+    }
+}
+
+/// The keys of [`PATHS`] whose type is checked here, a group before its keys.
+const SHAPES: &[(&str, Shape)] = &[
+    ("network.allowAllUnixSockets", Shape::Bool),
+    ("network.httpProxyPort", Shape::Number),
+    ("network.socksProxyPort", Shape::Number),
+    ("network.stripResponseHeaders", Shape::Strings),
+    ("network.refuseOpaqueTunnels", Shape::Bool),
+    ("network.requireHostMatch", Shape::Bool),
+    ("network.tlsTerminate", Shape::Object),
+    ("network.parentProxy", Shape::Object),
+    ("filesystem.disabled", Shape::Bool),
+    ("filesystem.allowGitConfig", Shape::Bool),
+    ("credentials", Shape::Object),
+    ("ignoreViolations", Shape::Object),
+    ("allowPty", Shape::Bool),
+    ("allowAppleEvents", Shape::Bool),
+    ("git", Shape::Object),
+    ("git.safeDirectories", Shape::Strings),
+];
+
+/// Refuses `settings` when a key in [`SHAPES`] is there with the wrong type,
+/// `null` included, since upstream's optional keys do not take it.
+pub(super) fn check_shapes(settings: &Value) -> Result<(), ConfigError> {
+    for &(key, shape) in SHAPES {
+        if let Some(value) = key.split('.').try_fold(settings, |at, part| at.get(part))
+            && !shape.holds(value)
+        {
+            return Err(ConfigError::Invalid {
+                key: key.to_owned(),
+                reason: shape.expected().to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
 
 /// Refuses `settings` when a key in [`PATHS`] asks for something.
 pub(super) fn refuse(settings: &Value) -> Result<(), ConfigError> {

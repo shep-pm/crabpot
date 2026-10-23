@@ -107,7 +107,6 @@ fn a_key_that_asks_for_nothing_loads() {
         ("network.allowLocalBinding", json!(false)),
         ("enableWeakerNetworkIsolation", json!(false)),
         ("filesystem.allowRead", json!([])),
-        ("network.tlsTerminate", json!(false)),
         ("network.stripResponseHeaders", json!([])),
         ("git.safeDirectories", json!([])),
         ("allowPty", json!(false)),
@@ -197,6 +196,30 @@ fn a_group_that_is_not_an_object_is_invalid() {
         (r#"{"network": null}"#, "network"),
     ] {
         assert_eq!(invalid_key(json), key, "{json}");
+    }
+}
+
+#[test]
+fn a_refused_key_of_the_wrong_type_is_invalid_not_dropped() {
+    for (path, value) in [
+        ("git", json!(["/repo"])),
+        ("git", json!("x")),
+        ("git.safeDirectories", json!("/repo")),
+        ("credentials", json!(false)),
+        ("ignoreViolations", json!([])),
+        ("network.tlsTerminate", json!(false)),
+        ("network.parentProxy", json!([])),
+        ("network.allowAllUnixSockets", json!("")),
+        ("network.httpProxyPort", json!(null)),
+        ("network.stripResponseHeaders", json!(false)),
+        ("filesystem.disabled", json!([])),
+        ("allowPty", json!("")),
+    ] {
+        assert_eq!(
+            invalid_key(&with(path, value.clone())),
+            path,
+            "{path}: {value}"
+        );
     }
 }
 

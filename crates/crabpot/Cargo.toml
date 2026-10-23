@@ -1,0 +1,22 @@
+[package]
+name = "crabpot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Native Rust sandbox runtime for AI agents, rewritten from Anthropic's sandbox-runtime"
+repository.workspace = true
+license.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+# docs/ holds planning and design notes. They belong in the repository, not in
+# a published .crate, which is permanent.
+exclude = ["/docs/"]
+
+[dependencies]
+crabpot-core.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+crabpot-macos.workspace = true
+
+[lints]
+workspace = true

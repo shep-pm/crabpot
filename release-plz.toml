@@ -30,3 +30,9 @@ changelog_config = "release-plz-changelog.toml"
 semver_check = true
 # The build before the upload stays on: an upload cannot be undone.
 publish_no_verify = false
+
+# The test harness is never published, and release-plz would otherwise bump
+# and tag it with the rest of the workspace.
+[[package]]
+name = "crabpot-harness"
+release = false

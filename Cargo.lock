@@ -5,3 +5,22 @@ version = 4
 [[package]]
 name = "crabpot"
 version = "0.1.0"
+dependencies = [
+ "crabpot-core",
+ "crabpot-macos",
+]
+
+[[package]]
+name = "crabpot-core"
+version = "0.1.0"
+
+[[package]]
+name = "crabpot-harness"
+version = "0.1.0"
+
+[[package]]
+name = "crabpot-macos"
+version = "0.1.0"
+dependencies = [
+ "crabpot-core",
+]

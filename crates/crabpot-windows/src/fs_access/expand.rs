@@ -6,7 +6,7 @@ use core::fmt;
 use crabpot_core::config::PathEntry;
 
 use super::spelling::{
-    contains_glob_chars, expand_env_references, has_env_references, is_absolute, is_unc_path,
+    contains_glob_chars, expand_env_references, has_env_references, is_absolute, is_unprobed,
     strip_extended_prefix, tilde_rest, win32_normalize, win32_resolve,
 };
 use super::walk::expand_glob;
@@ -83,9 +83,9 @@ impl<D: Disk> Host<D> {
         }
         let path = upper_drive(strip_extended_prefix(&path));
         let is_glob = !literal && contains_glob_chars(&path);
-        // A share is never looked at: that is an SMB request, with the real
-        // user's credentials, to whatever host the path names.
-        if is_unc_path(&path) && !is_glob {
+        // A share or a device is never looked at: that is an SMB request, or a
+        // connection to a pipe, with the real user's credentials.
+        if is_unprobed(&path) && !is_glob {
             return Ok(win32_normalize(&path));
         }
         let normalized = if let Some(rest) = tilde_rest(&path) {
@@ -138,7 +138,7 @@ pub fn expand_paths<D: Disk>(
             continue;
         }
         let is_glob = !marked && contains_glob_chars(&norm);
-        if is_unc_path(&norm) && !is_glob {
+        if is_unprobed(&norm) && !is_glob {
             out.insert(&norm);
             continue;
         }

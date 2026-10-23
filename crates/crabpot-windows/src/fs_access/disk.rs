@@ -120,6 +120,13 @@ impl Disk for StdDisk {
     }
 }
 
+/// An error part way through a listing. It is never [`DiskError::Absent`], even
+/// for an entry that vanished between the read and the stat: the directory is
+/// there, and a listing that lost an entry is not a complete one.
+fn listing_error(err: &io::Error) -> DiskError {
+    DiskError::Other(err.kind().to_string())
+}
+
 /// The entries of a listing, or the first error in it: a listing that stopped
 /// part way is not one that was read, and the caller must not take it for all
 /// of the directory.
@@ -128,8 +135,8 @@ fn entries_of(
 ) -> Result<Vec<Entry>, DiskError> {
     let mut entries = Vec::new();
     for item in listing {
-        let (name, file_type) = item.map_err(|err| disk_error(&err))?;
-        let file_type = file_type.map_err(|err| disk_error(&err))?;
+        let (name, file_type) = item.map_err(|err| listing_error(&err))?;
+        let file_type = file_type.map_err(|err| listing_error(&err))?;
         // A name that is not text cannot be matched by a pattern, or handed to
         // `srt-win` as JSON.
         let Ok(name) = name.into_string() else {
@@ -153,6 +160,18 @@ mod tests {
         assert_eq!(
             entries_of(listing.into_iter()),
             Err(DiskError::Other("permission denied".to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_entry_that_vanished_mid_listing_is_not_an_absent_directory() {
+        let listing = vec![Ok((
+            OsString::from("Key.pem"),
+            Err(io::Error::from(io::ErrorKind::NotFound)),
+        ))];
+        assert_eq!(
+            entries_of(listing.into_iter()),
+            Err(DiskError::Other("entity not found".to_owned()))
         );
     }
 

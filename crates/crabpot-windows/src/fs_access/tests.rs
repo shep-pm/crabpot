@@ -265,6 +265,22 @@ fn a_share_is_passed_through_without_a_look_at_the_disk() {
 }
 
 #[test]
+fn a_device_path_is_passed_through_without_a_look_at_the_disk() {
+    let host = host(FakeDisk::default());
+    let entries = spelled(&[r"\\?\GLOBALROOT\Device\Mup\srv\share\x", r"\\.\pipe\name"]);
+    for mode in [Mode::Grant, Mode::Deny] {
+        assert_eq!(
+            expand_paths(&host, &entries, mode),
+            Ok(strings(&[
+                r"\\?\GLOBALROOT\Device\Mup\srv\share\x",
+                r"\\.\pipe\name"
+            ]))
+        );
+    }
+    assert_eq!(host.disk().probes(), 0);
+}
+
+#[test]
 fn a_literal_path_is_not_a_pattern_and_one_with_a_wildcard_is_skipped() {
     let host = host(FakeDisk::default().dir(r"C:\[prod].env").file(r"C:\a.pem"));
     let entries = [

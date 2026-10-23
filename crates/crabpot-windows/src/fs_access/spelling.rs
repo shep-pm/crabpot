@@ -22,9 +22,20 @@ fn is_separator(c: char) -> bool {
 }
 
 /// `containsGlobCharsWin`: `[` and `]` are legal in a Win32 name, so only `*`
-/// and `?` make a pattern.
+/// and `?` make a pattern. The `?` of a `\\?\` prefix is the namespace, not a
+/// wildcard.
 pub(super) fn contains_glob_chars(path: &str) -> bool {
-    path.contains(['*', '?'])
+    let body = match path.as_bytes() {
+        [first, second, b'?' | b'.', last, ..]
+            if [first, second, last]
+                .iter()
+                .all(|byte| matches!(byte, b'\\' | b'/')) =>
+        {
+            &path[4..]
+        }
+        _ => path,
+    };
+    body.contains(['*', '?'])
 }
 
 fn has_drive(path: &str) -> bool {
@@ -39,12 +50,16 @@ pub(super) fn is_absolute(path: &str) -> bool {
 }
 
 /// `stripExtendedPathPrefix`: `\\?\UNC\srv\share` is `\\srv\share` and `\\?\C:\f`
-/// is `C:\f`.
+/// is `C:\f`. Any other `\\?\` path is a device (`\\?\GLOBALROOT\x`), which has
+/// no drive form to strip to, so it is kept for [`is_unprobed`] to see.
 pub(super) fn strip_extended_prefix(path: &str) -> String {
     if path.len() >= 8 && path.is_char_boundary(8) && path[..8].eq_ignore_ascii_case(r"\\?\UNC\") {
         return format!(r"\\{}", &path[8..]);
     }
-    path.strip_prefix(r"\\?\").unwrap_or(path).to_owned()
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if has_drive(rest) => rest.to_owned(),
+        _ => path.to_owned(),
+    }
 }
 
 /// `isUncPath`: a network share in any spelling, `\\srv\share`,

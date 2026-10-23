@@ -174,7 +174,9 @@ pub fn compare(
 /// probe at all fails the case.
 ///
 /// A probe that reported a code and still could not tell what the sandbox did
-/// ([`probe::ERROR`]) fails a comparison, which is what a code is for. With one
+/// ([`probe::ERROR`]) fails a comparison, which is what a code is for. The
+/// exception is a read of a file the case made: a read deny hides it, so the
+/// code is the answer there and the runners must still give the same one. With one
 /// runner there is nothing to compare the answer with, so the answer is the
 /// finding and the run reports it and goes on: upstream's bwrap path answers a
 /// read deny by mounting an empty tmpfs over the denied folder, and a probe of
@@ -191,7 +193,8 @@ fn run_probes(
         for runner in runners {
             restore()?;
             let served = serve(probe, settings)?;
-            let outcome = code(*runner, settings, probe, compare)?;
+            let strict = compare && !hidden_by_a_deny(case, probe);
+            let outcome = code(*runner, settings, probe, strict)?;
             drop(served);
             if outcome == probe::ERROR {
                 eprintln!(
@@ -292,11 +295,20 @@ fn written(probe: &Probe) -> bool {
     matches!(probe, Probe::Write(marker) if Path::new(marker).exists())
 }
 
+/// Whether `probe` reads a file the case made, which a read deny can hide
+/// under an empty tmpfs: the probe then finds no path and exits
+/// [`probe::ERROR`]. A path the case never made is not that, it is a typo.
+fn hidden_by_a_deny(case: &Case, probe: &Probe) -> bool {
+    matches!(probe, Probe::Read(path) if case.files.iter().any(|(made, _)| made == Path::new(path)))
+}
+
 /// The code `runner`'s probe reported. A probe that could not tell is an error
-/// only where its answer is compared with another runner's.
-fn code(runner: &dyn Runner, settings: &Path, probe: &Probe, compare: bool) -> Result<u8, Error> {
+/// only where `strict`: where its answer is compared with another runner's and
+/// is not one a read deny gives. Otherwise the code is the answer, and a runner
+/// that gave another still differs.
+fn code(runner: &dyn Runner, settings: &Path, probe: &Probe, strict: bool) -> Result<u8, Error> {
     let outcome = runner.run(settings, probe)?;
-    if compare && outcome == probe::ERROR {
+    if strict && outcome == probe::ERROR {
         return Err(Error::Erred {
             runner: runner.name(),
             probe: probe.clone(),

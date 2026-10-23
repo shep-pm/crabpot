@@ -293,6 +293,40 @@ fn a_probe_that_exits_2_fails_the_case_even_when_both_agree() {
     ));
 }
 
+/// A read deny on Linux hides a folder under an empty tmpfs, so a probe of a
+/// file the case made in it reads a path that is not there and exits 2. Both
+/// runners doing so is the answer; a path the case never made is a typo.
+#[test]
+fn a_read_of_a_file_the_case_made_may_exit_2_when_both_runners_do() {
+    let hidden = Case {
+        files: vec![(PathBuf::from("/r/in"), String::new())],
+        ..case()
+    };
+    let run = |upstream: fn(&Probe) -> u8, crabpot: fn(&Probe) -> u8| {
+        compare(
+            &hidden,
+            Path::new("/r/settings.json"),
+            &|| Ok(()),
+            &StandIn("upstream", upstream),
+            &StandIn("crabpot", crabpot),
+        )
+    };
+    let hides = |probe: &Probe| match probe {
+        Probe::Read(_) => probe::ERROR,
+        _ => probe::ALLOWED,
+    };
+
+    run(hides, hides).unwrap();
+    assert!(matches!(
+        run(hides, |_| probe::REFUSED),
+        Err(Error::Differ {
+            probe: Probe::Read(_),
+            upstream: probe::ERROR,
+            crabpot: probe::REFUSED,
+        })
+    ));
+}
+
 /// Runs only on a restored fixture, which its run then spoils.
 struct Spoiling<'a>(&'static str, &'a Cell<bool>);
 

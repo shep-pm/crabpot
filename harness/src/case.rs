@@ -238,4 +238,19 @@ mod tests {
             Err(Error::UnknownProbe("ping".to_owned()))
         );
     }
+
+    #[test]
+    fn every_case_file_in_the_folder_parses() {
+        let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/cases");
+        let mut parsed = 0;
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            if let Err(error) = Case::parse(&text, "/r") {
+                panic!("{}: {error}", path.display());
+            }
+            parsed += 1;
+        }
+        assert!(parsed >= 4, "only {parsed} case files found");
+    }
 }

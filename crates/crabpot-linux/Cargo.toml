@@ -19,7 +19,7 @@ crabpot-core.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # The user id and the access check that decide whether a directory is denied
-# whole, through safe calls.
+# whole, or a bwrap is executable, through safe calls.
 nix = { version = "0.31", default-features = false, features = ["user", "fs"] }
 
 [lints]

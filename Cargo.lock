@@ -37,6 +37,7 @@ name = "crabpot"
 version = "0.1.2"
 dependencies = [
  "crabpot-core",
+ "crabpot-linux",
  "crabpot-macos",
  "tokio",
 ]

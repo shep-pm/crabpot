@@ -33,7 +33,10 @@ impl Sandbox {
     /// [`StartError::UnsupportedPlatform`] off macOS, where nothing
     /// confines a command yet, [`StartError::UnresolvedPath`] when a path
     /// in `config` cannot be made absolute, and [`StartError::Proxy`] when the
-    /// proxy that carries its network cannot start.
+    /// proxy that carries its network cannot start. On Linux the bwrap checks
+    /// run first: [`StartError::Missing`] when there is no executable `bwrap`
+    /// on `PATH`, and [`StartError::Uid0WithoutSetfcap`] for uid 0 without
+    /// `CAP_SETFCAP`. A `bwrap` older than 0.5.0 is a warning on stderr.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "macos")]
         {
@@ -69,6 +72,8 @@ impl Sandbox {
         #[cfg(not(target_os = "macos"))]
         {
             let _ = config;
+            #[cfg(target_os = "linux")]
+            crabpot_linux::deps::check_here()?;
             Err(StartError::UnsupportedPlatform)
         }
     }
@@ -159,6 +164,29 @@ pub enum StartError {
     UnresolvedPath(PathError),
     /// The proxy could not start: no token, no port, or no thread to run on.
     Proxy(io::ErrorKind),
+    /// `tool` is not on `PATH`, or is there but not executable.
+    Missing {
+        /// The program's name.
+        tool: &'static str,
+    },
+    /// The process is uid 0 without `CAP_SETFCAP`, and bwrap cannot make a
+    /// user namespace.
+    Uid0WithoutSetfcap,
+}
+
+#[cfg(target_os = "linux")]
+impl From<crabpot_linux::deps::DepsError> for StartError {
+    fn from(error: crabpot_linux::deps::DepsError) -> Self {
+        use crabpot_linux::deps::DepsError;
+
+        match error {
+            DepsError::Missing { tool } => Self::Missing { tool },
+            DepsError::Uid0WithoutSetfcap => Self::Uid0WithoutSetfcap,
+            // `DepsError` is `non_exhaustive`: a check this build does not
+            // know of is a missing dependency it cannot name.
+            _ => Self::Missing { tool: "bwrap" },
+        }
+    }
 }
 
 impl fmt::Display for StartError {
@@ -167,6 +195,11 @@ impl fmt::Display for StartError {
             Self::UnsupportedPlatform => write!(f, "only macOS has a sandbox yet"),
             Self::UnresolvedPath(error) => write!(f, "{error}"),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
+            Self::Missing { tool } => write!(f, "{tool} is missing or not executable"),
+            Self::Uid0WithoutSetfcap => write!(
+                f,
+                "running as uid 0 without CAP_SETFCAP, so bwrap cannot make a user namespace"
+            ),
         }
     }
 }
@@ -262,7 +295,15 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandbox_does_not_start_on_linux_yet() {
+        // Whether it is the checks or the missing sandbox that refuses depends
+        // on the machine's bwrap.
+        assert!(Sandbox::start(&Config::default()).is_err());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     #[test]
     fn a_sandbox_does_not_start_off_macos() {
         assert_eq!(

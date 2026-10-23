@@ -37,7 +37,6 @@ fn the_default_config_shape_loads() {
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
-    ("network.denyMachLookup", r#"["com.apple.x"]"#),
     (
         "network.mitmProxy",
         r#"{"socketPath": "/tmp/m.sock", "domains": ["example.com"]}"#,

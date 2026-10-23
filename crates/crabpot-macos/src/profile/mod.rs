@@ -7,6 +7,7 @@
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
+mod deny_mach_lookup;
 mod filter;
 mod literal_groups;
 mod mandatory;
@@ -60,6 +61,7 @@ pub fn render(
         profile.push_str(&rules(config)?);
     }
     profile.push_str(&proxy::rules(proxy_port, socks_port));
+    profile.push_str(&deny_mach_lookup::rules(config)?);
     Ok(profile)
 }
 

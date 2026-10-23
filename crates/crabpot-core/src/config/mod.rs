@@ -28,7 +28,7 @@ pub use crate::path_entries::PathEntry;
 
 use self::keys::{
     allow_mach_lookup, allow_read, allow_write, allowed_domains, denied_domains,
-    denied_resolved_addresses, deny_read, deny_write, mitm_proxy,
+    denied_resolved_addresses, deny_read, deny_write, mitm_proxy, strict_allowlist,
 };
 use self::leaf::present;
 
@@ -56,11 +56,12 @@ pub struct Network {
     /// `allowedDomains`: the hosts the proxy lets a command reach.
     #[serde(deserialize_with = "allowed_domains::deserialize")]
     pub allowed_domains: Vec<DomainEntry>,
-    /// `deniedDomains`, which is not read yet.
+    /// `deniedDomains`: the hosts the proxy refuses, which beat `allowedDomains`.
     #[serde(deserialize_with = "denied_domains::deserialize")]
     pub denied_domains: Vec<DomainEntry>,
-    /// `strictAllowlist`: accepted, and nothing the settings file can reach reads it.
-    #[serde(default, deserialize_with = "present")]
+    /// `strictAllowlist`: read as a boolean. An unlisted host is refused whether
+    /// it is on or off, because crabpot has no way to widen `allowedDomains`.
+    #[serde(default, deserialize_with = "strict_allowlist::deserialize")]
     pub strict_allowlist: Option<bool>,
     /// `deniedResolvedAddresses`, which is not read yet.
     #[serde(default, deserialize_with = "denied_resolved_addresses::deserialize")]

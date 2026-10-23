@@ -217,7 +217,7 @@ async fn forward(
     let host = match shared.filter.check(target.host, target.port) {
         Ok(host) => host,
         // Upstream gives the reason to a tunnel's refusal alone.
-        Err(Denial::MalformedHost | Denial::NotAllowed) => {
+        Err(Denial::MalformedHost | Denial::Denied | Denial::NotAllowed) => {
             return end(client, &denied("Forbidden")).await;
         }
     };

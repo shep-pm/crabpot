@@ -19,7 +19,7 @@ The state where crabpot does what upstream does at the baseline, on macOS and Li
 _Avoid_: feature-complete, done
 
 **Kelpie-ready**:
-The first milestone: crabpot does on macOS everything kelpie asks of upstream, and kelpie moves to it. It comes before parity.
+A milestone per platform: crabpot does on that platform everything kelpie asks of upstream there, and kelpie moves to it on that platform. Always named with its platform, as in kelpie-ready on Linux. Each comes before parity.
 _Avoid_: MVP, v0.1, beta
 
 **Following**:

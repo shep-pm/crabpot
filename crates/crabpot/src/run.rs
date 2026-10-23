@@ -47,8 +47,9 @@ pub fn run_from_args() {
 /// program's name: `-s/--settings`, `-c`, `-d` and `--`.
 ///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
-/// that is refused prints why to stderr and exits 1. On Unix the wrapper
-/// forwards SIGINT and SIGTERM to the command meanwhile.
+/// that is refused prints why to stderr and exits 1. A SIGINT, SIGTERM or
+/// console Ctrl-C is the command's to answer: the wrapper keeps waiting for it
+/// to end.
 ///
 /// It never returns: on Unix, tokio keeps the signal handlers it installs for
 /// the rest of the process, so a caller that carried on would no longer be
@@ -163,15 +164,34 @@ async fn run(command: Command) -> i32 {
 }
 
 /// Spawns `command`, waits for it, and returns the status the wrapper exits
-/// with. There is no signal to forward here: a console Ctrl-C reaches the child
-/// through the process group the wrapper spawned it in.
+/// with. A console Ctrl-C reaches every process attached to the console, the
+/// wrapper included, so the wrapper listens for it here and lets the handler
+/// swallow it: the child is attached to the same console and answers the event
+/// itself, and the wrapper still waits for it and exits with its code.
 #[cfg(not(unix))]
 async fn run(command: Command) -> i32 {
-    match spawn(command) {
-        Ok(mut child) => exit_after_wait(child.wait().await),
+    let listener = tokio::spawn(listen_for_ctrl_c());
+    let mut child = match spawn(command) {
+        Ok(child) => child,
         Err(e) => {
             eprintln!("crabpot: cannot run the command: {e}");
-            1
+            return 1;
+        }
+    };
+    let status = child.wait().await;
+    listener.abort();
+    exit_after_wait(status)
+}
+
+/// Holds a Ctrl-C listener for as long as it runs, which is what keeps the
+/// console handler swallowing the event in this process. Once it stops, the
+/// default handler ends the process again.
+#[cfg(not(unix))]
+async fn listen_for_ctrl_c() {
+    loop {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            eprintln!("crabpot: cannot listen for signals: {e}");
+            break;
         }
     }
 }

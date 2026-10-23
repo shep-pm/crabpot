@@ -92,7 +92,7 @@ fn rules_with(config: &Config, base: &PathBase) -> Result<String, PathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::write_roots::default_write_paths;
+    use crabpot_core::paths::default_write_paths;
 
     fn base() -> PathBase {
         PathBase::new(

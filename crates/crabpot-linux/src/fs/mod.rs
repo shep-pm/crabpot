@@ -20,7 +20,10 @@ macro_rules! sections {
     };
 }
 
-sections!(base);
+sections!(base, allow_write);
+
+#[cfg(all(test, unix))]
+mod tests;
 
 /// The words a config's filesystem policy comes to, in the order bwrap reads
 /// them.

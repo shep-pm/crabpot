@@ -38,3 +38,9 @@ pub mod mandatory;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 pub mod wrap;
+
+/// The fixture tree the test modules build their cases on, which is
+/// `tests/support` and needs `symlink`, so it sits with the unix tests.
+#[cfg(all(test, unix))]
+#[path = "../tests/support/mod.rs"]
+mod support;

@@ -9,12 +9,11 @@
 use crabpot_core::config::Config;
 use crabpot_core::PathError;
 use crabpot_core::paths::{
-    ListKind, PathBase, remove_trailing_glob_suffix, split_path_entries,
+    ListKind, PathBase, default_write_paths, remove_trailing_glob_suffix, split_path_entries,
 };
 
 use super::filter::{Entry, caller_entries};
 use super::rule;
-use super::write_roots::default_write_paths;
 
 pub(super) fn rules(config: &Config) -> Result<String, PathError> {
     rules_with(config, &PathBase::from_env())

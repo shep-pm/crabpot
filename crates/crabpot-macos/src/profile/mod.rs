@@ -13,7 +13,6 @@ mod literal_groups;
 mod mandatory;
 mod proxy;
 mod rule;
-mod write_roots;
 
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {

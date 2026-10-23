@@ -1,0 +1,52 @@
+name: runner-probe
+# Throwaway: answers "Can GitHub's Ubuntu runners run bwrap and npm's srt 0.0.81?" and is never merged.
+on:
+  push:
+    branches: [task/linux-runner-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: versions
+        run: |
+          set +e
+          uname -a; . /etc/os-release; echo "$PRETTY_NAME"; whoami; node --version
+          grep -E 'Seccomp|NoNewPrivs' /proc/self/status
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone user.max_user_namespaces 2>&1
+          which bwrap socat rg
+      - name: install
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap socat ripgrep >/dev/null && bwrap --version && socat -V | head -2 && rg --version | head -1
+      - name: bwrap before sysctl
+        run: |
+          set +e
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true; echo "bwrap unshare-all: exit=$?"
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net true; echo "bwrap unshare-net: exit=$?"
+      - name: allow userns
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: bwrap after sysctl
+        run: |
+          set +e
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true; echo "bwrap unshare-all: exit=$?"
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all true; echo "nested bwrap: exit=$?"
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all sh -c 'grep Seccomp /proc/self/status'
+      - name: upstream srt 0.0.81
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/s/secret"; echo hi > "$RUNNER_TEMP/s/secret/f"; S=$(cd "$RUNNER_TEMP/s" && pwd -P)
+          printf '{"network":{"allowedDomains":["example.com"],"deniedDomains":[]},"filesystem":{"denyRead":["%s/secret"],"allowWrite":["%s"],"denyWrite":[]}}' "$S" "$S" > "$S/settings.json"
+          cd "$S"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- cat "$S/secret/f"; echo "srt read of denied file: exit=$?"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- touch "$S/w"; echo "srt allowed write: exit=$?"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- touch "$HOME/nope"; echo "srt denied write: exit=$?"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://example.com; echo "srt allowed host: exit=$?"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://github.com; echo "srt other host: exit=$?"
+          npx -y @anthropic-ai/sandbox-runtime@0.0.81 --settings "$S/settings.json" -- python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("/tmp/x.sock"); print("unix bind ok")'; echo "srt unix socket: exit=$?"
+          ls ~/.npm/_npx/*/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/ 2>&1 | head

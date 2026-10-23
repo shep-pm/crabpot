@@ -1,4 +1,4 @@
-//! The seatbelt profile for one [`Config`].
+//! The seatbelt profile for one [`Config`] and the proxy it reaches the network through.
 //!
 //! A profile is a list of sections, in order, since a later rule wins over an
 //! earlier one. A section is a file in this folder with a `rules` function,
@@ -7,6 +7,7 @@
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
+mod proxy;
 mod rule;
 
 /// Declares each section's module and lists them in the order they render.
@@ -20,18 +21,23 @@ macro_rules! sections {
 
 sections!(base, mach_lookup, read, deny_read, write);
 
-/// Renders the profile `sandbox-exec -p` takes.
+/// Renders the profile `sandbox-exec -p` takes. A command under it reaches
+/// the network only through the proxy on `proxy_port`, if there is one.
 ///
 /// # Errors
 ///
 /// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
 /// or is relative and there is no working directory. A rule written for it
 /// would be dropped, so there is no profile.
-pub fn render(config: &Config) -> Result<String, PathError> {
-    let mut profile = String::from("(version 1)\n");
+pub fn render(config: &Config, proxy_port: Option<u16>) -> Result<String, PathError> {
+    let mut profile = String::from(
+        "(version 1)
+",
+    );
     for rules in SECTIONS {
         profile.push_str(&rules(config)?);
     }
+    profile.push_str(&proxy::rules(proxy_port));
     Ok(profile)
 }
 
@@ -41,7 +47,7 @@ mod tests {
 
     #[test]
     fn the_default_profile_denies_network_and_write() {
-        let profile = render(&Config::default()).unwrap();
+        let profile = render(&Config::default(), None).unwrap();
 
         assert!(profile.starts_with("(version 1)\n(deny default"));
         assert!(profile.contains("(allow file-read*)"));

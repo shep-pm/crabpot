@@ -5,11 +5,6 @@
 //! `src/utils/real-path.ts`. The Windows branches are left out, and so is the
 //! debug line upstream logs when a `..` survives.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the seatbelt profile slice is the first consumer")
-)]
-
 mod lexical;
 mod real_path;
 #[cfg(all(test, unix))]
@@ -18,7 +13,9 @@ mod tests;
 use core::fmt;
 use std::env;
 
-pub(crate) use lexical::{collapse_interior_spellings, is_absolute, resolve};
+pub(crate) use lexical::{
+    collapse_interior_spellings, dirname, is_absolute, is_at_or_under, resolve,
+};
 pub(crate) use real_path::{is_absence_error, real_path_of};
 
 /// What a relative path and a leading `~` are read against.
@@ -30,7 +27,7 @@ pub(crate) struct PathBase {
 
 /// A path could not be read because the base it needs is missing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PathError {
+pub enum PathError {
     /// The path starts with `~`, and `HOME` is not set to text.
     NoHomeDirectory,
     /// The path is relative, and the working directory is gone or is not text.

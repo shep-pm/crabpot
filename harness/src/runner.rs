@@ -334,7 +334,8 @@ impl Upstream {
             .arg(settings)
             .arg("--")
             .arg(&self.probe)
-            .args(probe.args());
+            .args(probe.args())
+            .env("HOME", home(settings));
         command
     }
 }
@@ -378,9 +379,16 @@ impl Crabpot {
             .arg(settings)
             .arg("--")
             .arg(&self.probe)
-            .args(probe.args());
+            .args(probe.args())
+            .env("HOME", home(settings));
         command
     }
+}
+
+/// The case's root, which holds the settings file: a `~` in a case names a path
+/// the case made and not the machine's.
+fn home(settings: &Path) -> &Path {
+    settings.parent().unwrap_or(settings)
 }
 
 /// What a wrapper did: the status it exited with, and the code its probe

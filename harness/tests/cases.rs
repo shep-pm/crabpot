@@ -54,3 +54,44 @@ fn refused_empty_file() {
 fn refused_missing_settings() {
     run("refused_missing_settings", "refused-missing-settings.json");
 }
+
+#[test]
+fn deny_read_folder() {
+    run("deny_read_folder", "deny-read-folder.json");
+}
+
+#[test]
+fn deny_read_glob() {
+    run("deny_read_glob", "deny-read-glob.json");
+}
+
+#[test]
+fn deny_read_literal() {
+    run("deny_read_literal", "deny-read-literal.json");
+}
+
+#[test]
+fn deny_read_tilde() {
+    run("deny_read_tilde", "deny-read-tilde.json");
+}
+
+#[test]
+fn refused_deny_read_empty() {
+    run("refused_deny_read_empty", "refused-deny-read-empty.json");
+}
+
+#[test]
+fn refused_deny_read_unmarked_object() {
+    run(
+        "refused_deny_read_unmarked_object",
+        "refused-deny-read-unmarked-object.json",
+    );
+}
+
+#[test]
+fn refused_deny_read_trailing_separator_glob() {
+    run(
+        "refused_deny_read_trailing_separator_glob",
+        "refused-deny-read-trailing-separator-glob.json",
+    );
+}

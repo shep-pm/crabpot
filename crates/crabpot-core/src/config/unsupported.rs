@@ -16,8 +16,8 @@ use serde_json::Value;
 use super::error::ConfigError;
 use super::keys::{
     allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
-    allowed_domains, denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_read,
-    deny_write, mitm_proxy,
+    allowed_domains, denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_write,
+    mitm_proxy,
 };
 
 /// Dotted paths, in the order they are checked.
@@ -31,7 +31,6 @@ pub(super) const PATHS: &[&str] = &[
     allow_local_binding::PATH,
     denied_resolved_addresses::PATH,
     mitm_proxy::PATH,
-    deny_read::PATH,
     allow_read::PATH,
     allow_write::PATH,
     deny_write::PATH,

@@ -1,14 +1,15 @@
 //! `enableWeakerNetworkIsolation`: the one Mach lookup a Go program needs to
 //! verify a TLS certificate. It relaxes no file or network rule.
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
-pub(super) fn rules(config: &Config) -> String {
-    if config.enable_weaker_network_isolation == Some(true) {
+pub(super) fn rules(config: &Config) -> Result<String, PathError> {
+    Ok(if config.enable_weaker_network_isolation == Some(true) {
         TRUSTD.to_owned()
     } else {
         String::new()
-    }
+    })
 }
 
 /// The service `trustd` answers certificate questions on, which Go's
@@ -39,7 +40,7 @@ mod tests {
         );
         let config = Config::from_json(&settings).unwrap_or_else(|e| panic!("{settings}: {e}"));
 
-        render(&config)
+        render(&config).unwrap()
     }
 
     #[test]

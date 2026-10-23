@@ -185,6 +185,39 @@ fn deny_write_literal() {
 }
 
 #[test]
+fn mandatory_git_hooks() {
+    run("mandatory_git_hooks", "mandatory-git-hooks.json");
+}
+
+#[test]
+fn mandatory_shell_rc() {
+    run("mandatory_shell_rc", "mandatory-shell-rc.json");
+}
+
+#[test]
+fn mandatory_nested_git_config() {
+    run(
+        "mandatory_nested_git_config",
+        "mandatory-nested-git-config.json",
+    );
+}
+
+#[test]
+fn move_blocking_file() {
+    run("move_blocking_file", "move-blocking-file.json");
+}
+
+#[test]
+fn move_blocking_parent() {
+    run("move_blocking_parent", "move-blocking-parent.json");
+}
+
+#[test]
+fn move_blocking_read() {
+    run("move_blocking_read", "move-blocking-read.json");
+}
+
+#[test]
 fn refused_deny_write_trailing_separator_glob() {
     run(
         "refused_deny_write_trailing_separator_glob",
@@ -206,6 +239,14 @@ fn refused_allow_mach_lookup_mid_wildcard() {
 }
 
 #[test]
+fn socks_allowed_example_com() {
+    run(
+        "socks_allowed_example_com",
+        "socks-allowed-example-com.json",
+    );
+}
+
+#[test]
 fn unix_socket_listed_folder() {
     run(
         "unix_socket_listed_folder",
@@ -214,10 +255,49 @@ fn unix_socket_listed_folder() {
 }
 
 #[test]
+fn socks_other_domain_refused() {
+    run(
+        "socks_other_domain_refused",
+        "socks-other-domain-refused.json",
+    );
+}
+
+#[test]
 fn unix_socket_unlisted_is_refused() {
     run(
         "unix_socket_unlisted_is_refused",
         "unix-sockets-unlisted-is-refused.json",
+    );
+}
+
+#[test]
+fn denied_beats_allowed() {
+    run("denied_beats_allowed", "denied-domains-beats-allowed.json");
+}
+
+#[test]
+fn denied_port_only() {
+    run("denied_port_only", "denied-domains-port-only.json");
+}
+
+#[test]
+fn denied_star() {
+    run("denied_star", "denied-domains-star.json");
+}
+
+#[test]
+fn strict_allowlist_false() {
+    run(
+        "strict_allowlist_false",
+        "denied-domains-strict-allowlist-false.json",
+    );
+}
+
+#[test]
+fn refused_denied_domains_bad_entry() {
+    run(
+        "refused_denied_domains_bad_entry",
+        "refused-denied-domains-bad-entry.json",
     );
 }
 

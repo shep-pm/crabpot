@@ -3,9 +3,8 @@
 //!
 //! Upstream's `writeRootEntries` and the allow half of `generateWriteRules`.
 //!
-//! Nothing here denies upstream's mandatory paths (`.git/hooks`, `.git/config`,
-//! shell rc files and the rest) inside an allowed root. That is issue #38, and
-//! until it lands an `allowWrite` root is writable all the way down.
+//! The `deny_write` section takes the mandatory paths (`.git/hooks`,
+//! `.git/config`, shell rc files and the rest) back from an allowed root.
 
 use crabpot_core::config::Config;
 use crabpot_core::PathError;

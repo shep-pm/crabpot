@@ -37,7 +37,6 @@ fn the_default_config_shape_loads() {
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
-    ("network.deniedDomains", r#"["example.com"]"#),
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
     ("network.allowLocalBinding", "true"),
     ("enableWeakerNetworkIsolation", "true"),
@@ -56,7 +55,6 @@ const ASKING: &[(&str, &str)] = &[
     ("network.tlsTerminate", "{}"),
     ("network.parentProxy", r#"{"http": "http://proxy:3128"}"#),
     ("filesystem.disabled", "true"),
-    ("filesystem.allowGitConfig", "true"),
     (
         "credentials",
         r#"{"files": [{"path": "~/.aws", "mode": "deny"}]}"#,
@@ -107,6 +105,26 @@ fn a_key_that_asks_for_nothing_loads() {
         let loaded = Config::from_json(&with(path, value));
 
         assert!(loaded.is_ok(), "{path}: {loaded:?}");
+    }
+}
+
+#[test]
+fn allow_git_config_is_read_whichever_way_it_is_set() {
+    for (value, read) in [(json!(true), Some(true)), (json!(false), Some(false))] {
+        let config = Config::from_json(&with("filesystem.allowGitConfig", value)).unwrap();
+
+        assert_eq!(config.filesystem.allow_git_config, read);
+    }
+    assert_eq!(Config::default().filesystem.allow_git_config, None);
+}
+
+#[test]
+fn allow_git_config_that_is_not_a_boolean_is_invalid() {
+    for value in [json!("true"), json!(1), json!(null)] {
+        assert_eq!(
+            invalid_key(&with("filesystem.allowGitConfig", value)),
+            "filesystem.allowGitConfig"
+        );
     }
 }
 
@@ -339,7 +357,7 @@ fn what_upstream_accepts_loads() {
 
 #[test]
 fn a_bad_leaf_beats_an_unsupported_key() {
-    let json = with("network.deniedDomains", json!(["*.com"]));
+    let json = with("network.deniedResolvedAddresses", json!(["10.0.0.0/33"]));
 
     assert!(matches!(
         Config::from_json(&json),
@@ -349,14 +367,14 @@ fn a_bad_leaf_beats_an_unsupported_key() {
 
 #[test]
 fn deserializing_a_config_refuses_what_from_json_refuses() {
-    let json = with("network.deniedDomains", json!(["example.com"]));
+    let json = with(
+        "network.mitmProxy",
+        json!({"socketPath": "/tmp/m.sock", "domains": ["example.com"]}),
+    );
 
     let error = serde_json::from_str::<Config>(&json).unwrap_err();
 
-    assert!(
-        error.to_string().contains("network.deniedDomains"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("network.mitmProxy"), "{error}");
 }
 
 mod files {

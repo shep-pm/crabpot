@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn the_socket_rules_come_after_the_write_rules() {
-        let profile = render(&allowing(r#"["/crabpot-nowhere/socks"]"#), None).unwrap();
+        let profile = render(&allowing(r#"["/crabpot-nowhere/socks"]"#), None, None).unwrap();
 
         let write = profile.find("; Writes").unwrap();
         let sockets = profile.find("; Unix sockets").unwrap();

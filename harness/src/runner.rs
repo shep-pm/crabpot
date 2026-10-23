@@ -197,7 +197,7 @@ fn socket_path(settings: &Path, path: &str) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        case_root(settings).join(path)
+        home(settings).join(path)
     }
 }
 
@@ -387,8 +387,8 @@ impl Upstream {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args())
-            .current_dir(case_root(settings))
-            .env("HOME", case_root(settings));
+            .env("HOME", home(settings))
+            .current_dir(home(settings));
         command
     }
 }
@@ -433,16 +433,18 @@ impl Crabpot {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args())
-            .current_dir(case_root(settings))
-            .env("HOME", case_root(settings));
+            .env("HOME", home(settings))
+            .current_dir(home(settings));
         command
     }
 }
 
 /// The case's root, which holds the settings file: a `~` in a case names a path
-/// the case made and not the machine's, and a relative path is read against it
-/// by each wrapper and by the command it runs.
-fn case_root(settings: &Path) -> &Path {
+/// The case's root, which holds the settings file: a `~` in a case names a path
+/// the case made and not the machine's. It is also the working directory, which
+/// the mandatory write denies are under and which a relative probe path reads
+/// against.
+fn home(settings: &Path) -> &Path {
     settings.parent().unwrap_or(settings)
 }
 

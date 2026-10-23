@@ -34,6 +34,24 @@ pub enum ResolvedPath {
 }
 
 impl ResolvedPath {
+    /// The name of one file or directory, whatever characters it holds.
+    #[must_use]
+    pub fn named(path: impl Into<String>) -> Self {
+        Self::Name { path: path.into() }
+    }
+
+    /// The paths `pattern` matches beneath `anchor`, which is a name on disk
+    /// and not pattern, since a directory may hold `[`, `*` or `?` in its own
+    /// name. `anchor` has no trailing `/`, except for the root itself.
+    #[must_use]
+    pub fn beneath(anchor: &str, pattern: &str) -> Self {
+        let separator = if anchor.ends_with('/') { "" } else { "/" };
+        Self::Pattern {
+            path: format!("{anchor}{separator}{pattern}"),
+            anchor: Some(anchor.to_owned()),
+        }
+    }
+
     /// The path, or the pattern.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -142,7 +160,8 @@ impl ResolvedPath {
 
     /// The directory that bounds where this can match: its anchor, the static
     /// prefix of a pattern, or the path itself for a name.
-    fn base_dir(&self) -> String {
+    #[must_use]
+    pub fn base_dir(&self) -> String {
         match self {
             Self::Name { path } => path.clone(),
             Self::Pattern {
@@ -330,6 +349,35 @@ mod tests {
         ] {
             assert_eq!(pattern(path, anchor).sample_path(), sample, "{path}");
         }
+    }
+
+    #[test]
+    fn a_pattern_beneath_a_directory_keeps_the_directory_a_name() {
+        let beneath = ResolvedPath::beneath("/a[1]", "**/.bashrc");
+
+        assert_eq!(beneath, pattern("/a[1]/**/.bashrc", Some("/a[1]")));
+        assert_eq!(
+            beneath.deny_regex().as_deref(),
+            Some(r"^/a\[1\]/(.*/)?\.bashrc(/.*)?$")
+        );
+        assert_eq!(beneath.base_dir(), "/a[1]");
+    }
+
+    #[test]
+    fn a_pattern_beneath_the_root_has_one_separator() {
+        let beneath = ResolvedPath::beneath("/", "**/.bashrc");
+        assert_eq!(beneath.path(), "/**/.bashrc");
+        assert!(beneath.deny_covers("/Users/x/.bashrc"));
+    }
+
+    #[test]
+    fn a_named_path_is_a_name() {
+        assert_eq!(
+            ResolvedPath::named("/a[1]"),
+            ResolvedPath::Name {
+                path: "/a[1]".to_owned()
+            }
+        );
     }
 
     #[test]

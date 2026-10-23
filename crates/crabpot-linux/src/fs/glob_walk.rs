@@ -12,7 +12,7 @@ use crabpot_core::ResolvedPath;
 
 /// Mounts of the kernel, which bwrap makes afresh: a match there would be
 /// covered by them, and walking `/proc` is slow and never settles.
-const KERNEL_MOUNTS: [&str; 3] = ["/proc", "/sys", "/dev"];
+pub(super) const KERNEL_MOUNTS: [&str; 3] = ["/proc", "/sys", "/dev"];
 
 /// The paths `entry` matches, or the path a name spells, whether or not it is
 /// there. A directory that cannot be listed, or a name that is not UTF-8,

@@ -14,15 +14,14 @@ use std::path::PathBuf;
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
-use super::glob_walk;
+use super::glob_walk::{self, KERNEL_MOUNTS};
 
 pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
     let mut found = BTreeMap::new();
     for entry in config.filesystem.read_denies()? {
         for path in glob_walk::matches(&entry) {
-            if let Ok(real) = fs::canonicalize(path) {
-                let is_dir = real.is_dir();
-                found.insert(real, is_dir);
+            if let Some((located, is_dir)) = locate(path) {
+                found.insert(located, is_dir);
             }
         }
     }
@@ -30,6 +29,20 @@ pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
         .into_iter()
         .flat_map(|(path, is_dir)| mount(path, is_dir))
         .collect())
+}
+
+/// Where `path` is mounted over, and whether it is a directory; `None` when it
+/// is not there. Links are resolved, so two spellings of one path mount once.
+/// A path in a kernel mount keeps its spelling: `/proc/self` resolves to a host
+/// pid the sandbox's own `/proc` does not hold.
+fn locate(path: PathBuf) -> Option<(PathBuf, bool)> {
+    if KERNEL_MOUNTS.iter().any(|mount| path.starts_with(mount)) {
+        let is_dir = fs::metadata(&path).ok()?.is_dir();
+        return Some((path, is_dir));
+    }
+    let real = fs::canonicalize(path).ok()?;
+    let is_dir = real.is_dir();
+    Some((real, is_dir))
 }
 
 /// The paths with those beneath a denied directory left out: the tmpfs over it

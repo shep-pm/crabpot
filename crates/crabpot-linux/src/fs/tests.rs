@@ -136,3 +136,12 @@ fn a_glob_that_matches_nothing_adds_no_word() {
 
     assert_eq!(denied_words(&[&pattern]), Vec::<String>::new());
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_path_in_the_kernels_proc_keeps_its_spelling() {
+    assert_eq!(
+        denied_words(&["/proc/self/environ"]),
+        ["--ro-bind", "/dev/null", "/proc/self/environ"]
+    );
+}

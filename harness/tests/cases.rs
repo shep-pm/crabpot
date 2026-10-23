@@ -32,6 +32,10 @@ const LINUX_READY: &[&str] = &[
     "refused_denied_domains_bad_entry",
     "refused_mitm_empty_domains",
     "refused_resolved_address_bad_cidr",
+    "deny_read_folder",
+    "deny_read_glob",
+    "deny_read_literal",
+    "deny_read_tilde",
 ];
 
 /// Runs the case file `harness/cases/<file>`.

@@ -4,20 +4,28 @@
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
+use std::io;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+#[cfg(unix)]
+use std::process::Stdio;
+use std::process::{Command, ExitStatus};
 
 use crabpot_core::config::{Config, ConfigError};
 
 use tokio::runtime::Builder;
+#[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
+#[cfg(unix)]
 use tokio::task::JoinHandle;
 
 use crate::args::{self, Invocation};
 use crate::sandbox::Sandbox;
 
+#[cfg(unix)]
 const SIGINT: i32 = 2;
+#[cfg(unix)]
 const SIGTERM: i32 = 15;
 
 /// Where upstream looks for settings when `-s` names none, under `$HOME`.
@@ -38,13 +46,13 @@ pub fn run_from_args() {
 /// its status. The arguments are the `crabpot` command line without the
 /// program's name: `-s/--settings`, `-c`, `-d` and `--`.
 ///
-/// Blocks until the command ends, forwarding SIGINT and SIGTERM to it
-/// meanwhile. A command line, a settings file or a sandbox that is refused
-/// prints why to stderr and exits 1.
+/// Blocks until the command ends. A command line, a settings file or a sandbox
+/// that is refused prints why to stderr and exits 1. On Unix the wrapper
+/// forwards SIGINT and SIGTERM to the command meanwhile.
 ///
-/// It never returns: tokio keeps the signal handlers it installs for the
-/// rest of the process, so a caller that carried on would no longer be ended
-/// by SIGINT or SIGTERM.
+/// It never returns: on Unix, tokio keeps the signal handlers it installs for
+/// the rest of the process, so a caller that carried on would no longer be
+/// ended by SIGINT or SIGTERM.
 pub fn run_args(args: impl IntoIterator<Item = OsString>) -> ! {
     std::process::exit(run_status(args))
 }
@@ -99,8 +107,8 @@ fn load_config(settings: Option<&Path>, home: Option<OsString>) -> Result<Config
     }
 }
 
-/// Spawns `command` and waits for it, forwarding SIGINT and SIGTERM to it
-/// meanwhile, and returns the status the wrapper exits with.
+/// Spawns `command` and waits for it, and returns the status the wrapper exits
+/// with.
 pub(crate) fn execute(command: Command) -> i32 {
     let runtime = match Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
@@ -112,9 +120,12 @@ pub(crate) fn execute(command: Command) -> i32 {
     runtime.block_on(run(command))
 }
 
+/// Spawns `command`, waits for it with SIGINT and SIGTERM forwarded to it, and
+/// returns the status the wrapper exits with.
+#[cfg(unix)]
 async fn run(command: Command) -> i32 {
     // Listening comes before spawning, so no signal falls in between.
-    let forwarders = match (
+    let listeners = match (
         signal(SignalKind::interrupt()),
         signal(SignalKind::terminate()),
     ) {
@@ -124,7 +135,7 @@ async fn run(command: Command) -> i32 {
             return 1;
         }
     };
-    let mut child = match tokio::process::Command::from(command).spawn() {
+    let mut child = match spawn(command) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("crabpot: cannot run the command: {e}");
@@ -132,7 +143,7 @@ async fn run(command: Command) -> i32 {
         }
     };
     let forwarders: Vec<JoinHandle<()>> = match child.id() {
-        Some(pid) => forwarders
+        Some(pid) => listeners
             .into_iter()
             .map(|(name, mut stream)| {
                 tokio::spawn(async move {
@@ -148,6 +159,30 @@ async fn run(command: Command) -> i32 {
     for forwarder in forwarders {
         forwarder.abort();
     }
+    exit_after_wait(status)
+}
+
+/// Spawns `command`, waits for it, and returns the status the wrapper exits
+/// with. There is no signal to forward here: a console Ctrl-C reaches the child
+/// through the process group the wrapper spawned it in.
+#[cfg(not(unix))]
+async fn run(command: Command) -> i32 {
+    match spawn(command) {
+        Ok(mut child) => exit_after_wait(child.wait().await),
+        Err(e) => {
+            eprintln!("crabpot: cannot run the command: {e}");
+            1
+        }
+    }
+}
+
+fn spawn(command: Command) -> io::Result<tokio::process::Child> {
+    tokio::process::Command::from(command).spawn()
+}
+
+/// The status the wrapper exits with once the child has ended, or 1 when the
+/// wait itself failed.
+fn exit_after_wait(status: io::Result<ExitStatus>) -> i32 {
     match status {
         Ok(status) => exit_code(status),
         Err(e) => {
@@ -160,6 +195,7 @@ async fn run(command: Command) -> i32 {
 /// Sends the signal `name` to `pid` through `kill(1)`, since tokio can only
 /// send SIGKILL and `kill(2)` is unsafe to call. A signal that does not go
 /// through is dropped: the command is gone, or it was never ours to signal.
+#[cfg(unix)]
 async fn forward(name: &str, pid: u32) {
     let _ = tokio::process::Command::new("/bin/kill")
         .args(["-s", name, &pid.to_string()])
@@ -172,12 +208,20 @@ async fn forward(name: &str, pid: u32) {
 
 /// How upstream maps a child's end: SIGINT and SIGTERM are a clean stop, any
 /// other signal is a failure, and a code is itself.
+#[cfg(unix)]
 fn exit_code(status: ExitStatus) -> i32 {
     match (status.code(), status.signal()) {
         (Some(code), _) => code,
         (None, Some(SIGINT | SIGTERM)) => 0,
         (None, _) => 1,
     }
+}
+
+/// The child's own code, or 1 for an end with no code at all. This platform
+/// reports no signal, so a child killed from outside still reports a code.
+#[cfg(not(unix))]
+fn exit_code(status: ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -191,9 +235,23 @@ mod tests {
     /// command take turns.
     static TURN: Mutex<()> = Mutex::new(());
 
-    fn sh(script: &str) -> Command {
-        let mut command = Command::new("sh");
-        command.args(["-c", script]);
+    /// This platform's shell, as the argv that runs it on `line`.
+    fn shell_argv(line: &str) -> Vec<OsString> {
+        #[cfg(unix)]
+        {
+            ["sh", "-c", line].map(OsString::from).to_vec()
+        }
+        #[cfg(not(unix))]
+        {
+            ["cmd", "/C", line].map(OsString::from).to_vec()
+        }
+    }
+
+    /// This platform's shell, run on `line`.
+    fn shell(line: &str) -> Command {
+        let argv = shell_argv(line);
+        let mut command = Command::new(&argv[0]);
+        command.args(&argv[1..]);
         command
     }
 
@@ -238,8 +296,9 @@ mod tests {
         let invalid = dir.0.join("invalid.json");
         fs::write(&empty, "  \n").unwrap();
         fs::write(&invalid, "{not json").unwrap();
-        let marker = dir.0.join("ran");
-        let script = format!("touch {}", marker.display());
+        // A command that ran would exit 7, so 1 is the refusal and not the
+        // command.
+        let command = shell_argv("exit 7");
 
         for (name, settings) in [
             ("missing", dir.0.join("none.json")),
@@ -247,17 +306,14 @@ mod tests {
             ("unreadable", dir.0.clone()),
             ("invalid", invalid),
         ] {
-            let args = [
+            let mut args = vec![
                 OsString::from("--settings"),
                 settings.into(),
-                "--".into(),
-                "sh".into(),
-                "-c".into(),
-                script.clone().into(),
+                OsString::from("--"),
             ];
+            args.extend(command.iter().cloned());
 
             assert_eq!(run_status(args), 1, "{name}");
-            assert!(!marker.exists(), "{name}: the command ran");
         }
     }
 
@@ -291,18 +347,29 @@ mod tests {
     }
 
     #[test]
-    fn exit_status_is_mapped_as_upstream_maps_it() {
-        assert_eq!(run(sh("exit 3")), 3, "a code passes through");
-        assert_eq!(run(sh("kill -INT $$")), 0, "SIGINT is a clean end");
-        assert_eq!(run(sh("kill -TERM $$")), 0, "SIGTERM is a clean end");
-        assert_eq!(run(sh("kill -KILL $$")), 1, "another signal is a failure");
-        assert_eq!(
-            run(Command::new("/no/such/program")),
-            1,
-            "a spawn failure is a failure"
-        );
+    fn a_childs_exit_code_passes_through() {
+        assert_eq!(run(shell("exit 3")), 3);
     }
 
+    #[test]
+    fn a_command_that_cannot_spawn_is_a_failure() {
+        assert_eq!(run(Command::new("/no/such/program")), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signalled_child_reports_a_failure_code() {
+        assert_eq!(run(shell("kill -KILL $$")), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_stopped_by_sigint_or_sigterm_is_a_clean_stop() {
+        assert_eq!(run(shell("kill -INT $$")), 0, "SIGINT is a clean end");
+        assert_eq!(run(shell("kill -TERM $$")), 0, "SIGTERM is a clean end");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn sigterm_sent_to_the_wrapper_reaches_the_command() {
         // The command signals its parent, which is this process, and then
@@ -313,6 +380,6 @@ mod tests {
             while [ $n -lt 2000000 ]; do n=$((n+1)); done
             exit 9"#;
 
-        assert_eq!(run(sh(script)), 7);
+        assert_eq!(run(shell(script)), 7);
     }
 }

@@ -1,0 +1,94 @@
+# The tree the mandatory-deny tests walk, one entry per line.
+#
+#   path/            a directory
+#   path             an empty file
+#   path = text      a file with that text
+#   path -> target   a symbolic link
+#
+# git will not store a `.git` directory, so the tests build this tree from the
+# list. Names that differ only in case sit in different directories, since a
+# macOS volume does not tell them apart.
+
+# Every dangerous file, hidden, at the root.
+.bashrc
+.bash_profile
+.gitconfig
+.gitmodules
+.zshrc
+.zprofile
+.profile
+.ripgreprc
+.mcp.json
+readme.md
+
+# Case variants of a file, of directories, and of the hooks of a repository.
+case/file/.BashRC
+case/vscode/.VSCODE/settings.json
+case/idea/.Idea/workspace.xml
+case/commands/.Claude/COMMANDS/review.md
+case/agents/.CLAUDE/agents/planner.md
+case/hooks/.Git/HOOKS/pre-commit
+case/head/.GIT/Head
+case/config/.git/CONFIG
+
+# A repository, with files that are not dangerous beside the ones that are.
+repo/.git/HEAD
+repo/.git/config
+repo/.git/hooks/pre-commit
+repo/.git/hooks/sub/post-merge
+repo/.git/objects/pack/pack-1
+repo/.git/refs/heads/main
+repo/src/main.rs
+
+# A worktree keeps a file where a repository keeps a directory.
+worktree/.git = gitdir: /elsewhere
+worktree/.claude/settings.json
+
+# Nothing here hides a file.
+.gitignore = ignored/
+.ignore = ignored/
+.rgignore = ignored/
+ignored/.bashrc
+ignored/.vscode/settings.json
+
+# node_modules is pruned by exact name, but rg lists what is directly in it.
+node_modules/.bashrc
+node_modules/pkg/.bashrc
+node_modules/.vscode/.bashrc
+node_modules/.zshrc/.profile
+.vscode/node_modules/.bashrc
+packages/node_modules/.vscode/settings.json
+packages/node_modules/pkg/.git/hooks/pre-commit
+other/Node_Modules/.vscode/settings.json
+
+# A symbolic link is a name and nothing more.
+real/.bashrc
+real/.vscode/settings.json
+linked -> real
+sub/.vscode -> ../real/.vscode
+sub/.zprofile -> ../real/.bashrc
+dangling/.profile -> missing
+
+# A dangerous name that is a directory lists nothing unless it holds a file.
+dirs/.zshrc/inner
+dirs/.bashrc/
+dirs/.vscode/
+
+# Depth: a file, a directory and a repository at each level of a chain.
+chain/.bashrc
+chain/.vscode/s
+chain/.git/HEAD
+chain/c1/.bashrc
+chain/c1/.vscode/s
+chain/c1/.git/HEAD
+chain/c1/.git/config
+chain/c1/c2/.bashrc
+chain/c1/c2/.vscode/s
+chain/c1/c2/.git/HEAD
+chain/c1/c2/.git/config
+chain/c1/c2/c3/.bashrc
+chain/c1/c2/c3/.vscode/s
+chain/c1/c2/c3/.git/HEAD
+chain/c1/c2/c3/c4/.bashrc
+chain/c1/c2/c3/c4/.vscode/s
+chain/c1/c2/c3/c4/c5/.mcp.json

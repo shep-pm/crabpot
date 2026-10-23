@@ -2,7 +2,7 @@
 //!
 //! Upstream's `linuxGetMandatoryDenyPaths` and `linuxGetCwdMandatoryDenyPaths`,
 //! with the `rg` call replaced by a walk with `std::fs` (ADR-0014). The walk is
-//! [`scan`]. Nothing here reads a sandbox's configuration or starts a process.
+//! [`fn@scan`]. Nothing here reads a sandbox's configuration or starts a process.
 
 mod scan;
 #[cfg(test)]

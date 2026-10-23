@@ -32,6 +32,14 @@ pub enum Error {
     Io(std::io::Error),
     /// A wrapper ended by a signal, with no exit status.
     Signalled(&'static str),
+    /// A wrapper's exit status is not the code its probe reported, or the probe
+    /// reported none: the wrapper failed before it ran the probe.
+    Unreported {
+        /// The runner whose wrapper it is.
+        runner: &'static str,
+        /// The wrapper's exit status.
+        status: i32,
+    },
     /// A probe exited with [`probe::ERROR`]: it could not tell what the sandbox did.
     Erred {
         /// The runner that ran it.
@@ -58,6 +66,10 @@ impl core::fmt::Display for Error {
             Self::Case(source) => write!(f, "{source}"),
             Self::Io(source) => write!(f, "{source}"),
             Self::Signalled(runner) => write!(f, "the {runner} wrapper ended by a signal"),
+            Self::Unreported { runner, status } => write!(
+                f,
+                "the {runner} wrapper exited {status} without the probe reporting it: it failed before running the probe"
+            ),
             Self::Erred { runner, probe } => {
                 write!(
                     f,
@@ -85,9 +97,11 @@ impl core::error::Error for Error {
         match self {
             Self::Case(source) => Some(source),
             Self::Io(source) => Some(source),
-            Self::Signalled(_) | Self::Erred { .. } | Self::Differ { .. } | Self::NoUpstream(_) => {
-                None
-            }
+            Self::Signalled(_)
+            | Self::Unreported { .. }
+            | Self::Erred { .. }
+            | Self::Differ { .. }
+            | Self::NoUpstream(_) => None,
         }
     }
 }
@@ -283,18 +297,25 @@ impl Runner for Crabpot {
     }
 }
 
-/// Runs the wrapper to its end and returns its exit status. Its stderr is
-/// inherited, so a failing run leaves its diagnostics in the log; it is never compared.
+/// Runs the wrapper to its end and returns the code its probe reported, which
+/// must be the wrapper's exit status. Its stderr is inherited, so a failing run
+/// leaves its diagnostics in the log; it is never compared.
 fn exit_code(mut command: Command, runner: &'static str) -> Result<u8, Error> {
-    let status = command
+    let output = command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()
         .map_err(Error::Io)?;
-    status
-        .code()
-        .and_then(|code| u8::try_from(code).ok())
-        .ok_or(Error::Signalled(runner))
+    let status = output.status.code().ok_or(Error::Signalled(runner))?;
+    let reported = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(probe::REPORT)?.parse::<u8>().ok());
+    match reported {
+        Some(code) if i32::from(code) == status => Ok(code),
+        _ => Err(Error::Unreported { runner, status }),
+    }
 }
 
 #[cfg(test)]
@@ -408,5 +429,41 @@ mod tests {
             &Spoiling("crabpot", &clean),
         )
         .unwrap();
+    }
+
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[test]
+    fn a_wrapper_that_fails_before_the_probe_runs_is_not_a_refusal() {
+        let outcome = exit_code(sh("echo 'crabpot: bad settings' >&2; exit 1"), "crabpot");
+        assert!(matches!(
+            outcome,
+            Err(Error::Unreported {
+                runner: "crabpot",
+                status: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn the_code_a_probe_reports_is_the_wrappers_status() {
+        let outcome = exit_code(sh("echo 'probe exited 1'; exit 1"), "upstream");
+        assert_eq!(outcome.unwrap(), probe::REFUSED);
+    }
+
+    #[test]
+    fn a_status_the_probe_did_not_report_is_not_a_probe_outcome() {
+        let outcome = exit_code(sh("echo 'probe exited 0'; exit 71"), "upstream");
+        assert!(matches!(
+            outcome,
+            Err(Error::Unreported {
+                runner: "upstream",
+                status: 71
+            })
+        ));
     }
 }

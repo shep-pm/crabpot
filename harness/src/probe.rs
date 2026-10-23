@@ -1,7 +1,8 @@
 //! The probe: one action run inside a sandbox, reported as an exit code.
 //!
-//! Both runners run the same `probe` binary, so a case compares exit codes and
-//! never parses output.
+//! Both runners run the same `probe` binary, so a case compares exit codes.
+//! The binary also prints [`REPORT`] and its code to stdout, which is how a
+//! runner tells a probe that ran from a wrapper that failed before running it.
 
 /// Exit code of an action the sandbox allowed.
 pub const ALLOWED: u8 = 0;
@@ -9,6 +10,9 @@ pub const ALLOWED: u8 = 0;
 pub const REFUSED: u8 = 1;
 /// Exit code of a probe that could not tell, such as a missing file or bad arguments.
 pub const ERROR: u8 = 2;
+
+/// What the `probe` binary prints to stdout, before its code, once it has run.
+pub const REPORT: &str = "probe exited ";
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};

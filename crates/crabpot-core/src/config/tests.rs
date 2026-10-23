@@ -48,7 +48,6 @@ const ASKING: &[(&str, &str)] = &[
         "network.mitmProxy",
         r#"{"socketPath": "/tmp/m.sock", "domains": ["example.com"]}"#,
     ),
-    ("filesystem.allowRead", r#"["/secret/ok"]"#),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),
     ("network.socksProxyPort", "1080"),

@@ -46,6 +46,29 @@ fn refused_missing_settings() {
 }
 
 #[test]
+fn allow_read_file() {
+    run("allow_read_file", "allow-read-file.json");
+}
+
+#[test]
+fn allow_read_folder() {
+    run("allow_read_folder", "allow-read-folder.json");
+}
+
+#[test]
+fn allow_read_glob() {
+    run("allow_read_glob", "allow-read-glob.json");
+}
+
+#[test]
+fn allow_read_folder_alone_glob() {
+    run(
+        "allow_read_folder_alone_glob",
+        "allow-read-folder-alone-glob.json",
+    );
+}
+
+#[test]
 fn deny_read_folder() {
     run("deny_read_folder", "deny-read-folder.json");
 }

@@ -12,11 +12,10 @@ use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
 use super::rule;
-use super::deny_read::filter;
 
 pub(super) fn rules(config: &Config) -> Result<String, PathError> {
     let denies = config.filesystem.write_denies()?;
-    let filters: Vec<String> = denies.iter().map(filter).collect();
+    let filters: Vec<String> = denies.iter().map(rule::deny_filter).collect();
     Ok(rule::render("deny", &["file-write*"], &filters))
 }
 

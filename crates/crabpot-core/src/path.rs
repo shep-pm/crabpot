@@ -14,7 +14,9 @@ use core::fmt;
 use std::env;
 
 pub use lexical::is_at_or_under;
-pub(crate) use lexical::{collapse_interior_spellings, dirname, is_absolute, resolve};
+pub(crate) use lexical::{
+    collapse_interior_spellings, dirname, is_absolute, is_strictly_under, resolve,
+};
 pub(crate) use real_path::{is_absence_error, real_path_of};
 
 /// What a relative path and a leading `~` are read against.

@@ -1,0 +1,17 @@
+{
+  "files": {
+    "$ROOT/secrets/d/file": "x",
+    "$ROOT/secrets/e/file": "x",
+    "$ROOT/secrets/key": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": ["$ROOT/secrets"], "allowRead": ["$ROOT/secrets/[d]"], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/secrets/d"},
+    {"kind": "read", "path": "$ROOT/secrets/d/file"},
+    {"kind": "read", "path": "$ROOT/secrets/e"},
+    {"kind": "read", "path": "$ROOT/secrets/key"}
+  ]
+}

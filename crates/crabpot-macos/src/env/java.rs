@@ -12,7 +12,9 @@ pub(super) const JAVA_TOOL_OPTIONS: &str = "JAVA_TOOL_OPTIONS";
 
 /// Seatbelt's `(remote ip "localhost:N")` matches `127.0.0.1` and `::1` but
 /// not `::ffff:127.0.0.1`, and a modern JVM dials loopback in that form
-/// unless it is forced onto the IPv4 stack.
+/// unless it is forced onto the IPv4 stack. The flag goes on whenever the
+/// profile lets the command reach loopback: the proxy's own port, or
+/// `allowLocalBinding`'s `localhost:*` (see [`crate::profile::local_binding`]).
 const PREFER_IPV4: &str = "-Djava.net.preferIPv4Stack=true";
 
 pub(super) fn vars(facts: &Facts) -> Vec<(OsString, OsString)> {
@@ -48,7 +50,54 @@ fn carries(value: &OsStr, flag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crabpot_core::config::Config;
+
     use super::*;
+
+    /// A config whose only network setting beyond the empty allowlist is
+    /// `allowLocalBinding` set to `allow_local_binding`.
+    fn config(allow_local_binding: bool) -> Config {
+        Config::from_json(&format!(
+            r#"{{
+                "network": {{
+                    "allowedDomains": [],
+                    "deniedDomains": [],
+                    "allowLocalBinding": {allow_local_binding}
+                }},
+                "filesystem": {{"denyRead": [], "allowWrite": [], "denyWrite": []}}
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    /// The facts of a sandbox that runs `config` with no proxy of its own, and
+    /// with nothing inherited for the java part to compose against.
+    fn facts_for(config: &Config) -> Facts {
+        Facts {
+            java_tool_options: None,
+            ..Facts::for_sandbox(config, None)
+        }
+    }
+
+    #[test]
+    fn allow_local_binding_sets_the_ipv4_flag() {
+        let facts = facts_for(&config(true));
+        assert!(facts.loopback_reachable, "the key opens every loopback port");
+        assert_eq!(
+            vars(&facts),
+            vec![(
+                OsString::from(JAVA_TOOL_OPTIONS),
+                OsString::from("-Djava.net.preferIPv4Stack=true"),
+            )],
+        );
+
+        let facts = facts_for(&config(false));
+        assert!(
+            !facts.loopback_reachable,
+            "no key and no proxy port leaves loopback unreachable"
+        );
+        assert!(vars(&facts).is_empty(), "nothing to add to JAVA_TOOL_OPTIONS");
+    }
 
     fn facts(loopback_reachable: bool, inherited: Option<&str>) -> Facts {
         Facts {

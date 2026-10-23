@@ -35,6 +35,8 @@ pub enum Probe {
     /// Dial the Unix socket at the path, named as `BindUnix` names it. The
     /// harness serves it, so a case must not hold a file at that path itself.
     ConnectUnix(String),
+    /// Bind a loopback listener, dial it and accept the dial.
+    Loopback,
 }
 
 /// A proxy other than the HTTP one that a `connect` probe goes through.
@@ -201,6 +203,7 @@ impl Probe {
             Self::Bind => vec!["bind".to_owned()],
             Self::BindUnix(path) => vec!["bind-unix".to_owned(), path.clone()],
             Self::ConnectUnix(path) => vec!["connect-unix".to_owned(), path.clone()],
+            Self::Loopback => vec!["loopback".to_owned()],
         }
     }
 
@@ -241,6 +244,7 @@ impl Probe {
             "bind" => Ok(Self::Bind),
             "bind-unix" => Ok(Self::BindUnix(text("path")?)),
             "connect-unix" => Ok(Self::ConnectUnix(text("path")?)),
+            "loopback" => Ok(Self::Loopback),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -265,7 +269,8 @@ mod tests {
                 {"kind": "connect", "host": "example.com", "port": 443, "via": "socks5"},
                 {"kind": "bind"},
                 {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"},
-                {"kind": "connect-unix", "path": "$ROOT/socks/live.sock"}
+                {"kind": "connect-unix", "path": "$ROOT/socks/live.sock"},
+                {"kind": "loopback"}
             ]
         }"#;
         let case = Case::parse(text, "/r").unwrap();
@@ -296,6 +301,7 @@ mod tests {
                 Probe::Bind,
                 Probe::BindUnix("/r/socks/a.sock".to_owned()),
                 Probe::ConnectUnix("/r/socks/live.sock".to_owned()),
+                Probe::Loopback,
             ]
         );
     }
@@ -439,7 +445,7 @@ mod tests {
                     Probe::BindUnix(target) | Probe::ConnectUnix(target) => {
                         assert!(lands(target), "{}: no folder for {target}", path.display())
                     }
-                    Probe::Read(_) | Probe::Connect { .. } | Probe::Bind => {}
+                    Probe::Read(_) | Probe::Connect { .. } | Probe::Bind | Probe::Loopback => {}
                 }
             }
         }

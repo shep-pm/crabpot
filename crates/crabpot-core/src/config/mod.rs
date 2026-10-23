@@ -27,9 +27,9 @@ pub use crate::domain::{DomainEntry, DomainParseError, DomainPattern};
 pub use crate::path_entries::PathEntry;
 
 use self::keys::{
-    allow_mach_lookup, allow_read, allow_unix_sockets, allow_write, allowed_domains,
-    denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_read, deny_write,
-    enable_weaker_network_isolation, mitm_proxy, strict_allowlist,
+    allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
+    allowed_domains, denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_read,
+    deny_write, enable_weaker_network_isolation, mitm_proxy, strict_allowlist,
 };
 use self::leaf::present;
 
@@ -76,8 +76,9 @@ pub struct Network {
     /// macOS profile opens for binding and for dialing.
     #[serde(default, deserialize_with = "allow_unix_sockets::deserialize")]
     pub allow_unix_sockets: Option<Vec<String>>,
-    /// `allowLocalBinding`, which is not read yet.
-    #[serde(default, deserialize_with = "present")]
+    /// `allowLocalBinding`: whether the command may bind, accept on and dial
+    /// any local port.
+    #[serde(default, deserialize_with = "allow_local_binding::deserialize")]
     pub allow_local_binding: Option<bool>,
     /// `allowMachLookup`: the Mach services a command may look up, which the
     /// macOS profile applies.

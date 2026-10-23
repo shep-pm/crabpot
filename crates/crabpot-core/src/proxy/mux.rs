@@ -2,6 +2,10 @@
 //! `createMuxProxyServer` (`src/sandbox/mux-proxy.ts`) serves it: HTTP and
 //! SOCKS5 on the same port.
 //!
+//! The same mux is served on a Unix socket too, for a sandbox where no loopback
+//! port can be reached at all: inside a network namespace only a socket bound
+//! there is one a command can dial (ADR-0014).
+//!
 //! A connection's first byte chooses. SOCKS5 greets with 0x05 and a SOCKS4
 //! CONNECT starts with 0x04, while every HTTP request method starts with an
 //! ASCII letter, HTTP/2 prior knowledge with `PRI `, and a stray TLS ClientHello
@@ -19,6 +23,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,6 +35,7 @@ use tokio::time::timeout;
 
 use super::shared::{Shared, Stream};
 use super::socks;
+use super::token;
 use crate::unix_socket;
 
 /// The first bytes that mean SOCKS: 0x05 greets SOCKS5, 0x04 is a SOCKS4 CONNECT.
@@ -71,6 +77,51 @@ impl Socket {
 }
 
 impl Drop for Socket {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// What a sandbox's own socket is open to: its owner alone.
+const OWNER_ONLY: u32 = 0o600;
+
+/// The front end's Unix socket, which a sandboxed command dials where a loopback
+/// port cannot reach it. It carries the whole mux, both protocols, and is served
+/// by [`dispatch`] exactly as the port is.
+///
+/// Its file is only for the sandbox that bound it, so it is mode 0600, and it
+/// goes when the `Proxy` that started it goes.
+#[derive(Debug)]
+pub(super) struct Front(PathBuf);
+
+impl Front {
+    /// Binds a fresh `claude-http-<16 hex>.sock` in the temp dir, which is how
+    /// upstream names it, and hands back the listener bound to it and its path.
+    /// The file is mode 0600, and nothing is accepted from it before that is set.
+    ///
+    /// Call this outside a tokio runtime, and hand the listener to tokio's
+    /// `UnixListener::from_std` inside one.
+    ///
+    /// # Errors
+    ///
+    /// The [`io::Error`] of whatever failed: reading `/dev/urandom` for the name,
+    /// binding, or setting the mode. A socket bound before the mode failed is
+    /// removed before this returns.
+    pub(super) fn bind() -> io::Result<(UnixListener, Self)> {
+        let path = std::env::temp_dir().join(format!("claude-http-{}.sock", token::random_hex(8)?));
+        let listener = unix_socket::bind(&path)?;
+        let front = Self(path);
+        fs::set_permissions(&front.0, fs::Permissions::from_mode(OWNER_ONLY))?;
+        Ok((listener, front))
+    }
+
+    /// The path to dial to reach the mux.
+    pub(super) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Front {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }

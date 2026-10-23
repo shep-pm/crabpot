@@ -50,10 +50,16 @@ pub fn vars(
             "SRT_SSH_PROXY_COMMAND",
             connect_script(socks_port, &basic_for(username, token)),
         ),
+        // git runs this value through a shell of its own, so the `$` carries a
+        // backslash: git's shell hands ssh a `$` and leaves the expansion to the
+        // `/bin/sh -c` ssh runs its ProxyCommand with. Unescaped, git's shell
+        // substitutes the script here, which puts the credential in ssh's
+        // arguments, gives ssh the script's `%s` as a `%` token it cannot name,
+        // and lets the script's own quotes end the `eval` word.
         (
             "GIT_SSH_COMMAND",
             format!(
-                "ssh {MUX_OVERRIDE} -o ProxyCommand=\"/bin/sh -c 'eval \\\"${{SRT_SSH_PROXY_COMMAND:?unset, but GIT_SSH_COMMAND needs it}}\\\"' sh '%h' %p\""
+                "ssh {MUX_OVERRIDE} -o ProxyCommand=\"/bin/sh -c 'eval \\\"\\${{SRT_SSH_PROXY_COMMAND:?unset, but GIT_SSH_COMMAND needs it}}\\\"' sh '%h' %p\""
             ),
         ),
     ]
@@ -109,7 +115,7 @@ mod tests {
         assert_eq!(
             value(&vars, "GIT_SSH_COMMAND"),
             "ssh -o ControlMaster=no -o ControlPath=none -o ProxyCommand=\"/bin/sh -c \
-             'eval \\\"${SRT_SSH_PROXY_COMMAND:?unset, but GIT_SSH_COMMAND needs it}\\\"' \
+             'eval \\\"\\${SRT_SSH_PROXY_COMMAND:?unset, but GIT_SSH_COMMAND needs it}\\\"' \
              sh '%h' %p\""
         );
         let script = value(&vars, "SRT_SSH_PROXY_COMMAND");
@@ -121,6 +127,35 @@ mod tests {
         assert!(
             !vars.iter().any(|(name, _)| *name == "FTP_PROXY"),
             "the SOCKS part's variables are its own"
+        );
+    }
+
+    /// git runs `GIT_SSH_COMMAND` through a shell of its own. A `$` that is not
+    /// escaped there expands the script before ssh even starts: the credential
+    /// lands in ssh's arguments, ssh is handed the script's own `%s` as a `%`
+    /// token, and the script's quotes end the `eval` word early.
+    #[test]
+    fn git_leaves_the_expansion_to_ssh() {
+        let vars = vars(51234, 51234, "srt", "0123abcd");
+        let command = value(&vars, "GIT_SSH_COMMAND");
+        let script = value(&vars, "SRT_SSH_PROXY_COMMAND");
+
+        assert!(command.contains(r"\${SRT_SSH_PROXY_COMMAND"), "{command}");
+        assert!(
+            !command.contains(r"\\${SRT_SSH_PROXY_COMMAND"),
+            "one backslash before the dollar sign, not a pair: {command}"
+        );
+        assert!(
+            !command.contains(script),
+            "the script is not in git's command line: {command}"
+        );
+        assert!(
+            !command.contains("Basic c3J0OjAxMjNhYmNk"),
+            "no credential in git's command line: {command}"
+        );
+        assert!(
+            !command.contains("%s"),
+            "only ssh's own % tokens reach ssh: {command}"
         );
     }
 

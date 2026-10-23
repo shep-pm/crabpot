@@ -1,9 +1,9 @@
 //! The part of the profile that is the same for every config: what a process
 //! needs to start and run at all.
 
-use crabpot_core::config::Config;
+use super::Inputs;
 
-pub(super) fn rules(_config: &Config) -> String {
+pub(super) fn rules(_inputs: &Inputs) -> String {
     BASE.to_owned()
 }
 

@@ -2,17 +2,22 @@
 //! command into it (ADR-0010).
 
 use core::fmt;
+use std::io;
 use std::process::Command;
 
 use crabpot_core::config::Config;
+#[cfg(target_os = "macos")]
+use crabpot_core::proxy::{Proxy, username_for};
 
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
 /// with [`Sandbox::command`], and drop it when they have all ended, since the
-/// proxies a later release adds stop with it.
+/// proxy stops with it.
 #[derive(Debug)]
 pub struct Sandbox {
     #[cfg(target_os = "macos")]
     profile: String,
+    #[cfg(target_os = "macos")]
+    proxy: Proxy,
 }
 
 impl Sandbox {
@@ -21,12 +26,16 @@ impl Sandbox {
     /// # Errors
     ///
     /// [`StartError::UnsupportedPlatform`] off macOS, where nothing
-    /// confines a command yet.
+    /// confines a command yet, and [`StartError::Proxy`] when the proxy that
+    /// carries its network cannot start.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "macos")]
         {
+            let proxy = Proxy::start(&config.network.allowed_domains)
+                .map_err(|e| StartError::Proxy(e.kind()))?;
             Ok(Self {
-                profile: crabpot_macos::profile::render(config),
+                profile: crabpot_macos::profile::render(config, Some(proxy.port())),
+                proxy,
             })
         }
         #[cfg(not(target_os = "macos"))]
@@ -40,7 +49,8 @@ impl Sandbox {
     /// its place.
     ///
     /// The wrapped command keeps `command`'s program, arguments, working
-    /// directory and environment changes. It does not keep its standard
+    /// directory and environment changes, and the variables that point its
+    /// clients at the proxy are set over them. It does not keep its standard
     /// streams, which a [`Command`] cannot be asked for, nor an
     /// [`env_clear`](Command::env_clear).
     ///
@@ -74,6 +84,17 @@ impl Sandbox {
                     None => wrapped.env_remove(key),
                 };
             }
+            let line = core::iter::once(command.get_program())
+                .chain(command.get_args())
+                .map(|word| word.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let username = username_for(&line);
+            for (name, value) in
+                crabpot_macos::env::http::vars(self.proxy.port(), &username, self.proxy.token())
+            {
+                wrapped.env(name, value);
+            }
             Ok(wrapped)
         }
         #[cfg(not(target_os = "macos"))]
@@ -92,12 +113,15 @@ impl Sandbox {
 pub enum StartError {
     /// The platform has no sandbox yet: only macOS has one.
     UnsupportedPlatform,
+    /// The proxy could not start: no token, no port, or no thread to run on.
+    Proxy(io::ErrorKind),
 }
 
 impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedPlatform => write!(f, "only macOS has a sandbox yet"),
+            Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
         }
     }
 }
@@ -148,6 +172,25 @@ mod tests {
         let status = sandbox.command(&write).unwrap().status().unwrap();
         assert!(!status.success(), "the write went through");
         assert!(!target.exists(), "the refused write left a file");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_wrapped_command_is_pointed_at_the_proxy() {
+        let sandbox = Sandbox::start(&Config::default()).unwrap();
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+
+        let proxy = wrapped
+            .get_envs()
+            .find(|(name, _)| *name == "HTTPS_PROXY")
+            .and_then(|(_, value)| value)
+            .expect("HTTPS_PROXY is set")
+            .to_string_lossy();
+        assert!(
+            proxy.ends_with(&format!("@localhost:{}", sandbox.proxy.port())),
+            "{proxy}"
+        );
+        assert!(proxy.starts_with("http://srt.dHJ1ZQ%3D%3D:"), "{proxy}");
     }
 
     #[cfg(not(target_os = "macos"))]

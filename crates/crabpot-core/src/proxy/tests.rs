@@ -138,7 +138,7 @@ fn the_unix_socket_is_mode_0600() {
     let proxy = proxy_allowing(&[]);
 
     let mode = fs::metadata(proxy.mux_socket()).unwrap().mode() & 0o777;
-    assert_eq!(mode, 0o600, "{:o} is not owner-only", mode);
+    assert_eq!(mode, 0o600, "{mode:o} is not owner-only");
 }
 
 #[test]

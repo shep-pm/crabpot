@@ -40,6 +40,11 @@ impl Sandbox {
             let proxy = Proxy::start(
                 &config.network.allowed_domains,
                 &config.network.denied_domains,
+                config
+                    .network
+                    .denied_resolved_addresses
+                    .as_deref()
+                    .unwrap_or_default(),
                 // A settings file that leaves the key out reads as not strict, as it
                 // does upstream.
                 config.network.strict_allowlist.unwrap_or(false),
@@ -47,8 +52,12 @@ impl Sandbox {
             .map_err(|e| StartError::Proxy(e.kind()))?;
             let proxy_port = proxy.port();
             Ok(Self {
-                profile: crabpot_macos::profile::render(config, Some(proxy_port))
-                    .map_err(StartError::UnresolvedPath)?,
+                profile: crabpot_macos::profile::render(
+                    config,
+                    Some(proxy_port),
+                    Some(proxy.socks_port()),
+                )
+                .map_err(StartError::UnresolvedPath)?,
                 // The proxy listens on `127.0.0.1`, and `allowLocalBinding`
                 // opens every loopback port, so either one is enough for the
                 // child to reach loopback.
@@ -113,8 +122,16 @@ impl Sandbox {
                 .collect::<Vec<_>>()
                 .join(" ");
             let username = username_for(&line);
-            for (name, value) in
-                crabpot_macos::env::http::vars(self.proxy.port(), &username, self.proxy.token())
+            let token = self.proxy.token();
+            for (name, value) in crabpot_macos::env::http::vars(self.proxy.port(), &username, token)
+                .into_iter()
+                .chain(crabpot_macos::env::socks::vars(
+                    self.proxy.socks_port(),
+                    &username,
+                    token,
+                    // The HTTP proxy is always there, so ssh goes through it.
+                    true,
+                ))
             {
                 wrapped.env(name, value);
             }
@@ -219,6 +236,26 @@ mod tests {
             "{proxy}"
         );
         assert!(proxy.starts_with("http://srt.dHJ1ZQ%3D%3D:"), "{proxy}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_wrapped_command_is_pointed_at_the_socks_proxy() {
+        let sandbox = Sandbox::start(&Config::default()).unwrap();
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+
+        let ftp = wrapped
+            .get_envs()
+            .find(|(name, _)| *name == "FTP_PROXY")
+            .and_then(|(_, value)| value)
+            .expect("FTP_PROXY is set")
+            .to_string_lossy();
+        assert!(ftp.starts_with("socks5h://srt.dHJ1ZQ%3D%3D:"), "{ftp}");
+        assert!(
+            ftp.ends_with(&format!("@localhost:{}", sandbox.proxy.socks_port())),
+            "{ftp}"
+        );
+        assert_ne!(sandbox.proxy.socks_port(), sandbox.proxy.port());
     }
 
     #[cfg(not(target_os = "macos"))]

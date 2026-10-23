@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn true_renders_the_three_rules_and_false_none() {
-        let profile = render(&config(true), None).unwrap();
+        let profile = render(&config(true), None, None).unwrap();
 
         assert_eq!(
             admitted(&profile),
@@ -83,7 +83,7 @@ mod tests {
             "{profile}"
         );
 
-        let profile = render(&config(false), None).unwrap();
+        let profile = render(&config(false), None, None).unwrap();
         assert!(admitted(&profile).is_empty(), "{profile}");
     }
 }

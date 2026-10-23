@@ -24,11 +24,26 @@ pub enum Probe {
         host: String,
         /// The port to dial.
         port: u16,
+        /// The proxy to ask for the connection, if not the HTTP proxy.
+        via: Option<Via>,
     },
     /// Bind a loopback socket.
     Bind,
+    /// Bind a Unix socket at the path. A relative one names a place under the
+    /// case root, which is where each wrapper runs.
+    BindUnix(String),
+    /// Dial the Unix socket at the path, named as `BindUnix` names it. The
+    /// harness serves it, so a case must not hold a file at that path itself.
+    ConnectUnix(String),
     /// Bind a loopback listener, dial it and accept the dial.
     Loopback,
+}
+
+/// A proxy other than the HTTP one that a `connect` probe goes through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// The SOCKS5 proxy.
+    Socks5,
 }
 
 /// A case file, with `$ROOT` expanded.
@@ -54,7 +69,7 @@ pub enum Error {
     Json(String),
     /// A field is missing or is not the kind of value it should be.
     Shape(String),
-    /// A probe's `kind` is not `read`, `write`, `rename`, `connect`, `bind` or `loopback`.
+    /// A probe's `kind` is not one of the kinds in [`Probe`].
     UnknownProbe(String),
 }
 
@@ -149,10 +164,16 @@ impl Probe {
             Self::Read(path) => vec!["read".to_owned(), path.clone()],
             Self::Write(path) => vec!["write".to_owned(), path.clone()],
             Self::Rename { from, to } => vec!["rename".to_owned(), from.clone(), to.clone()],
-            Self::Connect { host, port } => {
-                vec!["connect".to_owned(), host.clone(), port.to_string()]
+            Self::Connect { host, port, via } => {
+                let mut args = vec!["connect".to_owned(), host.clone(), port.to_string()];
+                if let Some(Via::Socks5) = via {
+                    args.extend(["--via".to_owned(), "socks5".to_owned()]);
+                }
+                args
             }
             Self::Bind => vec!["bind".to_owned()],
+            Self::BindUnix(path) => vec!["bind-unix".to_owned(), path.clone()],
+            Self::ConnectUnix(path) => vec!["connect-unix".to_owned(), path.clone()],
             Self::Loopback => vec!["loopback".to_owned()],
         }
     }
@@ -181,8 +202,19 @@ impl Probe {
                     .ok_or_else(|| {
                         Error::Shape("a probe without a `port` that fits 16 bits".to_owned())
                     })?,
+                via: match field("via") {
+                    None => None,
+                    Some(Value::String(via)) if via == "socks5" => Some(Via::Socks5),
+                    Some(_) => {
+                        return Err(Error::Shape(
+                            "a probe with a `via` that is not \"socks5\"".to_owned(),
+                        ));
+                    }
+                },
             }),
             "bind" => Ok(Self::Bind),
+            "bind-unix" => Ok(Self::BindUnix(text("path")?)),
+            "connect-unix" => Ok(Self::ConnectUnix(text("path")?)),
             "loopback" => Ok(Self::Loopback),
             _ => Err(Error::UnknownProbe(kind)),
         }
@@ -205,7 +237,10 @@ mod tests {
                 {"kind": "write", "path": "$ROOT/out"},
                 {"kind": "rename", "from": "$ROOT/in", "to": "$ROOT/moved"},
                 {"kind": "connect", "host": "example.com", "port": 443},
+                {"kind": "connect", "host": "example.com", "port": 443, "via": "socks5"},
                 {"kind": "bind"},
+                {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"},
+                {"kind": "connect-unix", "path": "$ROOT/socks/live.sock"},
                 {"kind": "loopback"}
             ]
         }"#;
@@ -226,10 +261,40 @@ mod tests {
                 },
                 Probe::Connect {
                     host: "example.com".to_owned(),
-                    port: 443
+                    port: 443,
+                    via: None,
+                },
+                Probe::Connect {
+                    host: "example.com".to_owned(),
+                    port: 443,
+                    via: Some(Via::Socks5),
                 },
                 Probe::Bind,
+                Probe::BindUnix("/r/socks/a.sock".to_owned()),
+                Probe::ConnectUnix("/r/socks/live.sock".to_owned()),
                 Probe::Loopback,
+            ]
+        );
+    }
+
+    /// A socket probe may name its socket against the case root instead, which
+    /// is where each wrapper runs and where the harness serves it.
+    #[test]
+    fn a_socket_probe_named_against_the_case_root_stays_relative() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "probes": [
+                {"kind": "bind-unix", "path": "socks/a.sock"},
+                {"kind": "connect-unix", "path": "socks/live.sock"}
+            ]
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+        assert_eq!(
+            case.probes,
+            [
+                Probe::BindUnix("socks/a.sock".to_owned()),
+                Probe::ConnectUnix("socks/live.sock".to_owned()),
             ]
         );
     }
@@ -316,6 +381,9 @@ mod tests {
                             path.display()
                         );
                         assert!(lands(to), "{}: no folder for {to}", path.display());
+                    }
+                    Probe::BindUnix(target) | Probe::ConnectUnix(target) => {
+                        assert!(lands(target), "{}: no folder for {target}", path.display())
                     }
                     Probe::Read(_) | Probe::Connect { .. } | Probe::Bind | Probe::Loopback => {}
                 }

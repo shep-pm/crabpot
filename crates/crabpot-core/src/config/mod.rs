@@ -21,14 +21,15 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 pub use self::error::ConfigError;
-pub use self::keys::denied_resolved_addresses::AddressRange;
 pub use self::keys::mitm_proxy::MitmProxy;
+pub use crate::address::AddressRange;
 pub use crate::domain::{DomainEntry, DomainParseError, DomainPattern};
 pub use crate::path_entries::PathEntry;
 
 use self::keys::{
-    allow_local_binding, allow_mach_lookup, allow_read, allow_write, allowed_domains,
-    denied_domains, denied_resolved_addresses, deny_read, deny_write, mitm_proxy, strict_allowlist,
+    allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
+    allowed_domains, denied_domains, denied_resolved_addresses, deny_read, deny_write, mitm_proxy,
+    strict_allowlist,
 };
 use self::leaf::present;
 
@@ -63,11 +64,13 @@ pub struct Network {
     /// it is on or off, because crabpot has no way to widen `allowedDomains`.
     #[serde(default, deserialize_with = "strict_allowlist::deserialize")]
     pub strict_allowlist: Option<bool>,
-    /// `deniedResolvedAddresses`, which is not read yet.
+    /// `deniedResolvedAddresses`: the addresses and ranges an allowed name may
+    /// not resolve to, beside the built-in set.
     #[serde(default, deserialize_with = "denied_resolved_addresses::deserialize")]
     pub denied_resolved_addresses: Option<Vec<AddressRange>>,
-    /// `allowUnixSockets`, which is not read yet.
-    #[serde(default, deserialize_with = "present")]
+    /// `allowUnixSockets`: the Unix socket paths a command may use, which the
+    /// macOS profile opens for binding and for dialing.
+    #[serde(default, deserialize_with = "allow_unix_sockets::deserialize")]
     pub allow_unix_sockets: Option<Vec<String>>,
     /// `allowLocalBinding`: whether the command may bind, accept on and dial
     /// any local port.

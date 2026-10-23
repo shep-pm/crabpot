@@ -1,0 +1,10 @@
+{
+  "files": {},
+  "settings": {
+    "network": {"allowedDomains": ["localtest.me"], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "connect", "host": "localtest.me", "port": 443}
+  ]
+}

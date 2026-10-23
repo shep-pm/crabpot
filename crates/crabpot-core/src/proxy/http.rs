@@ -15,55 +15,19 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, copy, copy_bidirectional, join, sink};
-use tokio::net::{TcpListener, TcpStream, lookup_host};
-use tokio::time::{sleep, timeout};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional, join};
+use tokio::net::TcpStream;
 
-use super::filter::{Denial, Filter};
-use super::token::Token;
+use super::filter::Denial;
+use super::shared::{DialError, Shared, dial, drain};
 
 /// A request head longer than this is refused with 431, as Node's default.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 const MAX_HEADERS: usize = 100;
 
-/// How long a dial may take in all, and how long it may spend on one address.
-const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// How long a refused client may go on sending before the connection is dropped.
-const LINGER: Duration = Duration::from_secs(1);
-
-/// What every connection is judged by.
-#[derive(Debug)]
-pub(super) struct Shared {
-    filter: Filter,
-    token: Token,
-}
-
-impl Shared {
-    pub(super) fn new(filter: Filter, token: Token) -> Self {
-        Self { filter, token }
-    }
-}
-
-/// Answers connections to `listener` until the runtime it runs on is dropped.
-pub(super) async fn serve(listener: TcpListener, shared: Arc<Shared>) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                tokio::spawn(handle(stream, Arc::clone(&shared)));
-            }
-            // Out of descriptors, or a peer that reset before it was accepted:
-            // wait a moment and take the next one.
-            Err(_) => sleep(Duration::from_millis(10)).await,
-        }
-    }
-}
-
 /// One connection. A client that goes away mid-exchange is nobody's failure.
-async fn handle(mut client: TcpStream, shared: Arc<Shared>) {
+pub(super) async fn handle(mut client: TcpStream, shared: Arc<Shared>) {
     let _ = exchange(&mut client, &shared).await;
 }
 
@@ -141,7 +105,7 @@ async fn read_head(client: &mut TcpStream) -> io::Result<Read> {
 async fn end(client: &mut TcpStream, response: &str) -> io::Result<()> {
     client.write_all(response.as_bytes()).await?;
     client.shutdown().await?;
-    let _ = timeout(LINGER, copy(client, &mut sink())).await;
+    drain(client).await;
     Ok(())
 }
 
@@ -153,18 +117,44 @@ const AUTH_REQUIRED: &str = "HTTP/1.1 407 Proxy Authentication Required\r\n\
      Content-Length: 0\r\n\
      Connection: close\r\n\r\n";
 
-/// The 403 for a refused host. The reason is the status line's phrase for a
-/// tunnel, where upstream puts it, and the body says the same for either.
-fn denied(phrase: &str) -> String {
-    const BODY: &str = "Connection blocked by network allowlist";
+/// A 403 that marks itself with `tag` in `X-Proxy-Error`.
+fn forbidden(phrase: &str, tag: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 403 {phrase}\r\n\
          Content-Type: text/plain\r\n\
-         X-Proxy-Error: blocked-by-allowlist\r\n\
+         X-Proxy-Error: {tag}\r\n\
          Content-Length: {}\r\n\
-         Connection: close\r\n\r\n{BODY}",
-        BODY.len()
+         Connection: close\r\n\r\n{body}",
+        body.len()
     )
+}
+
+/// The 403 for a refused host. The reason is the status line's phrase for a
+/// tunnel, where upstream puts it, and the body says the same for either.
+fn denied(phrase: &str) -> String {
+    forbidden(
+        phrase,
+        "blocked-by-allowlist",
+        "Connection blocked by network allowlist",
+    )
+}
+
+/// What a failed dial answers with. A name that resolved only to addresses the
+/// guard refuses gets a 403 whose body names the host and the class of address.
+/// A tunnel's status line carries the class too, and a plain request's says
+/// "Forbidden".
+fn undialed(error: &DialError, tunnel: bool) -> String {
+    match error {
+        DialError::Refused(refusal) => {
+            let phrase = if tunnel {
+                refusal.reason()
+            } else {
+                "Forbidden".to_owned()
+            };
+            forbidden(&phrase, "blocked-by-sandbox-runtime", &refusal.message())
+        }
+        DialError::Failed(_) => BAD_GATEWAY.to_owned(),
+    }
 }
 
 /// A `CONNECT`: the tunnel to `host:port` if the filter allows it.
@@ -184,8 +174,9 @@ async fn tunnel(
         Ok(host) => host,
         Err(denial) => return end(client, &denied(denial.reason())).await,
     };
-    let Ok(mut upstream) = dial(&host, port).await else {
-        return end(client, BAD_GATEWAY).await;
+    let mut upstream = match dial(&shared.guard, &host, port).await {
+        Ok(upstream) => upstream,
+        Err(error) => return end(client, &undialed(&error, true)).await,
     };
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -225,8 +216,9 @@ async fn forward(
         Ok(length) => length,
         Err(refusal) => return end(client, refusal).await,
     };
-    let Ok(mut upstream) = dial(&host, target.port).await else {
-        return end(client, BAD_GATEWAY).await;
+    let mut upstream = match dial(&shared.guard, &host, target.port).await {
+        Ok(upstream) => upstream,
+        Err(error) => return end(client, &undialed(&error, false)).await,
     };
     let mut request = format!("{} {} HTTP/1.1\r\n", head.method, target.path).into_bytes();
     for (name, value) in forwarded_headers(head) {
@@ -241,7 +233,7 @@ async fn forward(
     request.extend_from_slice(&early[..in_head_packet]);
     let body_left = body - in_head_packet as u64;
     relay(client, &mut upstream, &request, body_left).await?;
-    let _ = timeout(LINGER, copy(client, &mut sink())).await;
+    drain(client).await;
     Ok(())
 }
 
@@ -431,24 +423,6 @@ impl<'a> Absolute<'a> {
         };
         (!host.is_empty()).then_some(Self { host, port, path })
     }
-}
-
-/// Connects to `host:port`, trying each address its name resolves to.
-async fn dial(host: &str, port: u16) -> io::Result<TcpStream> {
-    let attempts = async {
-        let mut last = io::Error::new(io::ErrorKind::NotFound, "the host has no address");
-        for address in lookup_host((host, port)).await? {
-            match timeout(ATTEMPT_TIMEOUT, TcpStream::connect(address)).await {
-                Ok(Ok(stream)) => return Ok(stream),
-                Ok(Err(error)) => last = error,
-                Err(_) => last = io::ErrorKind::TimedOut.into(),
-            }
-        }
-        Err(last)
-    };
-    timeout(DIAL_TIMEOUT, attempts)
-        .await
-        .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
 }
 
 #[cfg(test)]

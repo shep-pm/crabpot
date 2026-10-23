@@ -1,55 +1,10 @@
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::thread;
-use std::time::Duration;
+use std::net::{Ipv4Addr, TcpStream};
 
+use super::super::testing::{origin, proxy_allowing, proxy_refusing_what_localhost_resolves_to};
 use super::super::token::base64_encode;
 use super::super::{Proxy, username_for};
 use super::{Absolute, parse_connect_target};
-use crate::domain::DomainEntry;
-
-fn proxy_allowing(entries: &[&str]) -> Proxy {
-    let entries: Vec<DomainEntry> = entries
-        .iter()
-        .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
-        .collect();
-    Proxy::start(&entries, &[], false).unwrap()
-}
-
-/// A server on a loopback port that answers its first client with `reply`,
-/// or echoes it when there is none, and hands back what it read. With a
-/// reply it goes on reading for a moment after it has answered.
-fn origin(reply: Option<&'static str>) -> (u16, thread::JoinHandle<Vec<u8>>) {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let seen = thread::spawn(move || {
-        let (mut client, _) = listener.accept().unwrap();
-        let mut seen = Vec::new();
-        let mut buf = [0u8; 1024];
-        loop {
-            let n = client.read(&mut buf).unwrap();
-            if n == 0 {
-                return seen;
-            }
-            seen.extend_from_slice(&buf[..n]);
-            match reply {
-                None => client.write_all(&buf[..n]).unwrap(),
-                Some(reply) if seen.windows(4).any(|w| w == b"\r\n\r\n") => {
-                    client.write_all(reply.as_bytes()).unwrap();
-                    client
-                        .set_read_timeout(Some(Duration::from_millis(300)))
-                        .unwrap();
-                    while let Ok(n @ 1..) = client.read(&mut buf) {
-                        seen.extend_from_slice(&buf[..n]);
-                    }
-                    return seen;
-                }
-                Some(_) => {}
-            }
-        }
-    });
-    (port, seen)
-}
 
 fn credential(proxy: &Proxy) -> String {
     let user = username_for("test");
@@ -303,4 +258,45 @@ fn dropping_the_proxy_does_not_wait_for_a_tunnel() {
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest).unwrap();
     assert!(rest.is_empty());
+}
+
+const REFUSED: &str = "Connection to localhost blocked: resolved to a deny-listed address";
+
+#[test]
+fn a_tunnel_to_a_name_that_resolves_to_a_refused_address_gets_403_with_the_class() {
+    let proxy = proxy_refusing_what_localhost_resolves_to();
+    let (port, seen) = origin(None);
+    let mut stream = connect(&proxy, &format!("localhost:{port}"), &credential(&proxy));
+
+    let head = head(&mut stream);
+    assert!(
+        head.starts_with("HTTP/1.1 403 resolved to a deny-listed address\r\n"),
+        "{head}"
+    );
+    assert!(
+        head.contains("X-Proxy-Error: blocked-by-sandbox-runtime\r\n"),
+        "{head}"
+    );
+    let mut body = String::new();
+    stream.read_to_string(&mut body).unwrap();
+    assert_eq!(body, REFUSED);
+    // Nothing reached the origin: it is still waiting for its one client.
+    assert!(!seen.is_finished());
+}
+
+#[test]
+fn a_request_to_a_name_that_resolves_to_a_refused_address_gets_403() {
+    let proxy = proxy_refusing_what_localhost_resolves_to();
+    let (port, _) = origin(None);
+    let request = format!(
+        "GET http://localhost:{port}/ HTTP/1.1\r\nHost: localhost\r\n{}\r\n",
+        credential(&proxy)
+    );
+    let mut stream = client(&proxy, &request);
+
+    let head = head(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{head}");
+    let mut body = String::new();
+    stream.read_to_string(&mut body).unwrap();
+    assert_eq!(body, REFUSED);
 }

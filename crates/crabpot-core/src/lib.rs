@@ -8,6 +8,7 @@ mod address;
 pub mod config;
 mod domain;
 mod glob;
+mod home_write_dirs;
 mod path;
 mod path_entries;
 mod resolved_path;

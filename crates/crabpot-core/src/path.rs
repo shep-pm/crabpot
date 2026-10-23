@@ -14,7 +14,8 @@ use core::fmt;
 use std::env;
 
 pub(crate) use lexical::{
-    collapse_interior_spellings, dirname, is_absolute, is_at_or_under, is_strictly_under, resolve,
+    collapse_interior_spellings, dirname, is_absolute, is_at_or_under, is_strictly_under,
+    normalize, resolve,
 };
 pub(crate) use real_path::{is_absence_error, real_path_of};
 
@@ -61,7 +62,7 @@ impl PathBase {
         Self { home, cwd }
     }
 
-    fn home(&self) -> Result<&str, PathError> {
+    pub(crate) fn home(&self) -> Result<&str, PathError> {
         self.home.as_deref().ok_or(PathError::NoHomeDirectory)
     }
 

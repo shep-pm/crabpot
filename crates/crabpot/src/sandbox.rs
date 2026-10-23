@@ -116,6 +116,8 @@ impl Sandbox {
                     self.proxy.socks_port(),
                     &username,
                     token,
+                    // The HTTP proxy is always there, so ssh goes through it.
+                    true,
                 ))
             {
                 wrapped.env(name, value);

@@ -207,15 +207,34 @@ pub fn deny_glob_regex(pattern: &str) -> String {
 /// JavaScript engine reads it: by UTF-16 code unit, with a `.` that stops at a
 /// line terminator.
 pub fn deny_glob_matches(pattern: &str, path: &str) -> bool {
+    matches_glob(pattern, path, Tail::Deny)
+}
+
+/// Whether [`glob_to_regex`]'s expression matches `path`, read as
+/// [`deny_glob_matches`] reads its own.
+pub fn glob_matches(pattern: &str, path: &str) -> bool {
+    matches_glob(pattern, path, Tail::None)
+}
+
+/// What a regular expression allows after the last token of its pattern.
+#[derive(Clone, Copy)]
+enum Tail {
+    /// Nothing: the expression of [`glob_to_regex`].
+    None,
+    /// An optional `/...`: the expression of [`deny_glob_regex`].
+    Deny,
+}
+
+fn matches_glob(pattern: &str, path: &str, tail: Tail) -> bool {
     let path: Vec<u16> = path.encode_utf16().collect();
-    matches_deny(&parse_glob(pattern), &path)
+    matches(&parse_glob(pattern), &path, tail)
 }
 
 fn is_line_terminator(unit: u16) -> bool {
     matches!(unit, 0x0A | 0x0D | 0x2028 | 0x2029)
 }
 
-fn matches_deny(tokens: &[Token], text: &[u16]) -> bool {
+fn matches(tokens: &[Token], text: &[u16], tail: Tail) -> bool {
     let slash = u16::from(b'/');
     // The `.` of `.*` runs up to the first line terminator.
     let dot_reach = text
@@ -223,38 +242,39 @@ fn matches_deny(tokens: &[Token], text: &[u16]) -> bool {
         .position(|&unit| is_line_terminator(unit))
         .unwrap_or(text.len());
     let Some((token, rest)) = tokens.split_first() else {
-        // The optional `/...` tail of a deny.
         return text.is_empty()
-            || (text[0] == slash && !text[1..].iter().any(|&u| is_line_terminator(u)));
+            || (matches!(tail, Tail::Deny)
+                && text[0] == slash
+                && !text[1..].iter().any(|&u| is_line_terminator(u)));
     };
     match token {
         Token::Text(literal) => {
             let units: Vec<u16> = literal.encode_utf16().collect();
             text.strip_prefix(units.as_slice())
-                .is_some_and(|after| matches_deny(rest, after))
+                .is_some_and(|after| matches(rest, after, tail))
         }
         Token::Separator => text
             .split_first()
-            .is_some_and(|(&unit, after)| unit == slash && matches_deny(rest, after)),
+            .is_some_and(|(&unit, after)| unit == slash && matches(rest, after, tail)),
         Token::AnyChar => text
             .split_first()
-            .is_some_and(|(&unit, after)| unit != slash && matches_deny(rest, after)),
+            .is_some_and(|(&unit, after)| unit != slash && matches(rest, after, tail)),
         Token::Star => {
             let reach = text
                 .iter()
                 .position(|&unit| unit == slash)
                 .unwrap_or(text.len());
-            (0..=reach).any(|n| matches_deny(rest, &text[n..]))
+            (0..=reach).any(|n| matches(rest, &text[n..], tail))
         }
-        Token::Globstar => (0..=dot_reach).any(|n| matches_deny(rest, &text[n..])),
+        Token::Globstar => (0..=dot_reach).any(|n| matches(rest, &text[n..], tail)),
         Token::GlobstarSlash => {
-            matches_deny(rest, text)
+            matches(rest, text, tail)
                 || (0..=dot_reach)
-                    .any(|n| text.get(n) == Some(&slash) && matches_deny(rest, &text[n + 1..]))
+                    .any(|n| text.get(n) == Some(&slash) && matches(rest, &text[n + 1..], tail))
         }
         Token::Set(members) => text
             .split_first()
-            .is_some_and(|(&unit, after)| set_holds(members, unit) && matches_deny(rest, after)),
+            .is_some_and(|(&unit, after)| set_holds(members, unit) && matches(rest, after, tail)),
     }
 }
 
@@ -483,6 +503,35 @@ mod tests {
                 deny_glob_matches(pattern, path),
                 expected,
                 "deny_glob_matches({pattern:?}, {path:?})"
+            );
+        }
+    }
+
+    // Each row is a pattern, a path, and whether `new RegExp(globToRegex(pattern)).test(path)`
+    // said so in the same upstream build as the tables above.
+    const PLAIN_MATCHES: &[(&str, &str, bool)] = &[
+        ("/h/work/*", "/h/work/sub", true),
+        ("/h/work/*", "/h/work/sub/deep", false),
+        ("/h/work/*", "/h/work", false),
+        ("/h/work/**", "/h/work/sub/deep", true),
+        ("/h/work/**", "/h/work", false),
+        ("/h/**/proj", "/h/a/b/proj", true),
+        ("/h/**/proj", "/h/proj", true),
+        ("/h/**/proj", "/h/proj/src", false),
+        ("/h/[a-c]/x", "/h/b/x", true),
+        ("/h/[a-c]/x", "/h/d/x", false),
+        ("/h/a?", "/h/a\n", true),
+        ("/h/**", "/h/a\nb", false),
+        ("/h/*", "/h/a\nb", true),
+    ];
+
+    #[test]
+    fn glob_matches_says_what_the_regular_expression_says() {
+        for &(pattern, path, expected) in PLAIN_MATCHES {
+            assert_eq!(
+                glob_matches(pattern, path),
+                expected,
+                "glob_matches({pattern:?}, {path:?})"
             );
         }
     }

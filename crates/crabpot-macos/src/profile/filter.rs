@@ -4,11 +4,11 @@
 //! later rule over an earlier one, so every section that lists paths builds
 //! its filters here and orders them itself.
 
-use crabpot_core::PathError;
 use crabpot_core::paths::{
     ListKind, PathBase, PathReading, contains_glob_chars, escape_regex_literal, glob_to_regex,
     literal_readings, normalize_path_for_sandbox,
 };
+use crabpot_core::{PathError, ResolvedPath};
 
 use super::rule;
 
@@ -49,16 +49,12 @@ impl Entry {
         }
     }
 
-    /// The path, or the pattern, as this entry spells it.
-    pub(super) fn path(&self) -> &str {
+    /// This entry as the path the read sections reason about.
+    pub(super) fn resolved(&self) -> ResolvedPath {
         match self {
-            Self::Subpath(path) | Self::Pattern { path, .. } => path,
+            Self::Subpath(path) => ResolvedPath::named(path.as_str()),
+            Self::Pattern { path, anchor } => ResolvedPath::pattern(path.as_str(), anchor.clone()),
         }
-    }
-
-    /// Whether this names one file or directory rather than a pattern.
-    pub(super) fn is_pattern(&self) -> bool {
-        matches!(self, Self::Pattern { .. })
     }
 
     /// The SBPL filter that matches this entry.

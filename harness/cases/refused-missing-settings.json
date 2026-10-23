@@ -1,0 +1,7 @@
+{
+  "settings": null,
+  "refused": true,
+  "probes": [
+    {"kind": "write", "path": "$ROOT/marker"}
+  ]
+}

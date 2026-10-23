@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde_json::Value;
+
 use crate::case::{self, Case, Probe};
 use crate::probe;
 
@@ -21,6 +23,15 @@ pub trait Runner {
     ///
     /// An [`Error`] when the probe cannot be run or does not end with a code.
     fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error>;
+
+    /// Whether the wrapper refuses the settings at `settings`: it exits 1
+    /// without running `probe`.
+    ///
+    /// # Errors
+    ///
+    /// An [`Error`] when the wrapper cannot be run, or exits with a status
+    /// other than 1 without its probe reporting one.
+    fn refuses(&self, settings: &Path, probe: &Probe) -> Result<bool, Error>;
 }
 
 /// Why a case failed or could not be run.
@@ -56,6 +67,14 @@ pub enum Error {
         /// What crabpot gave.
         crabpot: u8,
     },
+    /// A runner did not refuse settings the case says are refused: the probe
+    /// ran, or left the marker it writes.
+    NotRefused {
+        /// The runner that ran it.
+        runner: &'static str,
+        /// The probe that ran.
+        probe: Probe,
+    },
     /// Upstream cannot be run, for want of Node or of `npm ci` in `harness/`.
     NoUpstream(String),
 }
@@ -87,6 +106,10 @@ impl core::fmt::Display for Error {
                     "{probe:?} exited {upstream} under upstream and {crabpot} under crabpot"
                 )
             }
+            Self::NotRefused { runner, probe } => write!(
+                f,
+                "{probe:?} ran under {runner}, which should have refused the settings first"
+            ),
             Self::NoUpstream(why) => write!(f, "upstream cannot run: {why}"),
         }
     }
@@ -101,6 +124,7 @@ impl core::error::Error for Error {
             | Self::Unreported { .. }
             | Self::Erred { .. }
             | Self::Differ { .. }
+            | Self::NotRefused { .. }
             | Self::NoUpstream(_) => None,
         }
     }
@@ -140,6 +164,40 @@ pub fn compare(
     Ok(())
 }
 
+/// Runs every probe of `case` under both runners, which must refuse the
+/// settings before any probe runs. A `write` probe is the marker: its file
+/// must not be there afterwards.
+///
+/// # Errors
+///
+/// [`Error::NotRefused`] for the first probe that runs under either runner,
+/// and whatever `restore` or a runner returns.
+pub fn compare_refused(
+    case: &Case,
+    settings: &Path,
+    restore: &dyn Fn() -> Result<(), Error>,
+    upstream: &dyn Runner,
+    crabpot: &dyn Runner,
+) -> Result<(), Error> {
+    for probe in &case.probes {
+        for runner in [upstream, crabpot] {
+            restore()?;
+            if !runner.refuses(settings, probe)? || written(probe) {
+                return Err(Error::NotRefused {
+                    runner: runner.name(),
+                    probe: probe.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether the file a `write` probe creates is there.
+fn written(probe: &Probe) -> bool {
+    matches!(probe, Probe::Write(marker) if Path::new(marker).exists())
+}
+
 fn code(runner: &dyn Runner, settings: &Path, probe: &Probe) -> Result<u8, Error> {
     match runner.run(settings, probe)? {
         probe::ERROR => Err(Error::Erred {
@@ -175,9 +233,17 @@ pub fn run_case(
             }
             fs::write(path, contents).map_err(Error::Io)?;
         }
-        fs::write(&settings, case.settings.to_string()).map_err(Error::Io)
+        match &case.settings {
+            Value::Null => Ok(()),
+            Value::String(text) => fs::write(&settings, text).map_err(Error::Io),
+            other => fs::write(&settings, other.to_string()).map_err(Error::Io),
+        }
     };
-    compare(&case, &settings, &restore, upstream, crabpot)
+    if case.refused {
+        compare_refused(&case, &settings, &restore, upstream, crabpot)
+    } else {
+        compare(&case, &settings, &restore, upstream, crabpot)
+    }
 }
 
 /// A fresh folder, its path as `pwd -P` prints it, removed on drop.
@@ -251,6 +317,16 @@ impl Runner for Upstream {
     }
 
     fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error> {
+        exit_code(self.command(settings, probe), self.name())
+    }
+
+    fn refuses(&self, settings: &Path, probe: &Probe) -> Result<bool, Error> {
+        refusal(self.command(settings, probe), self.name())
+    }
+}
+
+impl Upstream {
+    fn command(&self, settings: &Path, probe: &Probe) -> Command {
         let mut command = Command::new("node");
         command
             .arg(&self.cli)
@@ -259,7 +335,7 @@ impl Runner for Upstream {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args());
-        exit_code(command, self.name())
+        command
     }
 }
 
@@ -285,6 +361,16 @@ impl Runner for Crabpot {
     }
 
     fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error> {
+        exit_code(self.command(settings, probe), self.name())
+    }
+
+    fn refuses(&self, settings: &Path, probe: &Probe) -> Result<bool, Error> {
+        refusal(self.command(settings, probe), self.name())
+    }
+}
+
+impl Crabpot {
+    fn command(&self, settings: &Path, probe: &Probe) -> Command {
         let mut command = Command::new(&self.probe);
         command
             .arg("--crabpot")
@@ -293,14 +379,20 @@ impl Runner for Crabpot {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args());
-        exit_code(command, self.name())
+        command
     }
 }
 
-/// Runs the wrapper to its end and returns the code its probe reported, which
-/// must be the wrapper's exit status. Its stderr is inherited, so a failing run
+/// What a wrapper did: the status it exited with, and the code its probe
+/// reported, which is there only if the probe ran.
+struct Wrapped {
+    status: i32,
+    reported: Option<u8>,
+}
+
+/// Runs the wrapper to its end. Its stderr is inherited, so a failing run
 /// leaves its diagnostics in the log; it is never compared.
-fn exit_code(mut command: Command, runner: &'static str) -> Result<u8, Error> {
+fn wrapped(mut command: Command, runner: &'static str) -> Result<Wrapped, Error> {
     let output = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -312,9 +404,28 @@ fn exit_code(mut command: Command, runner: &'static str) -> Result<u8, Error> {
         .lines()
         .rev()
         .find_map(|line| line.strip_prefix(probe::REPORT)?.parse::<u8>().ok());
+    Ok(Wrapped { status, reported })
+}
+
+/// Runs the wrapper to its end and returns the code its probe reported, which
+/// must be the wrapper's exit status.
+fn exit_code(command: Command, runner: &'static str) -> Result<u8, Error> {
+    let Wrapped { status, reported } = wrapped(command, runner)?;
     match reported {
         Some(code) if i32::from(code) == status => Ok(code),
         _ => Err(Error::Unreported { runner, status }),
+    }
+}
+
+/// Runs the wrapper to its end and says whether it refused: it exited 1 and
+/// its probe reported nothing, so the probe never ran.
+fn refusal(command: Command, runner: &'static str) -> Result<bool, Error> {
+    match wrapped(command, runner)? {
+        Wrapped {
+            reported: Some(_), ..
+        } => Ok(false),
+        Wrapped { status: 1, .. } => Ok(true),
+        Wrapped { status, .. } => Err(Error::Unreported { runner, status }),
     }
 }
 
@@ -335,12 +446,17 @@ mod tests {
         fn run(&self, _settings: &Path, probe: &Probe) -> Result<u8, Error> {
             Ok((self.1)(probe))
         }
+
+        fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+            Ok(false)
+        }
     }
 
     fn case() -> Case {
         Case {
             files: Vec::new(),
             settings: json!({}),
+            refused: false,
             probes: vec![Probe::Read("/r/in".to_owned()), Probe::Bind],
         }
     }
@@ -413,6 +529,10 @@ mod tests {
             assert!(self.1.replace(false), "{} ran on a spoiled fixture", self.0);
             Ok(probe::ALLOWED)
         }
+
+        fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+            unreachable!("a compared case is not a refused one")
+        }
     }
 
     #[test]
@@ -463,6 +583,113 @@ mod tests {
             Err(Error::Unreported {
                 runner: "upstream",
                 status: 71
+            })
+        ));
+    }
+
+    #[test]
+    fn a_wrapper_that_exits_1_without_its_probe_refuses() {
+        assert!(refusal(sh("echo 'crabpot: bad settings' >&2; exit 1"), "crabpot").unwrap());
+    }
+
+    #[test]
+    fn a_wrapper_whose_probe_ran_did_not_refuse() {
+        assert!(!refusal(sh("echo 'probe exited 0'; exit 0"), "upstream").unwrap());
+        assert!(!refusal(sh("echo 'probe exited 1'; exit 1"), "upstream").unwrap());
+    }
+
+    #[test]
+    fn a_wrapper_that_fails_in_another_way_is_not_a_refusal() {
+        assert!(matches!(
+            refusal(sh("exit 71"), "upstream"),
+            Err(Error::Unreported {
+                runner: "upstream",
+                status: 71
+            })
+        ));
+    }
+
+    /// Refuses, or says it ran, as built.
+    struct Refusing(&'static str, bool);
+
+    impl Runner for Refusing {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+
+        fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+            unreachable!("a refused case is not run")
+        }
+
+        fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+            Ok(self.1)
+        }
+    }
+
+    fn refused_case(marker: &Path) -> Case {
+        Case {
+            probes: vec![Probe::Write(marker.display().to_string())],
+            refused: true,
+            ..case()
+        }
+    }
+
+    fn compare_refused_with(
+        case: &Case,
+        upstream: &dyn Runner,
+        crabpot: &dyn Runner,
+    ) -> Result<(), Error> {
+        compare_refused(
+            case,
+            Path::new("/r/settings.json"),
+            &|| Ok(()),
+            upstream,
+            crabpot,
+        )
+    }
+
+    #[test]
+    fn a_case_passes_when_both_runners_refuse_and_leave_no_marker() {
+        let case = refused_case(Path::new("/r/never-written"));
+        compare_refused_with(
+            &case,
+            &Refusing("upstream", true),
+            &Refusing("crabpot", true),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_runner_that_does_not_refuse_fails_the_case() {
+        let case = refused_case(Path::new("/r/never-written"));
+        let outcome = compare_refused_with(
+            &case,
+            &Refusing("upstream", true),
+            &Refusing("crabpot", false),
+        );
+        assert!(matches!(
+            outcome,
+            Err(Error::NotRefused {
+                runner: "crabpot",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_marker_left_behind_fails_the_case_even_when_both_refuse() {
+        let marker = std::env::current_exe().unwrap();
+        let case = refused_case(&marker);
+        let outcome = compare_refused_with(
+            &case,
+            &Refusing("upstream", true),
+            &Refusing("crabpot", true),
+        );
+        assert!(matches!(
+            outcome,
+            Err(Error::NotRefused {
+                runner: "upstream",
+                ..
             })
         ));
     }

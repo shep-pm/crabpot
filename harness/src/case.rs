@@ -20,10 +20,11 @@ pub enum Probe {
     },
     /// Bind a loopback socket.
     Bind,
-    /// Bind a Unix socket at the path.
+    /// Bind a Unix socket at the path. A relative one names a place under the
+    /// case root, which is where each wrapper runs.
     BindUnix(String),
-    /// Dial the Unix socket at the path. The harness serves it, so a case
-    /// must not hold a file at that path itself.
+    /// Dial the Unix socket at the path, named as `BindUnix` names it. The
+    /// harness serves it, so a case must not hold a file at that path itself.
     ConnectUnix(String),
 }
 
@@ -219,6 +220,28 @@ mod tests {
                 Probe::Bind,
                 Probe::BindUnix("/r/socks/a.sock".to_owned()),
                 Probe::ConnectUnix("/r/socks/live.sock".to_owned()),
+            ]
+        );
+    }
+
+    /// A socket probe may name its socket against the case root instead, which
+    /// is where each wrapper runs and where the harness serves it.
+    #[test]
+    fn a_socket_probe_named_against_the_case_root_stays_relative() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "probes": [
+                {"kind": "bind-unix", "path": "socks/a.sock"},
+                {"kind": "connect-unix", "path": "socks/live.sock"}
+            ]
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+        assert_eq!(
+            case.probes,
+            [
+                Probe::BindUnix("socks/a.sock".to_owned()),
+                Probe::ConnectUnix("socks/live.sock".to_owned()),
             ]
         );
     }

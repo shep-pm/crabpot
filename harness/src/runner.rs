@@ -153,12 +153,12 @@ pub fn compare(
 ) -> Result<(), Error> {
     for probe in &case.probes {
         restore()?;
-        let served = serve(probe)?;
+        let served = serve(probe, settings)?;
         let upstream = code(upstream, settings, probe)?;
         drop(served);
 
         restore()?;
-        let served = serve(probe)?;
+        let served = serve(probe, settings)?;
         let crabpot = code(crabpot, settings, probe)?;
         drop(served);
 
@@ -176,14 +176,29 @@ pub fn compare(
 /// The socket a `connect-unix` probe dials, which no probe of the case itself
 /// can hold open: each probe is its own sandboxed process, and a listener dies
 /// with it. None is served for any other probe.
-fn serve(probe: &Probe) -> Result<Option<UnixListener>, Error> {
+///
+/// It is served where the probe runs, which is the case root for a path named
+/// against it, and not where the harness happens to be.
+fn serve(probe: &Probe, settings: &Path) -> Result<Option<UnixListener>, Error> {
     let Probe::ConnectUnix(path) = probe else {
         return Ok(None);
     };
+    let path = socket_path(settings, path);
     // A listener that has gone leaves its file behind, and a bind onto one that
     // is there answers `EADDRINUSE`.
-    let _ = fs::remove_file(path);
-    UnixListener::bind(path).map(Some).map_err(Error::Io)
+    let _ = fs::remove_file(&path);
+    UnixListener::bind(&path).map(Some).map_err(Error::Io)
+}
+
+/// Where a probe's socket is, with a path named against the case root read
+/// from that root, as each wrapper's working directory reads it.
+fn socket_path(settings: &Path, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        case_root(settings).join(path)
+    }
 }
 
 /// Runs every probe of `case` under both runners, which must refuse the
@@ -273,7 +288,7 @@ struct Root(String);
 
 impl Root {
     fn new(name: &str) -> std::io::Result<Self> {
-        let dir = std::env::temp_dir().join(format!("crabpot-case-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(folder(name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir)?;
         let real = dir.canonicalize()?;
@@ -297,6 +312,21 @@ impl Drop for Root {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// The case folder's name: `c`, this process's id, `name`'s first eight bytes,
+/// and eight hex digits of a hash of all of it.
+///
+/// The whole name does not fit. A Unix socket under the folder is a path the
+/// kernel caps at `sun_path`, 104 bytes on macOS, and a Mac's per-user TMPDIR
+/// is about 57 of them before the folder is named. The hash keeps two case
+/// names that share a start apart, and the id keeps two runs apart.
+fn folder(name: &str) -> String {
+    let head: String = name.chars().take(8).collect();
+    let hash = name.bytes().fold(0x811c_9dc5u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_01a3)
+    });
+    format!("c{}-{head}{hash:08x}", std::process::id())
 }
 
 /// Upstream's `srt`, from the npm package pinned in `harness/package.json`.
@@ -539,7 +569,9 @@ mod tests {
         outcome.unwrap();
     }
 
-    /// Runs a probe by dialing the socket at a `connect-unix` probe's path.
+    /// Runs a probe by dialing the socket at a `connect-unix` probe's path,
+    /// resolving a relative one against the case root as a wrapper's working
+    /// directory does.
     struct Dialer;
 
     impl Runner for Dialer {
@@ -547,10 +579,11 @@ mod tests {
             "dialer"
         }
 
-        fn run(&self, _settings: &Path, probe: &Probe) -> Result<u8, Error> {
+        fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error> {
             let Probe::ConnectUnix(path) = probe else {
                 return Ok(probe::ALLOWED);
             };
+            let path = socket_path(settings, path);
             match UnixStream::connect(path) {
                 Ok(_) => Ok(probe::ALLOWED),
                 Err(_) => Ok(probe::REFUSED),
@@ -564,26 +597,39 @@ mod tests {
 
     #[test]
     fn a_connect_unix_probe_finds_a_socket_served_for_it() {
-        let dir = std::env::temp_dir().join(format!("crabpot-serve-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let root = std::env::temp_dir().join(format!("crabpot-serve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
         let case = Case {
-            probes: vec![Probe::ConnectUnix(
-                dir.join("live.sock").display().to_string(),
-            )],
+            probes: vec![
+                // A case names its socket against the case root, which is where
+                // each wrapper runs, and the harness serves it there too.
+                Probe::ConnectUnix("live.sock".to_owned()),
+                Probe::ConnectUnix(root.join("named.sock").display().to_string()),
+            ],
             ..case()
         };
 
         let outcome = compare(
             &case,
-            Path::new("/r/settings.json"),
+            &root.join("settings.json"),
             &|| Ok(()),
             &Dialer,
             &StandIn("always", |_| probe::ALLOWED),
         );
 
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&root);
         outcome.unwrap();
+    }
+
+    #[test]
+    fn a_case_folder_leaves_room_for_a_socket_under_it() {
+        let root = Root::new("unix_socket_listed_folder").unwrap();
+        let socket = Path::new(&root.0).join("socks/live.sock");
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        // macOS caps a Unix socket path at `sun_path`, 104 bytes, and a bind
+        // onto a longer one fails before the sandbox is asked anything.
+        UnixListener::bind(&socket).unwrap();
     }
 
     #[test]

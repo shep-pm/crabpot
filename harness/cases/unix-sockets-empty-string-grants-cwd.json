@@ -7,7 +7,7 @@
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
   },
   "probes": [
-    {"kind": "bind-unix", "path": "cwd.sock"},
-    {"kind": "bind-unix", "path": "socks/a.sock"}
+    {"kind": "bind-unix", "path": "$ROOT/cwd.sock"},
+    {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"}
   ]
 }

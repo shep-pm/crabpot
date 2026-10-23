@@ -4,42 +4,37 @@
 //! it, which becomes a prefix rule. A lone `*` is the prefix rule of the empty
 //! prefix, which is every service.
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
-pub(super) fn rules(config: &Config) -> String {
+use super::rule;
+
+pub(super) fn rules(config: &Config) -> Result<String, PathError> {
     let names = config
         .network
         .allow_mach_lookup
         .as_deref()
         .unwrap_or_default();
     if names.is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
 
     let mut rules = String::from("\n; Mach lookups\n");
     for name in names {
-        let (rule, service) = match name.strip_suffix('*') {
+        let (filter, service) = match name.strip_suffix('*') {
             Some(prefix) => ("global-name-prefix", prefix),
             None => ("global-name", name.as_str()),
         };
         rules.push_str(&format!(
-            "(allow mach-lookup ({rule} {}))\n",
-            quoted(service)
+            "(allow mach-lookup ({filter} {}))\n",
+            rule::string(service)
         ));
     }
-    rules
-}
-
-/// `text` as a seatbelt string, quoted the way upstream's `escapePath` quotes
-/// a name: as a JSON string.
-fn quoted(text: &str) -> String {
-    serde_json::Value::from(text).to_string()
+    Ok(rules)
 }
 
 #[cfg(test)]
 mod tests {
-    use crabpot_core::config::Config;
-
     use super::*;
 
     /// A config whose `allowMachLookup` is `names`.
@@ -53,7 +48,7 @@ mod tests {
     #[test]
     fn a_trailing_star_becomes_a_prefix_rule() {
         assert_eq!(
-            rules(&allowing(&["com.example.*", "com.apple.foo", "*"])),
+            rules(&allowing(&["com.example.*", "com.apple.foo", "*"])).unwrap(),
             "\n; Mach lookups\n\
              (allow mach-lookup (global-name-prefix \"com.example.\"))\n\
              (allow mach-lookup (global-name \"com.apple.foo\"))\n\
@@ -64,7 +59,7 @@ mod tests {
     #[test]
     fn a_name_is_quoted_as_a_json_string() {
         assert_eq!(
-            rules(&allowing(&[r#"com.example."weird""#, r"com.example\back"])),
+            rules(&allowing(&[r#"com.example."weird""#, r"com.example\back"])).unwrap(),
             "\n; Mach lookups\n\
              (allow mach-lookup (global-name \"com.example.\\\"weird\\\"\"))\n\
              (allow mach-lookup (global-name \"com.example\\\\back\"))\n"
@@ -73,7 +68,7 @@ mod tests {
 
     #[test]
     fn a_config_that_asks_for_no_lookup_adds_no_rule() {
-        assert_eq!(rules(&Config::default()), "");
-        assert_eq!(rules(&allowing(&[])), "");
+        assert_eq!(rules(&Config::default()).unwrap(), "");
+        assert_eq!(rules(&allowing(&[])).unwrap(), "");
     }
 }

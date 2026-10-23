@@ -4,27 +4,35 @@
 //! earlier one. A section is a file in this folder with a `rules` function,
 //! and it is registered by naming it in the `sections!` call.
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
+
+mod rule;
 
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {
     ($($name:ident),* $(,)?) => {
         $(mod $name;)*
 
-        const SECTIONS: &[fn(&Config) -> String] = &[$($name::rules),*];
+        const SECTIONS: &[fn(&Config) -> Result<String, PathError>] = &[$($name::rules),*];
     };
 }
 
-sections!(base, mach_lookup, read, write);
+sections!(base, mach_lookup, read, deny_read, write);
 
 /// Renders the profile `sandbox-exec -p` takes.
-#[must_use]
-pub fn render(config: &Config) -> String {
+///
+/// # Errors
+///
+/// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
+/// or is relative and there is no working directory. A rule written for it
+/// would be dropped, so there is no profile.
+pub fn render(config: &Config) -> Result<String, PathError> {
     let mut profile = String::from("(version 1)\n");
     for rules in SECTIONS {
-        profile.push_str(&rules(config));
+        profile.push_str(&rules(config)?);
     }
-    profile
+    Ok(profile)
 }
 
 #[cfg(test)]
@@ -33,7 +41,7 @@ mod tests {
 
     #[test]
     fn the_default_profile_denies_network_and_write() {
-        let profile = render(&Config::default());
+        let profile = render(&Config::default()).unwrap();
 
         assert!(profile.starts_with("(version 1)\n(deny default"));
         assert!(profile.contains("(allow file-read*)"));

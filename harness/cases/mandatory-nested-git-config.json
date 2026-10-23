@@ -1,7 +1,8 @@
 {
   "files": {
     "$ROOT/sub/repo/.git/config": "x",
-    "$ROOT/sub/repo/.git/HEAD": "x"
+    "$ROOT/sub/repo/.git/HEAD": "x",
+    "$ROOT/sub/repo/.git/hooks/seed": "x"
   },
   "settings": {
     "network": {"allowedDomains": [], "deniedDomains": []},

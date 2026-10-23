@@ -189,6 +189,7 @@ impl Probe {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn a_case_file_parses_and_expands_root() {
@@ -269,5 +270,50 @@ mod tests {
             parsed += 1;
         }
         assert!(parsed >= 4, "only {parsed} case files found");
+    }
+
+    #[test]
+    fn every_write_and_rename_in_a_case_file_has_a_folder_to_land_in() {
+        let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/cases");
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let case = Case::parse(&text, "/r").unwrap();
+            let mut folders = std::collections::HashSet::new();
+            let mut sources = std::collections::HashSet::new();
+            for (file, _) in &case.files {
+                sources.insert(file.clone());
+                for ancestor in file.ancestors().skip(1) {
+                    folders.insert(ancestor.to_owned());
+                    sources.insert(ancestor.to_owned());
+                }
+            }
+            // A probe cannot tell a missing folder from a refusal, so one
+            // that lands in a folder the case never made exits 2.
+            let lands = |target: &str| match Path::new(target).parent() {
+                Some(parent) => {
+                    !target.starts_with("/r/")
+                        || folders.contains(parent)
+                        || parent == Path::new("/r")
+                }
+                None => true,
+            };
+            for probe in &case.probes {
+                match probe {
+                    Probe::Write(target) => {
+                        assert!(lands(target), "{}: no folder for {target}", path.display())
+                    }
+                    Probe::Rename { from, to } => {
+                        assert!(
+                            !from.starts_with("/r/") || sources.contains(Path::new(from)),
+                            "{}: nothing to move at {from}",
+                            path.display()
+                        );
+                        assert!(lands(to), "{}: no folder for {to}", path.display());
+                    }
+                    Probe::Read(_) | Probe::Connect { .. } | Probe::Bind => {}
+                }
+            }
+        }
     }
 }

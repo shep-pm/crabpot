@@ -1,7 +1,9 @@
 {
   "files": {
     "$ROOT/.bashrc": "x",
-    "$ROOT/notes.txt": "x"
+    "$ROOT/notes.txt": "x",
+    "$ROOT/.vscode/seed": "x",
+    "$ROOT/.claude/commands/seed": "x"
   },
   "settings": {
     "network": {"allowedDomains": [], "deniedDomains": []},

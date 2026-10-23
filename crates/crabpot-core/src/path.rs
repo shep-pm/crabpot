@@ -12,6 +12,7 @@ mod tests;
 
 use core::fmt;
 use std::env;
+use std::ffi::OsString;
 
 pub(crate) use lexical::{collapse_interior_spellings, is_absolute, is_strictly_under, resolve};
 pub use lexical::{dirname, is_at_or_under};
@@ -46,10 +47,16 @@ impl core::error::Error for PathError {}
 
 impl PathBase {
     /// The base of this process: `HOME`, and the working directory. An empty
-    /// `HOME` is a home directory with no name, as it is to upstream.
+    /// `HOME` is a home directory with no name, as it is to upstream. On Windows
+    /// `USERPROFILE` stands in when `HOME` is not set.
     pub fn from_env() -> Self {
+        let userprofile = if cfg!(windows) {
+            env::var_os("USERPROFILE")
+        } else {
+            None
+        };
         Self::new(
-            env::var_os("HOME").and_then(|home| home.into_string().ok()),
+            home_from(env::var_os("HOME"), userprofile),
             env::current_dir()
                 .ok()
                 .and_then(|cwd| cwd.into_os_string().into_string().ok()),
@@ -73,6 +80,12 @@ impl PathBase {
     pub(crate) fn cwd(&self) -> Result<&str, PathError> {
         self.cwd.as_deref().ok_or(PathError::NoWorkingDirectory)
     }
+}
+
+/// The home directory as text: `home`, or `userprofile` when there is no `home`.
+fn home_from(home: Option<OsString>, userprofile: Option<OsString>) -> Option<String> {
+    home.or(userprofile)
+        .and_then(|home| home.into_string().ok())
 }
 
 /// Whether a path pattern holds a character a glob reads: `*`, `?`, `[` or `]`.
@@ -231,4 +244,25 @@ pub fn normalize_path_for_sandbox(
         normalized = resolved;
     }
     Ok(normalized)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_falls_back_to_userprofile_on_windows() {
+        let home = Some(OsString::from("C:/Users/home"));
+        let userprofile = Some(OsString::from("C:/Users/profile"));
+
+        assert_eq!(
+            home_from(None, userprofile.clone()).as_deref(),
+            Some("C:/Users/profile")
+        );
+        assert_eq!(
+            home_from(home, userprofile).as_deref(),
+            Some("C:/Users/home")
+        );
+        assert_eq!(home_from(None, None), None);
+    }
 }

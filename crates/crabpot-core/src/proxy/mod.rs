@@ -12,24 +12,26 @@ mod host;
 mod http;
 mod mitm;
 mod mux;
+mod range;
 mod shared;
 mod socks;
 #[cfg(test)]
 mod testing;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
 mod token;
 
 use core::fmt;
 use std::io;
-use std::net::{Ipv4Addr, TcpListener};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use tokio::runtime::Builder;
 use tokio::sync::oneshot;
 
+pub use range::{PortRange, RangeError};
 pub use token::{basic_for, username_for};
 
 use crate::address::AddressRange;
@@ -37,11 +39,12 @@ use crate::config::MitmProxy;
 use crate::domain::DomainEntry;
 use filter::Filter;
 use guard::Guard;
+use range::listen;
 use shared::{Shared, serve};
 use token::Token;
 
-/// A running HTTP proxy and SOCKS5 proxy, on the one loopback port and on a
-/// Unix socket.
+/// A running HTTP proxy and SOCKS5 proxy, on the one loopback port and, on Unix,
+/// on a Unix socket.
 ///
 /// They stop when it is dropped, the tunnels open through them end with it, and
 /// the Unix sockets they are served from go with it.
@@ -52,6 +55,7 @@ pub struct Proxy {
     thread: Option<JoinHandle<()>>,
     /// The mux's own Unix socket, which a sandbox that can reach no loopback
     /// port dials instead.
+    #[cfg(unix)]
     mux: mux::Front,
     /// Last, so it goes after the listeners that were served from it have.
     socket: mux::Socket,
@@ -83,25 +87,66 @@ impl Proxy {
         strict: bool,
         mitm: Option<&MitmProxy>,
     ) -> io::Result<Self> {
+        Self::launch(allowed, denied, listed, strict, mitm, None).map_err(io::Error::from)
+    }
+
+    /// Starts the proxies as [`Proxy::start`] does, with the loopback port
+    /// they answer on the first free one in `range`. On Windows the firewall
+    /// permits a sandbox to reach the ports of one range and no others, and the
+    /// HTTP backend takes a second port of it, so a sandbox takes two.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Full`] when no port of `range` is free, and
+    /// [`RangeError::Io`] with the [`io::Error`] of whatever else failed, as
+    /// [`Proxy::start`] reports it.
+    pub fn start_in_range(
+        allowed: &[DomainEntry],
+        denied: &[DomainEntry],
+        listed: &[AddressRange],
+        strict: bool,
+        mitm: Option<&MitmProxy>,
+        range: PortRange,
+    ) -> Result<Self, RangeError> {
+        Self::launch(allowed, denied, listed, strict, mitm, Some(range))
+    }
+
+    /// [`Proxy::start`] and [`Proxy::start_in_range`]: `range` is where the ports
+    /// are, and the OS chooses them without one.
+    fn launch(
+        allowed: &[DomainEntry],
+        denied: &[DomainEntry],
+        listed: &[AddressRange],
+        strict: bool,
+        mitm: Option<&MitmProxy>,
+        range: Option<PortRange>,
+    ) -> Result<Self, RangeError> {
         let token = Token::generate()?;
         // The backend is bound before either front end, so no connection is ever
         // dispatched to a backend that is not there.
-        let (backend, socket) = mux::Socket::bind()?;
-        let backend_path = socket.path().to_path_buf();
-        let mux_backend_path = PathBuf::clone(&backend_path);
+        let backend = mux::Backend::bind(range)?;
+        let dial = backend.dial();
+        let backend_dial = dial.clone();
+        #[cfg(unix)]
         let (mux_listener, mux) = mux::Front::bind()?;
-        let (front, port) = bind()?;
+        #[cfg(unix)]
+        let mux_dial = dial.clone();
+        let (front, port) = listen(range, dial.port().as_slice())?;
         let runtime = Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build()?;
-        let (tcp_front, http_backend, mux_front) = {
+        let (tcp_front, (http_backend, socket)) = {
             let _entered = runtime.enter();
             (
                 tokio::net::TcpListener::from_std(front)?,
-                tokio::net::UnixListener::from_std(backend)?,
-                tokio::net::UnixListener::from_std(mux_listener)?,
+                backend.into_tokio()?,
             )
+        };
+        #[cfg(unix)]
+        let mux_front = {
+            let _entered = runtime.enter();
+            tokio::net::UnixListener::from_std(mux_listener)?
         };
         let shared = Arc::new(Shared::new(
             Filter::new(allowed, denied, strict),
@@ -114,18 +159,19 @@ impl Proxy {
             tcp_front,
             Arc::clone(&shared),
             move |client, shared| {
-                let socket = PathBuf::clone(&backend_path);
-                async move { mux::dispatch(client, socket, shared).await }
+                let dial = backend_dial.clone();
+                async move { mux::dispatch(client, dial, shared).await }
             },
         ));
         // The same mux again, on the socket a sandbox that can reach no loopback
         // port has to dial (ADR-0014).
+        #[cfg(unix)]
         runtime.spawn(serve(
             mux_front,
             Arc::clone(&shared),
             move |client, shared| {
-                let socket = PathBuf::clone(&mux_backend_path);
-                async move { mux::dispatch(client, socket, shared).await }
+                let dial = mux_dial.clone();
+                async move { mux::dispatch(client, dial, shared).await }
             },
         ));
         let (stop, stopped) = oneshot::channel();
@@ -143,6 +189,7 @@ impl Proxy {
             token,
             stop: Some(stop),
             thread: Some(thread),
+            #[cfg(unix)]
             mux,
             socket,
         })
@@ -157,6 +204,7 @@ impl Proxy {
     /// The path of the Unix socket the full mux is served on, for a sandbox that
     /// can dial no loopback port: inside a network namespace, only a socket bound
     /// there reaches the proxy (ADR-0014).
+    #[cfg(unix)]
     #[must_use]
     pub fn mux_socket(&self) -> &Path {
         self.mux.path()
@@ -178,14 +226,6 @@ impl Proxy {
     }
 }
 
-/// A listener on a free loopback port, and the port.
-fn bind() -> io::Result<(TcpListener, u16)> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    listener.set_nonblocking(true)?;
-    let port = listener.local_addr()?.port();
-    Ok((listener, port))
-}
-
 impl Drop for Proxy {
     fn drop(&mut self) {
         drop(self.stop.take());
@@ -199,9 +239,11 @@ impl Drop for Proxy {
 
 impl fmt::Debug for Proxy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Proxy")
-            .field("port", &self.port)
-            .field("mux", &self.mux)
+        let mut proxy = f.debug_struct("Proxy");
+        proxy.field("port", &self.port);
+        #[cfg(unix)]
+        proxy.field("mux", &self.mux);
+        proxy
             .field("socket", &self.socket)
             .field("token", &self.token)
             .finish_non_exhaustive()

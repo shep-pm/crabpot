@@ -20,6 +20,9 @@ serde_path_to_error.workspace = true
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
 # Parses the head of a proxied request.
 httparse = { version = "1", default-features = false }
+# The OS's own random bytes, for the token and a socket's name, on every
+# platform.
+getrandom = { version = "0.4", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 # Lists this host's interface addresses, which std cannot, through a safe call.
@@ -27,6 +30,16 @@ nix = { version = "0.31", default-features = false, features = ["net"] }
 # The socket calls `unix_socket` makes, because neither std nor nix binds a
 # path longer than `sun_path`.
 libc = { version = "0.2", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+# `GetAdaptersAddresses`, which lists this host's interface addresses. Tokio
+# already pulls the crate into the lock.
+windows-sys = { version = "0.61", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
 
 [lints]
 workspace = true

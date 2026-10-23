@@ -28,8 +28,8 @@ pub use crate::path_entries::PathEntry;
 
 use self::keys::{
     allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
-    allowed_domains, denied_domains, denied_resolved_addresses, deny_read, deny_write, mitm_proxy,
-    strict_allowlist,
+    allowed_domains, denied_domains, denied_resolved_addresses, deny_read, deny_write,
+    enable_weaker_network_isolation, mitm_proxy, strict_allowlist,
 };
 use self::leaf::present;
 
@@ -44,8 +44,12 @@ pub struct Config {
     pub network: Network,
     /// What a command may read and write.
     pub filesystem: Filesystem,
-    /// `enableWeakerNetworkIsolation`, which is not read yet.
-    #[serde(default, deserialize_with = "present")]
+    /// `enableWeakerNetworkIsolation`: whether a command may look up
+    /// `com.apple.trustd.agent`.
+    #[serde(
+        default,
+        deserialize_with = "enable_weaker_network_isolation::deserialize"
+    )]
     pub enable_weaker_network_isolation: Option<bool>,
 }
 

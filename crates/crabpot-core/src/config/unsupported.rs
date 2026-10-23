@@ -14,13 +14,12 @@
 use serde_json::Value;
 
 use super::error::ConfigError;
-use super::keys::{deny_mach_lookup, enable_weaker_network_isolation, mitm_proxy};
+use super::keys::{deny_mach_lookup, mitm_proxy};
 
 /// Dotted paths, in the order they are checked.
 pub(super) const PATHS: &[&str] = &[
     // The kelpie keys, each refused until its slice builds it.
     deny_mach_lookup::PATH,
-    enable_weaker_network_isolation::PATH,
     mitm_proxy::PATH,
     // Upstream's other keys that act on macOS, with what each does.
     // Lets a command use every Unix socket.

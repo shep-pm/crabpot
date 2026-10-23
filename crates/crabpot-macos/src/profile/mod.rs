@@ -33,6 +33,7 @@ sections!(
     allow_write,
     deny_write,
     unix_sockets,
+    weaker_isolation,
     local_binding
 );
 

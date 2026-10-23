@@ -1,0 +1,17 @@
+{
+  "files": {
+    "$ROOT/.git/hooks/pre-commit": "x",
+    "$ROOT/.git/HEAD": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT"], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "write", "path": "$ROOT/.git/hooks/x"},
+    {"kind": "write", "path": "$ROOT/.git/hooks/pre-commit"},
+    {"kind": "write", "path": "$ROOT/.git/config"},
+    {"kind": "write", "path": "$ROOT/.git/HEAD"},
+    {"kind": "write", "path": "$ROOT/created"}
+  ]
+}

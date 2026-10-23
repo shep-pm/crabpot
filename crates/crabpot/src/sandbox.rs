@@ -9,6 +9,8 @@ use crabpot_core::PathError;
 use crabpot_core::config::Config;
 #[cfg(target_os = "macos")]
 use crabpot_core::proxy::{Proxy, username_for};
+#[cfg(target_os = "macos")]
+use crabpot_macos::env::Facts;
 
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
 /// with [`Sandbox::command`], and drop it when they have all ended, since the
@@ -17,6 +19,8 @@ use crabpot_core::proxy::{Proxy, username_for};
 pub struct Sandbox {
     #[cfg(target_os = "macos")]
     profile: String,
+    #[cfg(target_os = "macos")]
+    facts: Facts,
     #[cfg(target_os = "macos")]
     proxy: Proxy,
 }
@@ -38,6 +42,9 @@ impl Sandbox {
             Ok(Self {
                 profile: crabpot_macos::profile::render(config, Some(proxy.port()))
                     .map_err(StartError::UnresolvedPath)?,
+                // The proxy listens on `127.0.0.1`, so the child reaches
+                // loopback through it.
+                facts: Facts::from_process(true),
                 proxy,
             })
         }
@@ -52,8 +59,10 @@ impl Sandbox {
     /// its place.
     ///
     /// The wrapped command keeps `command`'s program, arguments, working
-    /// directory and environment changes, and the variables that point its
-    /// clients at the proxy are set over them. It does not keep its standard
+    /// directory and environment changes, and gains the sandbox's own
+    /// environment: a name the sandbox owns is set over the caller's, a name
+    /// the caller owns is left to it, and the variables that point its clients
+    /// at the proxy are set over them. It does not keep its standard
     /// streams, which a [`Command`] cannot be asked for, nor an
     /// [`env_clear`](Command::env_clear).
     ///
@@ -86,6 +95,9 @@ impl Sandbox {
                     Some(value) => wrapped.env(key, value),
                     None => wrapped.env_remove(key),
                 };
+            }
+            for (key, value) in crabpot_macos::env::vars(&self.facts.for_command(command)) {
+                wrapped.env(key, value);
             }
             let line = core::iter::once(command.get_program())
                 .chain(command.get_args())
@@ -207,6 +219,32 @@ mod tests {
         assert_eq!(
             Sandbox::start(&Config::default()).unwrap_err(),
             StartError::UnsupportedPlatform
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_carries_the_env() {
+        let sandbox = Sandbox::start(&Config::default()).unwrap();
+
+        let mut probe = Command::new("sh");
+        probe
+            .arg("-c")
+            .arg(r#"printf '%s\n' "$SANDBOX_RUNTIME" "$TMPDIR" "$CALLER" "$JAVA_TOOL_OPTIONS""#);
+        probe.env("CALLER", "kept");
+        probe.env("TMPDIR", "/caller/tmp");
+        probe.env("JAVA_TOOL_OPTIONS", "-Xmx2g");
+
+        let output = sandbox.command(&probe).unwrap().output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "1", "SANDBOX_RUNTIME");
+        assert_ne!(lines[1], "/caller/tmp", "the sandbox's TMPDIR wins");
+        assert_eq!(lines[2], "kept", "the caller's own variable survives");
+        assert_eq!(
+            lines[3], "-Xmx2g -Djava.net.preferIPv4Stack=true",
+            "the flag joins the caller's own value, since the proxy is on loopback"
         );
     }
 }

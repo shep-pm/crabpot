@@ -197,6 +197,24 @@ mod tests {
         );
     }
 
+    /// Upstream canonicalizes the request host and never a list entry: its
+    /// `splitDomainPatternPort` returns the entry's host as written for an
+    /// unbracketed entry with no port, and `filterNetworkRequest` calls
+    /// `canonicalizeHost` on the request alone. So a deny entry in a shorthand
+    /// IPv4 spelling covers nothing, and crabpot leaves it so.
+    #[test]
+    fn a_deny_entry_is_matched_as_written() {
+        let filter = filter_with(&["*.example.com", "127.0.0.1"], &["127.1", "0x7f.0.0.1"]);
+
+        assert_eq!(filter.check("127.0.0.1", 443).as_deref(), Ok("127.0.0.1"));
+        assert_eq!(filter.check("0x7f.1", 443).as_deref(), Ok("127.0.0.1"));
+        assert_eq!(
+            filter.check("127.1", 443).as_deref(),
+            Ok("127.0.0.1"),
+            "the request is canonicalized, and the entry is not"
+        );
+    }
+
     #[test]
     fn strict_and_not_strict_deny_an_unlisted_host_alike() {
         for strict in [true, false] {

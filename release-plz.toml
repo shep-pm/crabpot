@@ -39,10 +39,16 @@ name = "crabpot-harness"
 release = false
 publish = false
 
+# The facade depends on the unpublished Linux crate on Linux, so it cannot be
+# published either. The Linux release slice (#124) removes this entry.
+[[package]]
+name = "crabpot"
+release = false
+
 # The Linux crate is the crate the Linux slices land in (ADR-0012). It builds
-# on every runner, but the facade does not depend on it until the dependency
-# checks slice, and ADR-0012 never publishes a platform crate empty, so the
-# Linux release slice flips these two flags and `publish` in its Cargo.toml.
+# on every runner. ADR-0012 never publishes a platform crate before it holds
+# the Linux sandbox, so the Linux release slice flips these two flags and
+# `publish` in its Cargo.toml.
 [[package]]
 name = "crabpot-linux"
 release = false

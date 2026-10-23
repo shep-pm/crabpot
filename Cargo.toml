@@ -14,6 +14,7 @@ keywords = ["sandbox", "security", "agents", "bubblewrap", "seatbelt"]
 
 [workspace.dependencies]
 crabpot-core = { path = "crates/crabpot-core", version = "0.1.0" }
+crabpot-linux = { path = "crates/crabpot-linux", version = "0.1.0" }
 crabpot-macos = { path = "crates/crabpot-macos", version = "0.1.0" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }

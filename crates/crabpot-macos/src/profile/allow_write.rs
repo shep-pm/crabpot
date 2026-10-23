@@ -20,14 +20,14 @@ pub(super) fn rules(config: &Config) -> Result<String, PathError> {
     rules_with(config, &PathBase::from_env())
 }
 
-/// The paths a sandboxed command may write, as filters: the default roots, then
+/// The paths a sandboxed command may write, as entries: the default roots, then
 /// `allowWrite` after them.
 ///
-/// The write section allows them, and the read section re-allows the two
-/// operations of a rename for them (see `move_blocking`). Both must see the same
-/// answer, which is how upstream hands its `writeRootEntries` to the two
-/// sections.
-pub(super) fn root_filters(config: &Config, base: &PathBase) -> Result<Vec<String>, PathError> {
+/// The write section allows them, the read section re-allows the two operations
+/// of a rename for them (see `move_blocking`), and `read_deny_unlink` takes some
+/// of that back. All three must see the same answer, which is how upstream hands
+/// its `writeRootEntries` to the sections.
+pub(super) fn roots(config: &Config, base: &PathBase) -> Result<Vec<Entry>, PathError> {
     let split = split_path_entries(&config.filesystem.allow_write);
     // A trailing `/**` says "the directory and all under it", which a subpath
     // already does. A glob that still is one is kept: only Linux drops it.
@@ -39,8 +39,12 @@ pub(super) fn root_filters(config: &Config, base: &PathBase) -> Result<Vec<Strin
             .map(remove_trailing_glob_suffix),
     );
     let marked: Vec<String> = split.marked.into_iter().map(str::to_owned).collect();
-    let roots = caller_entries(base, ListKind::Allow, &allow_only, &marked)?;
-    Ok(roots.iter().map(Entry::filter).collect())
+    caller_entries(base, ListKind::Allow, &allow_only, &marked)
+}
+
+/// The same entries as the filters a rule takes.
+pub(super) fn root_filters(config: &Config, base: &PathBase) -> Result<Vec<String>, PathError> {
+    Ok(roots(config, base)?.iter().map(Entry::filter).collect())
 }
 
 fn rules_with(config: &Config, base: &PathBase) -> Result<String, PathError> {

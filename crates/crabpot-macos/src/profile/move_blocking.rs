@@ -28,7 +28,7 @@ const OPERATIONS: [&str; 2] = ["file-write-unlink", "file-write-create"];
 
 /// The directories above `path`, nearest first, down to but not including the
 /// root.
-fn ancestors(path: &str) -> Vec<String> {
+pub(super) fn ancestors(path: &str) -> Vec<String> {
     let mut ancestors = Vec::new();
     let mut current = dirname(path);
     while current != "/" && current != "." {
@@ -38,7 +38,7 @@ fn ancestors(path: &str) -> Vec<String> {
     ancestors
 }
 
-fn literal(path: &str) -> String {
+pub(super) fn literal(path: &str) -> String {
     format!("(literal {})", rule::string(path))
 }
 

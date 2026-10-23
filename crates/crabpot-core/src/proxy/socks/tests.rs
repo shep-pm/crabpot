@@ -48,7 +48,7 @@ fn answer(allowed: &[&str], token: &Token, sent: &[u8]) -> Vec<u8> {
         .iter()
         .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
         .collect();
-    let shared = Shared::new(Filter::new(&entries), token.clone());
+    let shared = Shared::new(Filter::new(&entries, &[], false), token.clone());
     let runtime = Builder::new_current_thread().enable_time().build().unwrap();
     runtime.block_on(async {
         let (mut client, mut server) = duplex(1024);

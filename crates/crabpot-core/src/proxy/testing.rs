@@ -13,7 +13,7 @@ pub(super) fn proxy_allowing(entries: &[&str]) -> Proxy {
         .iter()
         .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
         .collect();
-    Proxy::start(&entries).unwrap()
+    Proxy::start(&entries, &[], false).unwrap()
 }
 
 /// A server on a loopback port that answers its first client with `reply`,

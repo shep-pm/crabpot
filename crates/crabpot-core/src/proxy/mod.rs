@@ -41,13 +41,22 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    /// Starts the proxies, which let a client reach the hosts `allowed` covers.
+    /// Starts the proxies, which let a client reach the hosts `allowed` covers
+    /// and no host `denied` covers, which beat `allowed`.
+    ///
+    /// `strict` is `network.strictAllowlist`, which changes nothing about what
+    /// this proxy lets through yet: crabpot has no ask callback and no
+    /// per-command allow list for it to gate.
     ///
     /// # Errors
     ///
     /// The [`io::Error`] of whatever failed: reading the token, binding the
     /// ports, or starting the runtime or its thread.
-    pub fn start(allowed: &[DomainEntry]) -> io::Result<Self> {
+    pub fn start(
+        allowed: &[DomainEntry],
+        denied: &[DomainEntry],
+        strict: bool,
+    ) -> io::Result<Self> {
         let token = Token::generate()?;
         let (http, port) = bind()?;
         let (socks, socks_port) = bind()?;
@@ -62,7 +71,10 @@ impl Proxy {
                 tokio::net::TcpListener::from_std(socks)?,
             )
         };
-        let shared = Arc::new(Shared::new(Filter::new(allowed), token.clone()));
+        let shared = Arc::new(Shared::new(
+            Filter::new(allowed, denied, strict),
+            token.clone(),
+        ));
         runtime.spawn(serve(http, Arc::clone(&shared), http::handle));
         runtime.spawn(serve(socks, shared, socks::handle));
         let (stop, stopped) = oneshot::channel();

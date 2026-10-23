@@ -1,0 +1,14 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": ["example.com"],
+      "deniedDomains": ["*.com"]
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "refused": true,
+  "probes": [
+    {"kind": "connect", "host": "example.com", "port": 443}
+  ]
+}

@@ -14,7 +14,7 @@ use std::os::unix::net::UnixStream;
 
 use super::testing::{origin, proxy_allowing};
 use super::token::base64_encode;
-use super::{Proxy, username_for};
+use super::{PortRange, Proxy, username_for};
 use crate::domain::DomainEntry;
 
 /// A client of the mux on its Unix socket, in place of a client of the port.
@@ -181,4 +181,17 @@ fn a_denied_domain_is_refused_on_the_unix_socket() {
     let mut body = String::new();
     stream.read_to_string(&mut body).unwrap();
     assert_eq!(body, "Connection blocked by network allowlist");
+}
+
+/// `Proxy::start` has no range: it binds the ports the OS picks, so more
+/// proxies than the default range holds run at once.
+#[test]
+fn start_keeps_binding_an_ephemeral_port() {
+    let width = usize::from(PortRange::DEFAULT.last() - PortRange::DEFAULT.first()) + 2;
+
+    let proxies: Vec<Proxy> = (0..width).map(|_| proxy_allowing(&[])).collect();
+
+    for proxy in &proxies {
+        assert_ne!(proxy.port(), 0);
+    }
 }

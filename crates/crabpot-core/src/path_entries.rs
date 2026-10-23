@@ -8,7 +8,7 @@
 //! is the name and nothing else.
 
 #![cfg_attr(
-    not(test),
+    not(all(test, unix)),
     expect(
         dead_code,
         reason = "denyRead is the first consumer; allowRead and the write lists are the rest"

@@ -13,7 +13,7 @@ use super::super::shared::Shared;
 use super::super::testing::{origin, proxy_allowing};
 use super::super::token::{Token, base64_encode};
 use super::super::{Proxy, username_for};
-use super::Socket;
+use super::{Dial, Socket};
 
 /// A client of the one port both protocols answer on.
 fn client(proxy: &Proxy) -> TcpStream {
@@ -159,7 +159,7 @@ fn the_first_byte_picks_the_leg_and_the_backend_gets_the_rest() {
         let (mut client, front) = duplex(1024);
         let http_leg = tokio::spawn(super::dispatch(
             front,
-            PathBuf::clone(&path),
+            Dial::Socket(PathBuf::clone(&path)),
             Arc::clone(&shared),
         ));
         client
@@ -179,7 +179,11 @@ fn the_first_byte_picks_the_leg_and_the_backend_gets_the_rest() {
 
         // A SOCKS greeting is served in process, with its 0x05 put back.
         let (mut client, front) = duplex(1024);
-        let socks_leg = tokio::spawn(super::dispatch(front, path, Arc::clone(&shared)));
+        let socks_leg = tokio::spawn(super::dispatch(
+            front,
+            Dial::Socket(path),
+            Arc::clone(&shared),
+        ));
         client.write_all(&login(token.as_str())).await.unwrap();
         let mut answered = [0u8; 4];
         client.read_exact(&mut answered).await.unwrap();

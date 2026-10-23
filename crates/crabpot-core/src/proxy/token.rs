@@ -3,8 +3,7 @@
 //! and `checkAuth` have them.
 
 use core::fmt;
-use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 
 /// The base username. The token is the credential and this is a label.
 const USER: &str = "srt";
@@ -108,15 +107,15 @@ impl Token {
     }
 }
 
-/// `bytes` random bytes from `/dev/urandom`, in lowercase hex. The token is one
-/// use of it, and a socket's unique name another.
+/// `bytes` random bytes from the OS, in lowercase hex. The token is one use of
+/// it, and a socket's unique name another.
 ///
 /// # Errors
 ///
-/// The [`io::Error`] of whatever failed: opening `/dev/urandom` or reading it.
+/// The [`io::Error`] of the OS refusing to give random bytes.
 pub(super) fn random_hex(bytes: usize) -> io::Result<String> {
     let mut buf = vec![0u8; bytes];
-    File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    getrandom::fill(&mut buf).map_err(io::Error::from)?;
     let mut hex = String::with_capacity(bytes * 2);
     for byte in buf {
         hex.push_str(&format!("{byte:02x}"));
@@ -235,13 +234,16 @@ mod tests {
     }
 
     #[test]
-    fn the_token_is_32_hex_digits_and_differs_each_time() {
-        let first = Token::generate().unwrap();
-        let second = Token::generate().unwrap();
+    fn the_token_is_32_hex_digits() {
+        let token = Token::generate().unwrap();
 
-        assert_eq!(first.as_str().len(), 32);
-        assert!(first.as_str().bytes().all(|b| b.is_ascii_hexdigit()));
-        assert_ne!(first, second);
+        assert_eq!(token.as_str().len(), 32);
+        assert!(token.as_str().bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn two_tokens_differ() {
+        assert_ne!(Token::generate().unwrap(), Token::generate().unwrap());
     }
 
     #[test]

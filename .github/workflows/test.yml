@@ -35,30 +35,43 @@ jobs:
 
   test:
     # Both platforms shep ships on, which disagree about filesystems and
-    # signals more often than seems likely.
+    # signals more often than seems likely. Linux runs on both arches, because
+    # upstream's seccomp filter and bwrap's mounts are built per arch.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      # The differential cases run upstream's srt from npm, on macOS only.
-      - if: runner.os == 'macOS'
-        uses: actions/setup-node@v6
+      # The differential cases run upstream's srt on every platform: Seatbelt
+      # on macOS, bwrap on Linux.
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: harness/package-lock.json
-      - if: runner.os == 'macOS'
-        run: npm ci
+      - run: npm ci
         working-directory: harness
-      # `tests/deny_mach_lookup.rs` builds a Go program to prove Go's TLS works.
+      # What upstream's Linux runner needs, and the sysctl kelpie's Linux hosts
+      # set too: bwrap cannot take its namespaces while AppArmor restricts
+      # unprivileged ones.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat ripgrep
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # `crates/crabpot/tests/deny_mach_lookup.rs` builds a Go program to prove Go's TLS works.
       - if: runner.os == 'macOS'
         uses: actions/setup-go@v6
         with:
           go-version: stable
+      # `crabpot-linux/tests/rg_parity.rs` compares its walk with `rg`'s.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install --yes ripgrep
+      - if: runner.os == 'macOS'
+        run: brew install ripgrep
       - run: rustup toolchain install stable --profile minimal
       - run: cargo test --locked
 

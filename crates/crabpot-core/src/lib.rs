@@ -2,6 +2,7 @@
 
 mod address;
 pub mod config;
+pub mod dangerous;
 mod domain;
 mod glob;
 mod path;
@@ -13,6 +14,10 @@ mod resolved_path;
 mod test_tree;
 #[cfg(unix)]
 mod unix_socket;
+// The crate's Windows FFI, which is the one module allowed unsafe code there.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod win32;
 
 pub use path::PathError;
 pub use resolved_path::ResolvedPath;

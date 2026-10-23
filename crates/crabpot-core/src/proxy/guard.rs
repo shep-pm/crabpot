@@ -166,7 +166,10 @@ fn interface_addresses() -> Vec<IpAddr> {
         .collect()
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+use crate::win32::interface_addresses;
+
+#[cfg(not(any(unix, windows)))]
 fn interface_addresses() -> Vec<IpAddr> {
     Vec::new()
 }

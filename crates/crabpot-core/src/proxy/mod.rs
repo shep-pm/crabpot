@@ -7,6 +7,7 @@
 mod filter;
 mod host;
 mod http;
+mod mitm;
 mod token;
 
 use core::fmt;
@@ -20,6 +21,7 @@ use tokio::sync::oneshot;
 
 pub use token::username_for;
 
+use crate::config::MitmProxy;
 use crate::domain::DomainEntry;
 use filter::Filter;
 use token::Token;
@@ -41,6 +43,9 @@ impl Proxy {
     /// this proxy lets through yet: crabpot has no ask callback and no
     /// per-command allow list for it to gate.
     ///
+    /// `mitm` is `network.mitmProxy`: the domains it names are sent to its Unix
+    /// socket instead of being dialed direct.
+    ///
     /// # Errors
     ///
     /// The [`io::Error`] of whatever failed: reading the token, binding the
@@ -49,6 +54,7 @@ impl Proxy {
         allowed: &[DomainEntry],
         denied: &[DomainEntry],
         strict: bool,
+        mitm: Option<&MitmProxy>,
     ) -> io::Result<Self> {
         let token = Token::generate()?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -65,6 +71,7 @@ impl Proxy {
         let shared = Arc::new(http::Shared::new(
             Filter::new(allowed, denied, strict),
             token.clone(),
+            mitm.map(mitm::Route::new),
         ));
         runtime.spawn(http::serve(listener, shared));
         let (stop, stopped) = oneshot::channel();

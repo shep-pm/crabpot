@@ -79,7 +79,7 @@ pub struct Network {
     /// `denyMachLookup`, which is not read yet.
     #[serde(default, deserialize_with = "present")]
     pub deny_mach_lookup: Option<Vec<String>>,
-    /// `mitmProxy`, which is not read yet.
+    /// `mitmProxy`: the domains sent to an upstream proxy over a Unix socket.
     #[serde(default, deserialize_with = "present")]
     pub mitm_proxy: Option<MitmProxy>,
 }

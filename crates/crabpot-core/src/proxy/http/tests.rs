@@ -13,7 +13,7 @@ fn proxy_allowing(entries: &[&str]) -> Proxy {
         .iter()
         .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
         .collect();
-    Proxy::start(&entries, &[], false).unwrap()
+    Proxy::start(&entries, &[], false, None).unwrap()
 }
 
 /// A server on a loopback port that answers its first client with `reply`,
@@ -303,4 +303,161 @@ fn dropping_the_proxy_does_not_wait_for_a_tunnel() {
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest).unwrap();
     assert!(rest.is_empty());
+}
+
+/// The mitm route, seen through the proxy that runs it.
+#[cfg(unix)]
+mod mitm {
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::config::MitmProxy;
+    use crate::domain::DomainPattern;
+
+    /// A Unix socket of this test's own, in a folder of its own, removed on drop.
+    struct Socket(PathBuf);
+
+    impl Socket {
+        fn new(test: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("crabpot-mitm-{}-{test}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir.join("s"))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Socket {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    /// A Unix socket that answers the head it is sent with `answer`, then reads
+    /// for a moment before closing. It hands back the head it saw.
+    fn served(test: &str, answer: &'static str) -> (Socket, thread::JoinHandle<String>) {
+        let socket = Socket::new(test);
+        let listener = UnixListener::bind(socket.path()).unwrap();
+        let answer = answer.to_owned();
+        let seen = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.ends_with(b"\r\n\r\n") {
+                let Ok(read) = client.read(&mut buf) else {
+                    break;
+                };
+                if read == 0 {
+                    break;
+                }
+                head.extend_from_slice(&buf[..read]);
+            }
+            let _ = client.write_all(answer.as_bytes());
+            let _ = client.flush();
+            client
+                .set_read_timeout(Some(Duration::from_millis(300)))
+                .unwrap();
+            while let Ok(read @ 1..) = client.read(&mut buf) {
+                head.extend_from_slice(&buf[..read]);
+            }
+            String::from_utf8_lossy(&head).into_owned()
+        });
+        (socket, seen)
+    }
+
+    fn proxy_with_mitm(allowed: &[&str], socket: &Path, domains: &[&str]) -> Proxy {
+        let allowed: Vec<DomainEntry> = allowed
+            .iter()
+            .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
+            .collect();
+        let domains: Vec<DomainPattern> = domains
+            .iter()
+            .map(|pattern| DomainPattern::parse(pattern).unwrap())
+            .collect();
+        Proxy::start(
+            &allowed,
+            &[],
+            false,
+            Some(&MitmProxy {
+                socket_path: socket.display().to_string(),
+                domains,
+            }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_connect_to_a_mitm_domain_is_tunnelled_through_the_socket() {
+        let (socket, seen) = served("tunnel", "HTTP/1.1 200 Connection Established\r\n\r\n");
+        let proxy = proxy_with_mitm(&["mitm.example.com"], socket.path(), &["mitm.example.com"]);
+        let mut stream = connect(&proxy, "mitm.example.com:443", &credential(&proxy));
+
+        assert_eq!(
+            head(&mut stream),
+            "HTTP/1.1 200 Connection Established\r\n\r\n"
+        );
+        assert_eq!(
+            seen.join().unwrap(),
+            "CONNECT mitm.example.com:443 HTTP/1.1\r\nHost: mitm.example.com:443\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn a_connect_the_mitm_route_does_not_cover_is_dialed_direct() {
+        // The socket refuses, so a host sent to it would get 502 and not 200.
+        let (socket, _) = served("direct", "HTTP/1.1 403 Forbidden\r\n\r\n");
+        let proxy = proxy_with_mitm(&["127.0.0.1"], socket.path(), &["mitm.example.com"]);
+        let (port, _) = origin(None);
+        let mut stream = connect(&proxy, &format!("127.0.0.1:{port}"), &credential(&proxy));
+
+        assert_eq!(
+            head(&mut stream),
+            "HTTP/1.1 200 Connection Established\r\n\r\n"
+        );
+        stream.write_all(b"ping").unwrap();
+        let mut echoed = [0u8; 4];
+        stream.read_exact(&mut echoed).unwrap();
+        assert_eq!(&echoed, b"ping");
+    }
+
+    #[test]
+    fn a_mitm_socket_that_is_not_there_is_a_502() {
+        let proxy = proxy_with_mitm(
+            &["mitm.example.com"],
+            Path::new("/no/such/crabpot-mitm.sock"),
+            &["mitm.example.com"],
+        );
+        let mut stream = connect(&proxy, "mitm.example.com:443", &credential(&proxy));
+
+        assert_eq!(head(&mut stream), "HTTP/1.1 502 Bad Gateway\r\n\r\n");
+    }
+
+    #[test]
+    fn a_request_to_a_mitm_domain_names_the_whole_target() {
+        let (socket, seen) = served("absolute", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+        let proxy = proxy_with_mitm(&["mitm.example.com"], socket.path(), &["mitm.example.com"]);
+        let request = format!(
+            "GET http://mitm.example.com/a/b?c=d HTTP/1.1\r\nHost: ignored\r\n{}\r\n",
+            credential(&proxy)
+        );
+        let mut stream = client(&proxy, &request);
+
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        assert_eq!(answer, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+        assert_eq!(
+            seen.join().unwrap(),
+            "GET http://mitm.example.com/a/b?c=d HTTP/1.1\r\n\
+             Host: mitm.example.com\r\nConnection: close\r\n\r\n"
+        );
+    }
 }

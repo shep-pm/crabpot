@@ -1,5 +1,7 @@
 //! What the sections share to write a rule.
 
+use crabpot_core::ResolvedPath;
+
 /// What a denied operation logs.
 pub(super) const LOG_TAG: &str = "crabpot";
 
@@ -44,4 +46,22 @@ pub(super) fn render(action: &str, operations: &[&str], filters: &[String]) -> S
         operations.join(" "),
         string(LOG_TAG)
     )
+}
+
+/// The filter that matches what a deny of `path` hides: a pattern's regular
+/// expression, or a name and everything beneath it.
+pub(super) fn deny_filter(path: &ResolvedPath) -> String {
+    match path.deny_regex() {
+        Some(regex) => format!("(regex {})", string(&regex)),
+        None => format!("(subpath {})", string(path.path())),
+    }
+}
+
+/// The filter that matches what an allow of `path` opens: the paths a pattern
+/// spells, or a name and everything beneath it.
+pub(super) fn allow_filter(path: &ResolvedPath) -> String {
+    match path.allow_regex() {
+        Some(regex) => format!("(regex {})", string(&regex)),
+        None => format!("(subpath {})", string(path.path())),
+    }
 }

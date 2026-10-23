@@ -18,7 +18,7 @@ macro_rules! sections {
     };
 }
 
-sections!(base, read, deny_read, write);
+sections!(base, read, deny_read, allow_read, write);
 
 /// Renders the profile `sandbox-exec -p` takes.
 ///

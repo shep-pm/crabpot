@@ -51,7 +51,6 @@ const ASKING: &[(&str, &str)] = &[
     ),
     ("filesystem.denyRead", r#"["/secret"]"#),
     ("filesystem.allowRead", r#"["/secret/ok"]"#),
-    ("filesystem.allowWrite", r#"["/work"]"#),
     ("filesystem.denyWrite", r#"["/work/.env"]"#),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),

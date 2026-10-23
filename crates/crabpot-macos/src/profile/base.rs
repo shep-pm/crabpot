@@ -2,9 +2,10 @@
 //! needs to start and run at all.
 
 use crabpot_core::config::Config;
+use crabpot_core::paths::{PathBase, PathError};
 
-pub(super) fn rules(_config: &Config) -> String {
-    BASE.to_owned()
+pub(super) fn rules(_config: &Config, _base: &PathBase) -> Result<String, PathError> {
+    Ok(BASE.to_owned())
 }
 
 const BASE: &str = r#"(deny default (with message "crabpot"))

@@ -14,7 +14,7 @@ use super::{PathBase, lexical};
 /// Whatever the kernel says of the first component that fails to resolve. A
 /// real path that is not UTF-8 is [`io::ErrorKind::InvalidData`]: the string
 /// made of its bytes would name another file, or none.
-pub(crate) fn real_path_of(base: &PathBase, p: &str) -> io::Result<String> {
+pub fn real_path_of(base: &PathBase, p: &str) -> io::Result<String> {
     let cwd = if lexical::is_absolute(p) {
         ""
     } else {

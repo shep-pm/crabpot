@@ -1,5 +1,5 @@
 //! A filesystem path as upstream's `normalizePathForSandbox` makes it, for the
-//! seatbelt profile.
+//! profiles and the mounts the platform crates build.
 //!
 //! A port of the POSIX half of `src/sandbox/sandbox-utils.ts` and of
 //! `src/utils/real-path.ts`. The Windows branches are left out, and so is the
@@ -16,7 +16,8 @@ use std::ffi::OsString;
 
 pub(crate) use lexical::{collapse_interior_spellings, is_absolute, is_strictly_under, resolve};
 pub use lexical::{dirname, is_at_or_under};
-pub(crate) use real_path::{is_absence_error, real_path_of};
+pub(crate) use real_path::is_absence_error;
+pub use real_path::real_path_of;
 
 /// What a relative path and a leading `~` are read against.
 #[derive(Clone, Debug)]
@@ -104,7 +105,7 @@ pub fn remove_trailing_glob_suffix(path_pattern: &str) -> String {
 /// the path's own tree, which would widen the scope of a rule written for
 /// `original`. `/tmp` and `/var` resolving beneath `/private` do not: macOS
 /// spells them so.
-pub(crate) fn is_symlink_outside_boundary(original: &str, resolved: &str) -> bool {
+pub fn is_symlink_outside_boundary(original: &str, resolved: &str) -> bool {
     let original = lexical::normalize(original);
     let resolved = lexical::normalize(resolved);
     if resolved == original {

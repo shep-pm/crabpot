@@ -3,8 +3,8 @@
 
 use serde::Deserializer;
 
-use super::super::leaf::present;
 use super::super::Network;
+use super::super::leaf::present;
 use crate::path::{PathBase, PathError, normalize_path_for_sandbox};
 
 pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
@@ -37,9 +37,9 @@ impl Network {
 mod tests {
     use serde_json::json;
 
-    use crate::config::Config;
+    use crate::config::{Config, ConfigError};
 
-    fn load(allow_unix_sockets: &serde_json::Value) -> Result<Config, String> {
+    fn load(allow_unix_sockets: &serde_json::Value) -> Result<Config, ConfigError> {
         Config::from_json(
             &json!({
                 "network": {
@@ -50,12 +50,14 @@ mod tests {
             })
             .to_string(),
         )
-        .map_err(|e| format!("{e}"))
     }
 
     #[test]
     fn a_list_of_socket_paths_loads() {
-        let config = load(&json!(["/crabpot-nowhere/socks", "/crabpot-nowhere/live.sock"]));
+        let config = load(&json!([
+            "/crabpot-nowhere/socks",
+            "/crabpot-nowhere/live.sock"
+        ]));
 
         assert_eq!(
             config.unwrap().network.allow_unix_sockets,
@@ -76,10 +78,19 @@ mod tests {
 
     #[test]
     fn an_entry_that_is_not_a_string_is_refused() {
-        for entries in [json!({"path": "/a"}), json!([{"path": "/a", "literal": true}])] {
-            let reason = load(&entries).unwrap_err();
+        for (entries, key) in [
+            (json!({"path": "/a"}), "network.allowUnixSockets"),
+            (
+                json!([{"path": "/a", "literal": true}]),
+                "network.allowUnixSockets.0",
+            ),
+            (json!(null), "network.allowUnixSockets"),
+        ] {
+            let Err(ConfigError::Invalid { key: named, .. }) = load(&entries) else {
+                panic!("{entries} was not refused as invalid");
+            };
 
-            assert!(reason.contains("allowUnixSockets"), "{entries}: {reason}");
+            assert_eq!(named, key, "{entries}");
         }
     }
 }

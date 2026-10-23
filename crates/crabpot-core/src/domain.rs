@@ -13,7 +13,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the config and the proxies do not use domain patterns yet"
+        reason = "the denied list and the resolved-address check do not use the rest yet"
     )
 )]
 
@@ -307,7 +307,7 @@ fn matches_domain_pattern_with_port(hostname: &str, port: u16, pattern: &str) ->
     pattern_port.is_none_or(|own| own == port) && matches_domain_pattern(hostname, &host_pattern)
 }
 
-fn strip_brackets(host: &str) -> &str {
+pub(crate) fn strip_brackets(host: &str) -> &str {
     host.strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
         .unwrap_or(host)
@@ -328,13 +328,13 @@ fn is_ipv6(host: &str) -> bool {
 }
 
 /// Node's `net.isIP(host) !== 0`.
-fn is_ip(host: &str) -> bool {
+pub(crate) fn is_ip(host: &str) -> bool {
     is_ipv6(host) || host.parse::<Ipv4Addr>().is_ok()
 }
 
 /// What the WHATWG URL parser makes of `http://{host}/`'s host, as far as it is reproduced here
 /// (see the module docs). `None` leaves the text as written.
-fn canonicalize_host(host: &str) -> Option<String> {
+pub(crate) fn canonicalize_host(host: &str) -> Option<String> {
     if let Ok(address) = host.parse::<Ipv6Addr>() {
         return Some(serialize_ipv6(address));
     }

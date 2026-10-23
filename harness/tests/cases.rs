@@ -87,6 +87,38 @@ fn refused_deny_read_trailing_separator_glob() {
 }
 
 #[test]
+fn allowed_domain_example_com() {
+    run(
+        "allowed_domain_example_com",
+        "allowed-domains-example-com.json",
+    );
+}
+
+#[test]
+fn other_domain_example_org_is_refused() {
+    run(
+        "other_domain_example_org_is_refused",
+        "allowed-domains-other-domain.json",
+    );
+}
+
+#[test]
+fn refused_allowed_domains_bad_entry() {
+    run(
+        "refused_allowed_domains_bad_entry",
+        "refused-allowed-domains-bad-entry.json",
+    );
+}
+
+#[test]
+fn allowed_domain_untrimmed_matches_nothing() {
+    run(
+        "allowed_domain_untrimmed_matches_nothing",
+        "allowed-domains-untrimmed.json",
+    );
+}
+
+#[test]
 fn allow_write_folder() {
     run("allow_write_folder", "allow-write-folder.json");
 }

@@ -44,3 +44,31 @@ fn refused_empty_file() {
 fn refused_missing_settings() {
     run("refused_missing_settings", "refused-missing-settings.json");
 }
+
+#[test]
+fn allow_write_folder() {
+    run("allow_write_folder", "allow-write-folder.json");
+}
+
+#[test]
+fn allow_write_outside_is_refused() {
+    run(
+        "allow_write_outside_is_refused",
+        "allow-write-outside-is-refused.json",
+    );
+}
+
+#[test]
+fn allow_write_glob() {
+    run("allow_write_glob", "allow-write-glob.json");
+}
+
+#[test]
+fn default_write_dev_null() {
+    run("default_write_dev_null", "default-write-dev-null.json");
+}
+
+#[test]
+fn default_write_tmp_claude() {
+    run("default_write_tmp_claude", "default-write-tmp-claude.json");
+}

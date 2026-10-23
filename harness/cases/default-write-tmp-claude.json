@@ -1,0 +1,13 @@
+{
+  "files": {
+    "/tmp/claude/crabpot-harness-seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "write", "path": "/tmp/claude/crabpot-harness-written"},
+    {"kind": "write", "path": "/tmp/crabpot-harness-outside"}
+  ]
+}

@@ -87,16 +87,24 @@ fn judge(result: std::io::Result<()>, refusals: &[std::io::ErrorKind]) -> Outcom
 }
 
 /// EPERM and EACCES both surface as `PermissionDenied`.
-const DENIED: &[std::io::ErrorKind] = &[std::io::ErrorKind::PermissionDenied];
+const READ_REFUSED: &[std::io::ErrorKind] = &[std::io::ErrorKind::PermissionDenied];
 
-/// EPERM and ECONNREFUSED are how the sandbox refuses a bind or a direct connect.
+/// A write is also refused with EROFS, which is what bubblewrap's read-only binds answer.
+const WRITE_REFUSED: &[std::io::ErrorKind] = &[
+    std::io::ErrorKind::PermissionDenied,
+    std::io::ErrorKind::ReadOnlyFilesystem,
+];
+
+/// EPERM and ECONNREFUSED refuse a bind or a direct connect. ENETUNREACH is how a
+/// network namespace with no interfaces refuses a connect.
 const NETWORK_REFUSED: &[std::io::ErrorKind] = &[
     std::io::ErrorKind::PermissionDenied,
     std::io::ErrorKind::ConnectionRefused,
+    std::io::ErrorKind::NetworkUnreachable,
 ];
 
 fn read(path: &str) -> Outcome {
-    judge(std::fs::File::open(path).map(drop), DENIED)
+    judge(std::fs::File::open(path).map(drop), READ_REFUSED)
 }
 
 fn write(path: &str) -> Outcome {
@@ -105,7 +113,7 @@ fn write(path: &str) -> Outcome {
         .create(true)
         .truncate(false)
         .open(path);
-    judge(opened.map(drop), DENIED)
+    judge(opened.map(drop), WRITE_REFUSED)
 }
 
 /// Dials `host:port` directly, or asks the proxy at `http_proxy` for a tunnel to it.
@@ -113,18 +121,18 @@ fn connect(host: &str, port: &str, http_proxy: Option<&str>) -> Outcome {
     let port: u16 = port.parse().map_err(|_| Error::Usage)?;
     match http_proxy {
         Some(url) => connect_through(url, host, port),
-        None => judge(TcpStream::connect((host, port)).map(drop), NETWORK_REFUSED),
+        None => judge(dial((host, port)).map(drop), NETWORK_REFUSED),
     }
 }
 
-/// How long to wait on a proxy that has stopped answering before calling it an error.
-const PROXY_PATIENCE: Duration = Duration::from_secs(10);
+/// How long to wait on a peer that has stopped answering before calling it an error.
+const PATIENCE: Duration = Duration::from_secs(10);
 
-/// Dials the first of `address`'s endpoints that answers within [`PROXY_PATIENCE`].
-fn dial_proxy(address: &str) -> std::io::Result<TcpStream> {
+/// Dials the first of `address`'s endpoints that answers within [`PATIENCE`].
+fn dial(address: impl ToSocketAddrs) -> std::io::Result<TcpStream> {
     let mut last = None;
     for endpoint in address.to_socket_addrs()? {
-        match TcpStream::connect_timeout(&endpoint, PROXY_PATIENCE) {
+        match TcpStream::connect_timeout(&endpoint, PATIENCE) {
             Ok(stream) => return Ok(stream),
             Err(error) => last = Some(error),
         }
@@ -146,8 +154,8 @@ fn target(host: &str, port: u16) -> String {
 fn connect_through(url: &str, host: &str, port: u16) -> Outcome {
     let proxy = Proxy::parse(url)?;
     let io = Error::Io;
-    let mut stream = dial_proxy(&proxy.address).map_err(io)?;
-    stream.set_read_timeout(Some(PROXY_PATIENCE)).map_err(io)?;
+    let mut stream = dial(&proxy.address).map_err(io)?;
+    stream.set_read_timeout(Some(PATIENCE)).map_err(io)?;
     let auth = proxy.credentials.map_or_else(String::new, |credentials| {
         format!(
             "Proxy-Authorization: Basic {}\r\n",
@@ -390,5 +398,13 @@ mod tests {
         ] {
             assert_eq!(Proxy::parse(url).unwrap().address, address, "{url}");
         }
+    }
+
+    #[test]
+    fn a_read_only_mount_refuses_a_write_and_an_unreachable_network_refuses_a_connect() {
+        use std::io::ErrorKind;
+        let refused = |kind: ErrorKind, refusals| judge(Err(kind.into()), refusals).unwrap();
+        assert!(!refused(ErrorKind::ReadOnlyFilesystem, WRITE_REFUSED));
+        assert!(!refused(ErrorKind::NetworkUnreachable, NETWORK_REFUSED));
     }
 }

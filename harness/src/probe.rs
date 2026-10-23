@@ -18,12 +18,13 @@ mod socks;
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
 /// Why a probe could not tell whether the sandbox allowed its action.
 #[derive(Debug)]
 pub enum Error {
-    /// The arguments are not one of the six actions with their operands.
+    /// The arguments are not one of the probe actions with their operands.
     Usage,
     /// `HTTP_PROXY` is not an `http://` URL with a host.
     BadProxy,
@@ -42,7 +43,8 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Usage => f.write_str(
-                "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> <port> [--via socks5] | bind",
+                "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> \
+                 <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path>",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadSocksProxy => {
@@ -98,6 +100,8 @@ fn attempt(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>)
         ["connect", host, port] => connect(host, port, http_proxy),
         ["connect", host, port, "--via", "socks5"] => connect_socks(host, port, socks_proxy),
         ["bind"] => bind(),
+        ["bind-unix", path] => bind_unix(path),
+        ["connect-unix", path] => connect_unix(path),
         _ => Err(Error::Usage),
     }
 }
@@ -307,6 +311,29 @@ fn bind() -> Outcome {
     )
 }
 
+/// A socket the sandbox will not let the command use answers `EPERM`, which is
+/// what a refused `bind` or `connect` on `AF_UNIX` gives back.
+const UNIX_BIND_REFUSED: &[std::io::ErrorKind] = &[std::io::ErrorKind::PermissionDenied];
+
+/// A dial of a socket file nobody is listening on is answered, and an answer
+/// is not a refusal.
+const UNIX_CONNECT_REFUSED: &[std::io::ErrorKind] = &[
+    std::io::ErrorKind::PermissionDenied,
+    std::io::ErrorKind::ConnectionRefused,
+];
+
+/// Binds a Unix socket at `path`, which is how a command takes a path the
+/// profile lists for it.
+fn bind_unix(path: &str) -> Outcome {
+    judge(UnixListener::bind(path).map(drop), UNIX_BIND_REFUSED)
+}
+
+/// Dials the Unix socket at `path`, which is how a command reaches a socket
+/// the profile lists for it.
+fn connect_unix(path: &str) -> Outcome {
+    judge(UnixStream::connect(path).map(drop), UNIX_CONNECT_REFUSED)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +341,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
     use std::thread;
 
@@ -454,6 +482,48 @@ mod tests {
     #[test]
     fn bind_exits_0() {
         assert_eq!(probe(&["bind"]), 0);
+    }
+
+    #[test]
+    fn bind_unix_and_connect_unix_exit_0_on_a_free_path() {
+        let fixture = Fixture::new("unix-ok");
+        let bound = fixture.path().join("bound.sock");
+        assert_eq!(probe_path("bind-unix", &bound), 0);
+
+        let live = fixture.path().join("live.sock");
+        let listener = UnixListener::bind(&live).unwrap();
+        assert_eq!(probe_path("connect-unix", &live), 0);
+        drop(listener);
+    }
+
+    #[test]
+    fn connect_unix_to_a_socket_nobody_listens_on_exits_1() {
+        // The file is left behind by a listener that has gone, so the dial
+        // reaches it and is answered.
+        let fixture = Fixture::new("unix-dead");
+        let dead = fixture.path().join("dead.sock");
+        UnixListener::bind(&dead).unwrap();
+        assert_eq!(probe_path("connect-unix", &dead), 1);
+    }
+
+    #[test]
+    fn a_unix_probe_that_reaches_no_socket_exits_2() {
+        let fixture = Fixture::new("unix-absent");
+
+        assert_eq!(
+            probe_path("bind-unix", &fixture.path().join("none/absent.sock")),
+            2
+        );
+        assert_eq!(
+            probe_path("connect-unix", &fixture.path().join("absent.sock")),
+            2
+        );
+    }
+
+    #[test]
+    fn a_unix_probe_without_a_path_exits_2() {
+        assert_eq!(probe(&["bind-unix"]), 2);
+        assert_eq!(probe(&["connect-unix"]), 2);
     }
 
     #[test]

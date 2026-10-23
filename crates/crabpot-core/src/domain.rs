@@ -179,7 +179,7 @@ pub struct IpLiteralRule {
 }
 
 /// The entries that name an IP address, as rules for the resolved-address check.
-fn ip_literal_rules<S: AsRef<str>>(entries: &[S]) -> Vec<IpLiteralRule> {
+pub(crate) fn ip_literal_rules<S: AsRef<str>>(entries: &[S]) -> Vec<IpLiteralRule> {
     entries
         .iter()
         .filter_map(|entry| {

@@ -194,7 +194,10 @@ fn refused_deny_write_trailing_separator_glob() {
 
 #[test]
 fn unix_socket_listed_folder() {
-    run("unix_socket_listed_folder", "unix-sockets-listed-folder.json");
+    run(
+        "unix_socket_listed_folder",
+        "unix-sockets-listed-folder.json",
+    );
 }
 
 #[test]

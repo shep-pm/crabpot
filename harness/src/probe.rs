@@ -415,8 +415,14 @@ mod tests {
     fn a_unix_probe_that_reaches_no_socket_exits_2() {
         let fixture = Fixture::new("unix-absent");
 
-        assert_eq!(probe_path("bind-unix", &fixture.path().join("none/absent.sock")), 2);
-        assert_eq!(probe_path("connect-unix", &fixture.path().join("absent.sock")), 2);
+        assert_eq!(
+            probe_path("bind-unix", &fixture.path().join("none/absent.sock")),
+            2
+        );
+        assert_eq!(
+            probe_path("connect-unix", &fixture.path().join("absent.sock")),
+            2
+        );
     }
 
     #[test]

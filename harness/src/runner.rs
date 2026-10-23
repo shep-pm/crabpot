@@ -568,7 +568,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let case = Case {
-            probes: vec![Probe::ConnectUnix(dir.join("live.sock").display().to_string())],
+            probes: vec![Probe::ConnectUnix(
+                dir.join("live.sock").display().to_string(),
+            )],
             ..case()
         };
 

@@ -5,6 +5,8 @@ use core::fmt;
 use std::process::Command;
 
 use crabpot_core::config::Config;
+#[cfg(target_os = "macos")]
+use crabpot_macos::env::Facts;
 
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
 /// with [`Sandbox::command`], and drop it when they have all ended, since the
@@ -13,6 +15,8 @@ use crabpot_core::config::Config;
 pub struct Sandbox {
     #[cfg(target_os = "macos")]
     profile: String,
+    #[cfg(target_os = "macos")]
+    facts: Facts,
 }
 
 impl Sandbox {
@@ -27,6 +31,9 @@ impl Sandbox {
         {
             Ok(Self {
                 profile: crabpot_macos::profile::render(config),
+                // No config crabpot accepts yet lets a command reach loopback:
+                // allowLocalBinding is refused, and no proxy port is open.
+                facts: Facts::from_process(false),
             })
         }
         #[cfg(not(target_os = "macos"))]
@@ -40,8 +47,9 @@ impl Sandbox {
     /// its place.
     ///
     /// The wrapped command keeps `command`'s program, arguments, working
-    /// directory and environment changes. It does not keep its standard
-    /// streams, which a [`Command`] cannot be asked for, nor an
+    /// directory and environment changes, and gains the sandbox's own
+    /// environment over them. It does not keep its standard streams, which a
+    /// [`Command`] cannot be asked for, nor an
     /// [`env_clear`](Command::env_clear).
     ///
     /// # Errors
@@ -73,6 +81,9 @@ impl Sandbox {
                     Some(value) => wrapped.env(key, value),
                     None => wrapped.env_remove(key),
                 };
+            }
+            for (key, value) in crabpot_macos::env::vars(&self.facts) {
+                wrapped.env(key, value);
             }
             Ok(wrapped)
         }
@@ -157,5 +168,26 @@ mod tests {
             Sandbox::start(&Config::default()).unwrap_err(),
             StartError::UnsupportedPlatform
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_carries_the_env() {
+        let sandbox = Sandbox::start(&Config::default()).unwrap();
+
+        let mut probe = Command::new("sh");
+        probe
+            .arg("-c")
+            .arg(r#"printf '%s\n' "$SANDBOX_RUNTIME" "$TMPDIR" "$CALLER""#);
+        probe.env("CALLER", "kept");
+        probe.env("TMPDIR", "/caller/tmp");
+
+        let output = sandbox.command(&probe).unwrap().output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "1", "SANDBOX_RUNTIME");
+        assert_ne!(lines[1], "/caller/tmp", "the sandbox's TMPDIR wins");
+        assert_eq!(lines[2], "kept", "the caller's own variable survives");
     }
 }

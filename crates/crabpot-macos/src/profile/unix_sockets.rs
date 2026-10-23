@@ -16,7 +16,8 @@ pub(super) fn rules(config: &Config) -> Result<String, PathError> {
     if paths.is_empty() {
         return Ok(String::new());
     }
-    let mut section = String::from("\n; Unix sockets\n(allow system-socket (socket-domain AF_UNIX))\n");
+    let mut section = String::from("\n; Unix sockets\n");
+    section.push_str("(allow system-socket (socket-domain AF_UNIX))\n");
     for path in &paths {
         let socket = format!("(subpath {})", rule::string(path));
         section.push_str(&format!(

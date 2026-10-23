@@ -2,6 +2,10 @@
 //! `allowWrite` after them.
 //!
 //! Upstream's `writeRootEntries` and the allow half of `generateWriteRules`.
+//!
+//! Nothing here denies upstream's mandatory paths (`.git/hooks`, `.git/config`,
+//! shell rc files and the rest) inside an allowed root. That is issue #38, and
+//! until it lands an `allowWrite` root is writable all the way down.
 
 use crabpot_core::config::Config;
 use crabpot_core::paths::{

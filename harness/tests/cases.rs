@@ -191,3 +191,24 @@ fn refused_deny_write_trailing_separator_glob() {
         "refused-deny-write-trailing-separator-glob.json",
     );
 }
+
+#[test]
+fn unix_socket_listed_folder() {
+    run("unix_socket_listed_folder", "unix-sockets-listed-folder.json");
+}
+
+#[test]
+fn unix_socket_unlisted_is_refused() {
+    run(
+        "unix_socket_unlisted_is_refused",
+        "unix-sockets-unlisted-is-refused.json",
+    );
+}
+
+#[test]
+fn unix_socket_empty_string_grants_cwd() {
+    run(
+        "unix_socket_empty_string_grants_cwd",
+        "unix-sockets-empty-string-grants-cwd.json",
+    );
+}

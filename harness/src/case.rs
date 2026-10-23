@@ -20,6 +20,10 @@ pub enum Probe {
     },
     /// Bind a loopback socket.
     Bind,
+    /// Bind a Unix socket at the path.
+    BindUnix(String),
+    /// Dial the Unix socket at the path, which the harness serves.
+    ConnectUnix(String),
 }
 
 /// A case file, with `$ROOT` expanded.
@@ -45,7 +49,7 @@ pub enum Error {
     Json(String),
     /// A field is missing or is not the kind of value it should be.
     Shape(String),
-    /// A probe's `kind` is not `read`, `write`, `connect` or `bind`.
+    /// A probe's `kind` is not one of the kinds in [`Probe`].
     UnknownProbe(String),
 }
 
@@ -143,6 +147,8 @@ impl Probe {
                 vec!["connect".to_owned(), host.clone(), port.to_string()]
             }
             Self::Bind => vec!["bind".to_owned()],
+            Self::BindUnix(path) => vec!["bind-unix".to_owned(), path.clone()],
+            Self::ConnectUnix(path) => vec!["connect-unix".to_owned(), path.clone()],
         }
     }
 
@@ -168,6 +174,8 @@ impl Probe {
                     })?,
             }),
             "bind" => Ok(Self::Bind),
+            "bind-unix" => Ok(Self::BindUnix(text("path")?)),
+            "connect-unix" => Ok(Self::ConnectUnix(text("path")?)),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -187,7 +195,9 @@ mod tests {
                 {"kind": "read", "path": "$ROOT/in"},
                 {"kind": "write", "path": "$ROOT/out"},
                 {"kind": "connect", "host": "example.com", "port": 443},
-                {"kind": "bind"}
+                {"kind": "bind"},
+                {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"},
+                {"kind": "connect-unix", "path": "$ROOT/socks/live.sock"}
             ]
         }"#;
         let case = Case::parse(text, "/r").unwrap();
@@ -206,6 +216,8 @@ mod tests {
                     port: 443
                 },
                 Probe::Bind,
+                Probe::BindUnix("/r/socks/a.sock".to_owned()),
+                Probe::ConnectUnix("/r/socks/live.sock".to_owned()),
             ]
         );
     }

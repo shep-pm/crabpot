@@ -1,0 +1,13 @@
+{
+  "files": {
+    "$ROOT/socks/seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": [], "allowUnixSockets": [""]},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "bind-unix", "path": "cwd.sock"},
+    {"kind": "bind-unix", "path": "socks/a.sock"}
+  ]
+}

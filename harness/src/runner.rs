@@ -4,6 +4,7 @@
 //! exit code is the wrapper's exit status.
 
 use std::fs;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -135,6 +136,8 @@ impl core::error::Error for Error {
 /// `restore` puts the fixture back as the case describes it. It runs before
 /// every runner's run of every probe, so a probe that changes the fixture, such
 /// as a write that creates a file, leaves the next run's precondition alone.
+/// A `connect-unix` probe gets a socket the harness serves, which `restore`
+/// wipes with the rest of the fixture, so it is served again for each run.
 ///
 /// # Errors
 ///
@@ -150,9 +153,15 @@ pub fn compare(
 ) -> Result<(), Error> {
     for probe in &case.probes {
         restore()?;
+        let served = serve(probe)?;
         let upstream = code(upstream, settings, probe)?;
+        drop(served);
+
         restore()?;
+        let served = serve(probe)?;
         let crabpot = code(crabpot, settings, probe)?;
+        drop(served);
+
         if upstream != crabpot {
             return Err(Error::Differ {
                 probe: probe.clone(),
@@ -162,6 +171,19 @@ pub fn compare(
         }
     }
     Ok(())
+}
+
+/// The socket a `connect-unix` probe dials, which no probe of the case itself
+/// can hold open: each probe is its own sandboxed process, and a listener dies
+/// with it. None is served for any other probe.
+fn serve(probe: &Probe) -> Result<Option<UnixListener>, Error> {
+    let Probe::ConnectUnix(path) = probe else {
+        return Ok(None);
+    };
+    // A listener that has gone leaves its file behind, and a bind onto one that
+    // is there answers `EADDRINUSE`.
+    let _ = fs::remove_file(path);
+    UnixListener::bind(path).map(Some).map_err(Error::Io)
 }
 
 /// Runs every probe of `case` under both runners, which must refuse the
@@ -335,7 +357,8 @@ impl Upstream {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args())
-            .env("HOME", home(settings));
+            .current_dir(case_root(settings))
+            .env("HOME", case_root(settings));
         command
     }
 }
@@ -380,14 +403,16 @@ impl Crabpot {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args())
-            .env("HOME", home(settings));
+            .current_dir(case_root(settings))
+            .env("HOME", case_root(settings));
         command
     }
 }
 
 /// The case's root, which holds the settings file: a `~` in a case names a path
-/// the case made and not the machine's.
-fn home(settings: &Path) -> &Path {
+/// the case made and not the machine's, and a relative path is read against it
+/// by each wrapper and by the command it runs.
+fn case_root(settings: &Path) -> &Path {
     settings.parent().unwrap_or(settings)
 }
 
@@ -442,6 +467,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::cell::Cell;
+    use std::os::unix::net::UnixStream;
 
     /// Answers each probe with what `answer` says.
     struct StandIn(&'static str, fn(&Probe) -> u8);
@@ -510,6 +536,51 @@ mod tests {
                 _ => probe::ALLOWED,
             },
         );
+        outcome.unwrap();
+    }
+
+    /// Runs a probe by dialing the socket at a `connect-unix` probe's path.
+    struct Dialer;
+
+    impl Runner for Dialer {
+        fn name(&self) -> &'static str {
+            "dialer"
+        }
+
+        fn run(&self, _settings: &Path, probe: &Probe) -> Result<u8, Error> {
+            let Probe::ConnectUnix(path) = probe else {
+                return Ok(probe::ALLOWED);
+            };
+            match UnixStream::connect(path) {
+                Ok(_) => Ok(probe::ALLOWED),
+                Err(_) => Ok(probe::REFUSED),
+            }
+        }
+
+        fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn a_connect_unix_probe_finds_a_socket_served_for_it() {
+        let dir = std::env::temp_dir().join(format!("crabpot-serve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let case = Case {
+            probes: vec![Probe::ConnectUnix(dir.join("live.sock").display().to_string())],
+            ..case()
+        };
+
+        let outcome = compare(
+            &case,
+            Path::new("/r/settings.json"),
+            &|| Ok(()),
+            &Dialer,
+            &StandIn("always", |_| probe::ALLOWED),
+        );
+
+        let _ = fs::remove_dir_all(&dir);
         outcome.unwrap();
     }
 

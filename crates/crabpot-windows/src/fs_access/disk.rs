@@ -1,6 +1,7 @@
 //! What the path rules ask of the disk, behind one trait so a test can answer
 //! for a Windows volume on any host.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 
@@ -112,19 +113,58 @@ impl Disk for StdDisk {
 
     fn read_dir(&self, path: &str) -> Result<Vec<Entry>, DiskError> {
         let listing = fs::read_dir(path).map_err(|err| disk_error(&err))?;
-        let mut entries = Vec::new();
-        for entry in listing.flatten() {
-            // A name that is not text cannot be matched by a pattern, or
-            // handed to `srt-win` as JSON.
-            let (Ok(name), Ok(file_type)) = (entry.file_name().into_string(), entry.file_type())
-            else {
-                continue;
-            };
-            entries.push(Entry {
-                name,
-                kind: kind_of(file_type),
-            });
-        }
-        Ok(entries)
+        entries_of(listing.map(|item| -> io::Result<_> {
+            let entry = item?;
+            Ok((entry.file_name(), entry.file_type()))
+        }))
+    }
+}
+
+/// The entries of a listing, or the first error in it: a listing that stopped
+/// part way is not one that was read, and the caller must not take it for all
+/// of the directory.
+fn entries_of(
+    listing: impl Iterator<Item = io::Result<(OsString, io::Result<fs::FileType>)>>,
+) -> Result<Vec<Entry>, DiskError> {
+    let mut entries = Vec::new();
+    for item in listing {
+        let (name, file_type) = item.map_err(|err| disk_error(&err))?;
+        let file_type = file_type.map_err(|err| disk_error(&err))?;
+        // A name that is not text cannot be matched by a pattern, or handed to
+        // `srt-win` as JSON.
+        let Ok(name) = name.into_string() else {
+            continue;
+        };
+        entries.push(Entry {
+            name,
+            kind: kind_of(file_type),
+        });
+    }
+    Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_listing_that_fails_part_way_is_an_error() {
+        let listing = vec![Err(io::Error::from(io::ErrorKind::PermissionDenied))];
+        assert_eq!(
+            entries_of(listing.into_iter()),
+            Err(DiskError::Other("permission denied".to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_entry_whose_type_cannot_be_read_is_an_error() {
+        let listing = vec![Ok((
+            OsString::from("Key.pem"),
+            Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+        ))];
+        assert_eq!(
+            entries_of(listing.into_iter()),
+            Err(DiskError::Other("permission denied".to_owned()))
+        );
     }
 }

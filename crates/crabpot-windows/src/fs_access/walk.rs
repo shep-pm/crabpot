@@ -7,7 +7,7 @@ use super::{Disk, Kind, Ordered};
 
 /// The paths on disk that `pattern` matches. A link or junction is a match in
 /// its own right and is not walked into. A directory that cannot be listed
-/// yields nothing.
+/// yields nothing. A pattern that ends in a separator matches directories only.
 ///
 /// The pattern is read twice, the way upstream does for a directory with `[`
 /// in its name: with `[` and `]` as a character class from the first of them,
@@ -46,7 +46,9 @@ fn base_dir<'a>(pattern: &'a str, glob: &[char]) -> &'a str {
 }
 
 fn walk<D: Disk>(disk: &D, base: &str, tail: &str, found: &mut Ordered) {
-    let tail = tail.to_lowercase();
+    // A separator at the end asks for a directory, and no entry's name has one.
+    let directories_only = tail.ends_with('/');
+    let tail = tail.trim_end_matches('/').to_lowercase();
     // `*` and `?` stop at a separator, so without `**` the tail's depth is the
     // depth of every match.
     let depth = (!tail.contains("**")).then(|| tail.split('/').count());
@@ -64,7 +66,8 @@ fn walk<D: Disk>(disk: &D, base: &str, tail: &str, found: &mut Ordered) {
                 format!("{relative}/{}", entry.name)
             };
             let path = format!("{}\\{}", dir.trim_end_matches('\\'), entry.name);
-            if glob_matches(&tail, &below.to_lowercase()) {
+            let wanted = !directories_only || entry.kind == Kind::Dir;
+            if wanted && glob_matches(&tail, &below.to_lowercase()) {
                 found.insert(&path);
             }
             if entry.kind == Kind::Dir && depth.is_none_or(|most| level < most) {

@@ -162,6 +162,19 @@ fn a_glob_expands_case_insensitively() {
 }
 
 #[test]
+fn a_pattern_ending_in_a_separator_matches_directories_only() {
+    let host = host(
+        FakeDisk::default()
+            .file(r"C:\Proj\Secrets\Key.pem")
+            .file(r"C:\Proj\notes.txt"),
+    );
+    assert_eq!(
+        expand_paths(&host, &spelled(&[r"C:\Proj\*\"]), Mode::Deny),
+        Ok(strings(&[r"C:\Proj\Secrets"]))
+    );
+}
+
+#[test]
 fn a_directory_with_brackets_in_its_name_is_walked_as_that_name() {
     let host = host(
         FakeDisk::default()

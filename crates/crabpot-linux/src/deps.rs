@@ -140,13 +140,15 @@ fn proc_status() -> Option<String> {
     std::fs::read_to_string("/proc/self/status").ok()
 }
 
-/// The first executable file called `name` in a directory of `path`. An empty
+/// The first executable file called `name` in a directory of `path`, as an
+/// absolute path: a relative entry is taken from the working directory now, so
+/// a command run later from another directory runs the file found here. An empty
 /// entry is skipped, since a path found there has no directory, and a command
 /// run by it would search `PATH` again.
 fn find_executable(name: &str, path: &OsStr) -> Option<PathBuf> {
     env::split_paths(path)
         .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(name))
+        .filter_map(|dir| std::path::absolute(dir.join(name)).ok())
         .find(|candidate| is_executable(candidate))
 }
 
@@ -280,6 +282,21 @@ mod tests {
         let result = check(OsStr::new(""), Some(NOT_ROOT), &mut Vec::new());
         fs::remove_file(&bwrap).expect("removed");
         assert_eq!(result, Err(DepsError::Missing { tool: "bwrap" }));
+    }
+
+    #[test]
+    fn a_bwrap_found_by_a_relative_path_entry_is_returned_absolute() {
+        let cwd = std::env::current_dir().expect("a working directory");
+        let name = format!("crabpot-deps-relative-{}", std::process::id());
+        let dir = cwd.join(&name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("a directory");
+        let bwrap = dir.join("bwrap");
+        fs::write(&bwrap, format!("#!/bin/sh\n{MODERN}\n")).expect("a script");
+        fs::set_permissions(&bwrap, fs::Permissions::from_mode(0o755)).expect("a mode");
+        let result = check(OsStr::new(&name), Some(NOT_ROOT), &mut Vec::new());
+        fs::remove_dir_all(&dir).expect("removed");
+        assert_eq!(result, Ok(bwrap));
     }
 
     #[test]

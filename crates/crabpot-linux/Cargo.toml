@@ -14,6 +14,14 @@ exclude = ["/docs/"]
 # flips this, and `release-plz.toml` with it.
 publish = false
 
+[dependencies]
+crabpot-core.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# The user id and the access check that decide whether a directory is denied
+# whole, through safe calls.
+nix = { version = "0.31", default-features = false, features = ["user", "fs"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The `O_TMPFILE` open the args file is opened with. std cannot ask for it.
 libc = { version = "0.2", default-features = false }

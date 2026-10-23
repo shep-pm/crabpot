@@ -14,10 +14,13 @@ exclude = ["/docs/"]
 # flips this, and `release-plz.toml` with it.
 publish = false
 
+[dependencies]
+crabpot-core.workspace = true
+
 [target.'cfg(unix)'.dependencies]
-# Asks the kernel whether this process may execute a file, through a safe
-# call.
-nix = { version = "0.31", default-features = false, features = ["fs", "user"] }
+# The user id and the access check that decide whether a directory is denied
+# whole, or a bwrap is executable, through safe calls.
+nix = { version = "0.31", default-features = false, features = ["user", "fs"] }
 
 [lints]
 workspace = true

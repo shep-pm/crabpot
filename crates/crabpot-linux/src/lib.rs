@@ -1,7 +1,8 @@
 //! The Linux half of crabpot: the bwrap argv, the mandatory-deny walker, the
 //! seccomp filters and the bwrap dependency checks.
 //!
-//! The crate is the landing place for the Linux slices of the Linux map. It
+//! The crate is the landing place for the Linux slices of the Linux map, and
+//! holds only the ones that have landed: [`mandatory`] and [`deps`] so far. It
 //! builds on every platform so a Linux slice fails on the macOS runner too, as
 //! `crabpot-macos` does in reverse; Linux-only code sits behind
 //! `cfg(target_os = "linux")`. The facade depends on it as a target-specific
@@ -11,7 +12,8 @@
 //! What lives here, or will, per ADR-0014:
 //!
 //! - The bwrap argv, rendered under upstream's size limits.
-//! - The mandatory-deny walker, matching upstream's `rg` list with `std::fs`.
+//! - The mandatory-deny walker, matching upstream's `rg` list with `std::fs`
+//!   ([`mandatory`]).
 //! - The two seccomp filters, built per architecture.
 //! - The bwrap dependency checks, run before a sandbox starts: [`deps`].
 //! - The Linux path entries: `denyRead`, `allowRead`, `allowWrite` and
@@ -21,3 +23,6 @@
 //! facade's `cli` half, not this crate.
 
 pub mod deps;
+
+#[cfg(unix)]
+pub mod mandatory;

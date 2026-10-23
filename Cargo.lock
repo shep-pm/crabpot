@@ -68,6 +68,7 @@ dependencies = [
 name = "crabpot-linux"
 version = "0.1.1"
 dependencies = [
+ "crabpot-core",
  "nix",
 ]
 

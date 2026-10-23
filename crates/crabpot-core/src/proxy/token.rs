@@ -94,9 +94,15 @@ impl Token {
         };
         let decoded = String::from_utf8_lossy(&decoded);
         match decoded.split_once(':') {
-            Some((user, password)) => !user.is_empty() && same(password, &self.0),
+            Some((user, password)) => self.accepts_login(user, password),
             None => false,
         }
+    }
+
+    /// Whether a client that presents `user` and `password` is let in: the
+    /// username is a non-empty label, and the password is this token.
+    pub(super) fn accepts_login(&self, user: &str, password: &str) -> bool {
+        !user.is_empty() && same(password, &self.0)
     }
 }
 

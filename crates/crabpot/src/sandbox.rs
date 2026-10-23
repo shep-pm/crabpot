@@ -46,8 +46,12 @@ impl Sandbox {
             )
             .map_err(|e| StartError::Proxy(e.kind()))?;
             Ok(Self {
-                profile: crabpot_macos::profile::render(config, Some(proxy.port()))
-                    .map_err(StartError::UnresolvedPath)?,
+                profile: crabpot_macos::profile::render(
+                    config,
+                    Some(proxy.port()),
+                    Some(proxy.socks_port()),
+                )
+                .map_err(StartError::UnresolvedPath)?,
                 // The proxy listens on `127.0.0.1`, so the child reaches
                 // loopback through it.
                 facts: Facts::from_process(true),
@@ -111,8 +115,16 @@ impl Sandbox {
                 .collect::<Vec<_>>()
                 .join(" ");
             let username = username_for(&line);
-            for (name, value) in
-                crabpot_macos::env::http::vars(self.proxy.port(), &username, self.proxy.token())
+            let token = self.proxy.token();
+            for (name, value) in crabpot_macos::env::http::vars(self.proxy.port(), &username, token)
+                .into_iter()
+                .chain(crabpot_macos::env::socks::vars(
+                    self.proxy.socks_port(),
+                    &username,
+                    token,
+                    // The HTTP proxy is always there, so ssh goes through it.
+                    true,
+                ))
             {
                 wrapped.env(name, value);
             }
@@ -217,6 +229,26 @@ mod tests {
             "{proxy}"
         );
         assert!(proxy.starts_with("http://srt.dHJ1ZQ%3D%3D:"), "{proxy}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_wrapped_command_is_pointed_at_the_socks_proxy() {
+        let sandbox = Sandbox::start(&Config::default()).unwrap();
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+
+        let ftp = wrapped
+            .get_envs()
+            .find(|(name, _)| *name == "FTP_PROXY")
+            .and_then(|(_, value)| value)
+            .expect("FTP_PROXY is set")
+            .to_string_lossy();
+        assert!(ftp.starts_with("socks5h://srt.dHJ1ZQ%3D%3D:"), "{ftp}");
+        assert!(
+            ftp.ends_with(&format!("@localhost:{}", sandbox.proxy.socks_port())),
+            "{ftp}"
+        );
+        assert_ne!(sandbox.proxy.socks_port(), sandbox.proxy.port());
     }
 
     #[cfg(not(target_os = "macos"))]

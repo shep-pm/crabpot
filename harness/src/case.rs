@@ -24,9 +24,18 @@ pub enum Probe {
         host: String,
         /// The port to dial.
         port: u16,
+        /// The proxy to ask for the connection, if not the HTTP proxy.
+        via: Option<Via>,
     },
     /// Bind a loopback socket.
     Bind,
+}
+
+/// A proxy other than the HTTP one that a `connect` probe goes through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// The SOCKS5 proxy.
+    Socks5,
 }
 
 /// A case file, with `$ROOT` expanded.
@@ -147,8 +156,12 @@ impl Probe {
             Self::Read(path) => vec!["read".to_owned(), path.clone()],
             Self::Write(path) => vec!["write".to_owned(), path.clone()],
             Self::Rename { from, to } => vec!["rename".to_owned(), from.clone(), to.clone()],
-            Self::Connect { host, port } => {
-                vec!["connect".to_owned(), host.clone(), port.to_string()]
+            Self::Connect { host, port, via } => {
+                let mut args = vec!["connect".to_owned(), host.clone(), port.to_string()];
+                if let Some(Via::Socks5) = via {
+                    args.extend(["--via".to_owned(), "socks5".to_owned()]);
+                }
+                args
             }
             Self::Bind => vec!["bind".to_owned()],
         }
@@ -178,6 +191,15 @@ impl Probe {
                     .ok_or_else(|| {
                         Error::Shape("a probe without a `port` that fits 16 bits".to_owned())
                     })?,
+                via: match field("via") {
+                    None => None,
+                    Some(Value::String(via)) if via == "socks5" => Some(Via::Socks5),
+                    Some(_) => {
+                        return Err(Error::Shape(
+                            "a probe with a `via` that is not \"socks5\"".to_owned(),
+                        ));
+                    }
+                },
             }),
             "bind" => Ok(Self::Bind),
             _ => Err(Error::UnknownProbe(kind)),
@@ -201,6 +223,7 @@ mod tests {
                 {"kind": "write", "path": "$ROOT/out"},
                 {"kind": "rename", "from": "$ROOT/in", "to": "$ROOT/moved"},
                 {"kind": "connect", "host": "example.com", "port": 443},
+                {"kind": "connect", "host": "example.com", "port": 443, "via": "socks5"},
                 {"kind": "bind"}
             ]
         }"#;
@@ -221,7 +244,13 @@ mod tests {
                 },
                 Probe::Connect {
                     host: "example.com".to_owned(),
-                    port: 443
+                    port: 443,
+                    via: None,
+                },
+                Probe::Connect {
+                    host: "example.com".to_owned(),
+                    port: 443,
+                    via: Some(Via::Socks5),
                 },
                 Probe::Bind,
             ]

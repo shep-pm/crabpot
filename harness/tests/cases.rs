@@ -239,6 +239,22 @@ fn refused_allow_mach_lookup_mid_wildcard() {
 }
 
 #[test]
+fn socks_allowed_example_com() {
+    run(
+        "socks_allowed_example_com",
+        "socks-allowed-example-com.json",
+    );
+}
+
+#[test]
+fn socks_other_domain_refused() {
+    run(
+        "socks_other_domain_refused",
+        "socks-other-domain-refused.json",
+    );
+}
+
+#[test]
 fn denied_beats_allowed() {
     run("denied_beats_allowed", "denied-domains-beats-allowed.json");
 }

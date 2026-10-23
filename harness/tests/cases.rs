@@ -168,3 +168,26 @@ fn default_write_dev_null() {
 fn default_write_tmp_claude() {
     run("default_write_tmp_claude", "default-write-tmp-claude.json");
 }
+
+#[test]
+fn deny_write_file() {
+    run("deny_write_file", "deny-write-file.json");
+}
+
+#[test]
+fn deny_write_glob() {
+    run("deny_write_glob", "deny-write-glob.json");
+}
+
+#[test]
+fn deny_write_literal() {
+    run("deny_write_literal", "deny-write-literal.json");
+}
+
+#[test]
+fn refused_deny_write_trailing_separator_glob() {
+    run(
+        "refused_deny_write_trailing_separator_glob",
+        "refused-deny-write-trailing-separator-glob.json",
+    );
+}

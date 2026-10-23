@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 /// Why a probe could not tell whether the sandbox allowed its action.
 #[derive(Debug)]
 pub enum Error {
-    /// The arguments are not one of the four actions with their operands.
+    /// The arguments are not one of the probe actions with their operands.
     Usage,
     /// `HTTP_PROXY` is not an `http://` URL with a host.
     BadProxy,
@@ -36,7 +36,7 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Usage => f.write_str(
-                "usage: probe read <path> | write <path> | connect <host> <port> | bind | loopback",
+                "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> <port> | bind | loopback",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadAnswer(line) => write!(f, "the proxy answered {line:?}, not a status line"),
@@ -76,6 +76,7 @@ fn attempt(args: &[String], http_proxy: Option<&str>) -> Outcome {
     match args.as_slice() {
         ["read", path] => read(path),
         ["write", path] => write(path),
+        ["rename", from, to] => rename(from, to),
         ["connect", host, port] => connect(host, port, http_proxy),
         ["bind"] => bind(),
         ["loopback"] => loopback(),
@@ -120,6 +121,10 @@ fn write(path: &str) -> Outcome {
         .truncate(false)
         .open(path);
     judge(opened.map(drop), WRITE_REFUSED)
+}
+
+fn rename(from: &str, to: &str) -> Outcome {
+    judge(std::fs::rename(from, to), WRITE_REFUSED)
 }
 
 /// Dials `host:port` directly, or asks the proxy at `http_proxy` for a tunnel to it.
@@ -407,6 +412,43 @@ mod tests {
         let fixture = Fixture::new("write-denied");
         fixture.set_mode(fixture.path(), 0o555);
         assert_eq!(probe_path("write", &fixture.path().join("file")), 1);
+    }
+
+    #[test]
+    fn rename_in_a_writable_folder_exits_0_and_moves_the_file() {
+        let fixture = Fixture::new("rename-ok");
+        let from = fixture.path().join("from");
+        let to = fixture.path().join("to");
+        fs::write(&from, "x").unwrap();
+        assert_eq!(
+            probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            0
+        );
+        assert!(to.exists() && !from.exists());
+    }
+
+    #[test]
+    fn rename_in_a_read_only_folder_exits_1() {
+        let fixture = Fixture::new("rename-denied");
+        let from = fixture.path().join("from");
+        fs::write(&from, "x").unwrap();
+        fixture.set_mode(fixture.path(), 0o555);
+        let to = fixture.path().join("to");
+        assert_eq!(
+            probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            1
+        );
+    }
+
+    #[test]
+    fn rename_of_a_missing_file_exits_2() {
+        let fixture = Fixture::new("rename-missing");
+        let from = fixture.path().join("absent");
+        let to = fixture.path().join("to");
+        assert_eq!(
+            probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            2
+        );
     }
 
     #[test]

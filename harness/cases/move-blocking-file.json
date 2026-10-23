@@ -1,0 +1,15 @@
+{
+  "files": {
+    "$ROOT/work/.env": "x",
+    "$ROOT/work/seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT/work"], "denyWrite": ["$ROOT/work/.env"]}
+  },
+  "probes": [
+    {"kind": "rename", "from": "$ROOT/work/.env", "to": "$ROOT/work/moved"},
+    {"kind": "rename", "from": "$ROOT/work/seed", "to": "$ROOT/work/.env"},
+    {"kind": "rename", "from": "$ROOT/work/seed", "to": "$ROOT/work/seed2"}
+  ]
+}

@@ -63,7 +63,7 @@ pub(crate) fn resolve(cwd: &str, path: &str) -> String {
 }
 
 /// `path.dirname`, for a path with no `//` in it.
-pub(crate) fn dirname(path: &str) -> &str {
+pub fn dirname(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     match trimmed.rfind('/') {
         None if is_absolute(path) => "/",

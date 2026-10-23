@@ -35,7 +35,7 @@ A settings file, the files it starts from, and the probes run against it.
 _Avoid_: scenario, fixture (for the whole case), test
 
 **Probe**:
-One action a case runs inside the sandbox (read, write, connect, bind, loopback), whose outcome is allowed or refused.
+One action a case runs inside the sandbox (read, write, rename, connect, bind, loopback), whose outcome is allowed or refused.
 _Avoid_: check, assertion
 
 ### Running

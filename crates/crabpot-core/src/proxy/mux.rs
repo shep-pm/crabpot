@@ -2,9 +2,9 @@
 //! `createMuxProxyServer` (`src/sandbox/mux-proxy.ts`) serves it: HTTP and
 //! SOCKS5 on the same port.
 //!
-//! The same mux is served on a Unix socket too, for a sandbox where no loopback
-//! port can be reached at all: inside a network namespace only a socket bound
-//! there is one a command can dial (ADR-0014).
+//! On Unix the same mux is served on a Unix socket too, for a sandbox where no
+//! loopback port can be reached at all: inside a network namespace only a socket
+//! bound there is one a command can dial (ADR-0014).
 //!
 //! A connection's first byte chooses. SOCKS5 greets with 0x05 and a SOCKS4
 //! CONNECT starts with 0x04, while every HTTP request method starts with an
@@ -12,31 +12,40 @@
 //! with 0x16, so one byte tells the two apart. A SOCKS connection is served in
 //! process, with the byte put back at the front of it. Anything else is piped to
 //! the HTTP backend, which listens on a Unix socket in the temp dir named
-//! `srt-mux-<pid>-<seq>.sock`.
+//! `srt-mux-<pid>-<seq>.sock`, or on Windows on a loopback port inside the
+//! range the firewall permits.
 //!
 //! The backend is bound before the front end accepts anything, so no connection
 //! is dispatched to a backend that is not there. Its file goes with the proxy
 //! that started it (ADR-0010). The socket binds wherever macOS takes its path,
 //! past the 104 bytes of `sun_path`, as upstream's does under Node (ADR-0003).
 
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
+
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::net::Ipv4Addr;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, copy_bidirectional};
 use tokio::time::timeout;
 
+#[cfg(unix)]
+pub(super) use unix::{Front, Socket};
+#[cfg(windows)]
+pub(super) use windows::Socket;
+
+use super::range::{PortRange, RangeError};
 use super::shared::{Shared, Stream};
 use super::socks;
-use super::token;
-use crate::unix_socket;
 
 /// The first bytes that mean SOCKS: 0x05 greets SOCKS5, 0x04 is a SOCKS4 CONNECT.
 const SOCKS: [u8; 2] = [0x04, 0x05];
@@ -45,91 +54,110 @@ const SOCKS: [u8; 2] = [0x04, 0x05];
 /// `DEFAULT_FIRST_BYTE_TIMEOUT_MS` has it.
 const FIRST_BYTE: Duration = Duration::from_secs(10);
 
-/// The backend sockets bound so far in this process, so that two sandboxes do
-/// not name the same file.
-static SEQ: AtomicUsize = AtomicUsize::new(0);
+/// Where the mux dials the HTTP backend.
+#[derive(Clone, Debug)]
+pub(super) enum Dial {
+    /// The path of the backend's Unix socket.
+    #[cfg(unix)]
+    Socket(PathBuf),
+    /// The loopback port of the backend, in the range the firewall permits.
+    #[cfg(windows)]
+    Port(u16),
+}
 
-/// The backend socket's file, which goes when this goes: with a `Proxy` that
-/// took it over, and at once with a proxy that never started.
-#[derive(Debug)]
-pub(super) struct Socket(PathBuf);
-
-impl Socket {
-    /// Binds a fresh `srt-mux-<pid>-<seq>.sock` in the temp dir and takes the
-    /// file it names, alongside the listener bound to it. A file a process of
-    /// the same pid crashed with is removed first, as upstream's
-    /// `listenHttpBackend` does.
-    ///
-    /// Call this outside a tokio runtime, and hand the listener to tokio's
-    /// `UnixListener::from_std` inside one.
-    pub(super) fn bind() -> io::Result<(UnixListener, Self)> {
-        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("srt-mux-{}-{seq}.sock", std::process::id()));
-        let _ = fs::remove_file(&path);
-        let listener = unix_socket::bind(&path)?;
-        Ok((listener, Self(path)))
-    }
-
-    /// The path to dial to reach the HTTP backend.
-    pub(super) fn path(&self) -> &Path {
-        &self.0
+impl Dial {
+    /// The loopback port it dials, which the front end may not listen on.
+    pub(super) fn port(&self) -> Option<u16> {
+        match self {
+            #[cfg(unix)]
+            Self::Socket(_) => None,
+            #[cfg(windows)]
+            Self::Port(port) => Some(*port),
+        }
     }
 }
 
-impl Drop for Socket {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
+/// The HTTP backend, bound and not yet served.
+pub(super) struct Backend {
+    #[cfg(unix)]
+    listener: std::os::unix::net::UnixListener,
+    #[cfg(windows)]
+    listener: std::net::TcpListener,
+    dial: Dial,
+    socket: Socket,
 }
 
-/// What a sandbox's own socket is open to: its owner alone.
-const OWNER_ONLY: u32 = 0o600;
-
-/// The front end's Unix socket, which a sandboxed command dials where a loopback
-/// port cannot reach it. It carries the whole mux, both protocols, and is served
-/// by [`dispatch`] exactly as the port is.
-///
-/// Its file is only for the sandbox that bound it, so it is mode 0600, and it
-/// goes when the `Proxy` that started it goes.
-#[derive(Debug)]
-pub(super) struct Front(PathBuf);
-
-impl Front {
-    /// Binds a fresh `claude-http-<16 hex>.sock` in the temp dir, which is how
-    /// upstream names it, and hands back the listener bound to it and its path.
-    /// The file is mode 0600, and nothing is accepted from it before that is set.
+impl Backend {
+    /// Binds the backend: a fresh Unix socket on Unix, and on Windows the first
+    /// free port of `range` or a port of the OS's choosing without one.
     ///
-    /// Call this outside a tokio runtime, and hand the listener to tokio's
-    /// `UnixListener::from_std` inside one.
+    /// Call this outside a tokio runtime, and hand the backend to
+    /// [`Backend::into_tokio`] inside one.
     ///
     /// # Errors
     ///
-    /// The [`io::Error`] of whatever failed: reading `/dev/urandom` for the name,
-    /// binding, or setting the mode. A socket bound before the mode failed is
-    /// removed before this returns.
-    pub(super) fn bind() -> io::Result<(UnixListener, Self)> {
-        let path = std::env::temp_dir().join(format!("claude-http-{}.sock", token::random_hex(8)?));
-        let listener = unix_socket::bind(&path)?;
-        let front = Self(path);
-        fs::set_permissions(&front.0, fs::Permissions::from_mode(OWNER_ONLY))?;
-        Ok((listener, front))
+    /// [`RangeError::Full`] when no port of `range` is free, and
+    /// [`RangeError::Io`] when binding failed.
+    #[cfg(unix)]
+    pub(super) fn bind(_range: Option<PortRange>) -> Result<Self, RangeError> {
+        let (listener, socket) = Socket::bind()?;
+        let dial = Dial::Socket(socket.path().to_path_buf());
+        Ok(Self {
+            listener,
+            dial,
+            socket,
+        })
     }
 
-    /// The path to dial to reach the mux.
-    pub(super) fn path(&self) -> &Path {
-        &self.0
+    /// Binds the backend: a fresh Unix socket on Unix, and on Windows the first
+    /// free port of `range` or a port of the OS's choosing without one.
+    ///
+    /// Call this outside a tokio runtime, and hand the backend to
+    /// [`Backend::into_tokio`] inside one.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::Full`] when no port of `range` is free, and
+    /// [`RangeError::Io`] when binding failed.
+    #[cfg(windows)]
+    pub(super) fn bind(range: Option<PortRange>) -> Result<Self, RangeError> {
+        let (listener, port) = super::range::listen(range, &[])?;
+        Ok(Self {
+            listener,
+            dial: Dial::Port(port),
+            socket: Socket,
+        })
     }
-}
 
-impl Drop for Front {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+    /// Where to dial to reach the backend.
+    pub(super) fn dial(&self) -> Dial {
+        self.dial.clone()
+    }
+
+    /// Hands the backend to tokio, and the file it leaves behind, which goes
+    /// when that does. Call this inside the runtime that will serve it.
+    #[cfg(unix)]
+    pub(super) fn into_tokio(self) -> io::Result<(tokio::net::UnixListener, Socket)> {
+        Ok((
+            tokio::net::UnixListener::from_std(self.listener)?,
+            self.socket,
+        ))
+    }
+
+    /// Hands the backend to tokio, and the file it leaves behind, which goes
+    /// when that does. Call this inside the runtime that will serve it.
+    #[cfg(windows)]
+    pub(super) fn into_tokio(self) -> io::Result<(tokio::net::TcpListener, Socket)> {
+        Ok((
+            tokio::net::TcpListener::from_std(self.listener)?,
+            self.socket,
+        ))
     }
 }
 
 /// The front end's handler for one connection: the byte it peeked at picks the
 /// leg, and SOCKS is served with that byte back at the front of the connection.
-pub(super) async fn dispatch<S: Stream>(mut client: S, socket: PathBuf, shared: Arc<Shared>) {
+pub(super) async fn dispatch<S: Stream>(mut client: S, backend: Dial, shared: Arc<Shared>) {
     let mut peeked = [0u8; 1];
     let read = timeout(FIRST_BYTE, client.read(&mut peeked)).await;
     let peeked = match read {
@@ -147,20 +175,37 @@ pub(super) async fn dispatch<S: Stream>(mut client: S, socket: PathBuf, shared: 
         socks::handle(served, shared).await;
         return;
     }
-    let _ = http(client, &socket, peeked).await;
+    let _ = http(client, &backend, peeked).await;
 }
 
-/// Pipes `client` to the HTTP backend, with the byte the front end peeked at
-/// written there first.
-async fn http<S: Stream>(mut client: S, socket: &Path, peeked: u8) -> io::Result<()> {
-    let mut backend = match unix_socket::connect(socket).await {
+/// Pipes `client` to the HTTP backend.
+async fn http<S: Stream>(mut client: S, backend: &Dial, peeked: u8) -> io::Result<()> {
+    match backend {
+        #[cfg(unix)]
+        Dial::Socket(path) => {
+            pipe(&mut client, crate::unix_socket::connect(path).await, peeked).await
+        }
+        #[cfg(windows)]
+        Dial::Port(port) => {
+            let dialed = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, *port)).await;
+            pipe(&mut client, dialed, peeked).await
+        }
+    }
+}
+
+/// Pipes `client` to `backend` once it has been dialed, with the byte the front
+/// end peeked at written there first, or answers `client` with why it was not.
+async fn pipe<S: Stream, B: Stream>(
+    client: &mut S,
+    backend: io::Result<B>,
+    peeked: u8,
+) -> io::Result<()> {
+    let mut backend = match backend {
         Ok(backend) => backend,
-        Err(error) => return refused(&mut client, &error).await,
+        Err(error) => return refused(client, &error).await,
     };
     backend.write_all(&[peeked]).await?;
-    copy_bidirectional(&mut client, &mut backend)
-        .await
-        .map(drop)
+    copy_bidirectional(client, &mut backend).await.map(drop)
 }
 
 /// The 502 upstream answers a backend it cannot reach with, naming the errno of
@@ -225,5 +270,5 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Peeked<S> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

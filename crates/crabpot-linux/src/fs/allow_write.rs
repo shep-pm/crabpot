@@ -10,9 +10,17 @@
 //!
 //! - A glob is no path. bwrap binds one path, so a write glob is dropped
 //!   (upstream's `stripWriteGlobs`), unless it is also the name of a path.
-//! - `/dev` is bwrap's own fresh mount, which the `base` section mounts
-//!   read-write, so the sandbox's stdio roots under it need no bind of their
-//!   own. Binding one would reach through that mount to the host's device.
+//! - `/dev` is bwrap's own fresh mount, which
+//!   [`private_mounts`](super::private_mounts) mounts after this section, so
+//!   the sandbox's stdio roots under it need no bind of their own. Binding one
+//!   would reach through that mount to the host's device.
+//!
+//! The plan puts this section between the read-only root and the sandbox's own
+//! mounts, which is the order upstream's `wrapCommandWithSandboxLinux` builds.
+//! A bind follows the root so it can carve a writable path out of it, and the
+//! private mounts follow the bind so that a grant of the whole root, or of
+//! `/dev` or `/proc`, cannot put the host's filesystem, devices or processes
+//! back over them.
 //!
 //! `denyWrite` comes after this section, and the mandatory write denies with it.
 
@@ -90,8 +98,8 @@ fn bind_of(base: &PathBase, spelling: &str) -> Result<Option<String>, PathError>
     if path.is_empty() {
         return Ok(None);
     }
-    // The `base` section's `--dev /dev` is already writable, and holds the
-    // sandbox's own stdio.
+    // The `private_mounts` section's `--dev /dev` follows this one and holds
+    // the sandbox's own stdio, writable on its own.
     if path.starts_with("/dev/") {
         return Ok(None);
     }

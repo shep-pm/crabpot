@@ -1,10 +1,11 @@
 //! The filesystem part of a bwrap invocation: the words that build the
 //! sandbox's mounts and namespaces for one [`Config`].
 //!
-//! A plan is a list of sections, in order, since bwrap applies its mounts in the
-//! order it reads them and a later one covers an earlier one. A section is a
-//! file in this folder with a `words` function, and it is registered by naming
-//! it in the `sections!` call.
+//! A plan is a list of sections, in order, since bwrap applies its mounts in
+//! the order it reads them and a later one covers an earlier one. A section is
+//! a file in this folder with a `words` function, and it is registered by
+//! naming it in the `sections!` call. The sandbox's own mounts are the last
+//! section, and any section that binds a path belongs before them.
 
 use std::ffi::OsString;
 
@@ -20,7 +21,7 @@ macro_rules! sections {
     };
 }
 
-sections!(base, allow_write);
+sections!(base, allow_write, private_mounts);
 
 #[cfg(all(test, unix))]
 mod tests;

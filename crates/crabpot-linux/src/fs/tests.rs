@@ -36,6 +36,33 @@ fn words(config: &Config, base: &PathBase) -> Vec<String> {
         .collect()
 }
 
+/// A whole plan's words, as text: every mount `bwrap` is asked to make, in the
+/// order it reads them.
+fn plan(config: &Config) -> Vec<String> {
+    Plan::build(config)
+        .expect("the config resolves")
+        .words()
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Where the plan mounts `dest` as `flag` asks.
+fn mount_at(words: &[String], flag: &str, dest: &str) -> usize {
+    words
+        .windows(2)
+        .position(|pair| pair == [flag, dest])
+        .unwrap_or_else(|| panic!("{flag} {dest} is not in the plan: {words:#?}"))
+}
+
+/// Where the plan binds `path` writable.
+fn bind_at(words: &[String], path: &str) -> usize {
+    words
+        .windows(3)
+        .position(|triple| triple == ["--bind", path, path])
+        .unwrap_or_else(|| panic!("--bind {path} {path} is not in the plan: {words:#?}"))
+}
+
 /// The paths the words bind writable, in order.
 fn bound(words: &[String]) -> Vec<String> {
     words
@@ -74,22 +101,48 @@ fn a_bind_follows_the_read_only_root() {
     tree.dir("work");
     let work = at(&tree, "work");
 
-    let words = Plan::build(&allowing(&[&work]))
-        .expect("the config resolves")
-        .words()
-        .iter()
-        .map(|word| word.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
+    let words = plan(&allowing(&[&work]));
     let root = words
         .windows(3)
         .position(|triple| triple == ["--ro-bind", "/", "/"])
         .expect("the read-only root");
-    let bind = words
-        .windows(3)
-        .position(|triple| triple[0] == "--bind" && triple[1] == work)
-        .expect("the bind of the allowed path");
+    let bind = bind_at(&words, &work);
 
     assert!(root < bind, "{words:#?}");
+}
+
+/// The plan's last words are the sandbox's own mounts, as they are in
+/// upstream's `wrapCommandWithSandboxLinux`. A grant of the whole root binds
+/// the host's filesystem over the read-only one, which is what the caller
+/// asked for, and still leaves the sandbox its own `/dev` and its own procfs.
+#[test]
+fn a_bind_of_the_whole_root_leaves_the_private_mounts_last() {
+    let words = plan(&allowing(&["/"]));
+
+    let bind = bind_at(&words, "/");
+    for (flag, dest) in [("--dev", "/dev"), ("--proc", "/proc")] {
+        let mount = mount_at(&words, flag, dest);
+        assert!(bind < mount, "{flag} {dest} follows the bind: {words:#?}");
+    }
+}
+
+/// The sandbox's own trees stay its own whatever a config asks for. A grant on
+/// one of them is bound, and the mount that makes the tree the sandbox's own
+/// follows it, so the host's processes and devices never become the sandbox's.
+/// A tree that is not there at all, which `/proc` is on macOS, binds nothing
+/// and needs no covering.
+#[test]
+fn a_grant_on_a_private_mount_is_covered_by_it() {
+    let words = plan(&allowing(&["/dev", "/proc"]));
+
+    let dev_bind = bind_at(&words, "/dev");
+    for (flag, dest) in [("--dev", "/dev"), ("--proc", "/proc")] {
+        let mount = mount_at(&words, flag, dest);
+        assert!(
+            dev_bind < mount,
+            "{flag} {dest} follows the bind: {words:#?}"
+        );
+    }
 }
 
 #[test]

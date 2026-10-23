@@ -129,9 +129,12 @@ pub fn check_here() -> Result<PathBuf, DepsError> {
     )
 }
 
-/// The first executable file called `name` in a directory of `path`.
+/// The first executable file called `name` in a directory of `path`. An empty
+/// entry is skipped, since a path found there has no directory, and a command
+/// run by it would search `PATH` again.
 fn find_executable(name: &str, path: &OsStr) -> Option<PathBuf> {
     env::split_paths(path)
+        .filter(|dir| !dir.as_os_str().is_empty())
         .map(|dir| dir.join(name))
         .find(|candidate| is_executable(candidate))
 }
@@ -240,6 +243,19 @@ mod tests {
         let path = env::join_paths([&theirs, &ours]).expect("a path");
         let result = check(&path, Some(NOT_ROOT), &mut Vec::new());
         assert_eq!(result, Ok(ours.join("bwrap")));
+    }
+
+    #[test]
+    fn an_empty_path_entry_does_not_find_a_bwrap_in_the_working_directory() {
+        let cwd = std::env::current_dir().expect("a working directory");
+        let bwrap = cwd.join("bwrap");
+        // The working directory is the package's, which has no `bwrap`.
+        assert!(!bwrap.exists(), "{bwrap:?}");
+        fs::write(&bwrap, "#!/bin/sh\n").expect("a script");
+        fs::set_permissions(&bwrap, fs::Permissions::from_mode(0o755)).expect("a mode");
+        let result = check(OsStr::new(""), Some(NOT_ROOT), &mut Vec::new());
+        fs::remove_file(&bwrap).expect("removed");
+        assert_eq!(result, Err(DepsError::Missing { tool: "bwrap" }));
     }
 
     #[test]

@@ -345,10 +345,18 @@ mod tests {
             Self(dir)
         }
 
+        /// A short socket path in this folder, whatever the temp folder's length.
+        fn socket(&self) -> PathBuf {
+            self.0.join("s")
+        }
+
         /// A socket path in this folder that is `len` bytes long.
         fn socket_of(&self, len: usize) -> PathBuf {
             let dir = self.0.as_os_str().len() + 1;
-            let path = self.0.join("s".repeat(len - dir));
+            let name = len
+                .checked_sub(dir)
+                .expect("the temp folder is too long for a path this short");
+            let path = self.0.join("s".repeat(name));
             assert_eq!(path.as_os_str().len(), len);
             path
         }
@@ -371,7 +379,7 @@ mod tests {
     #[test]
     fn connects_to_a_listening_socket() {
         let fixture = Fixture::new("listening");
-        let path = fixture.socket_of(40);
+        let path = fixture.socket();
         let listener = bind_unix(&path).unwrap();
         let server = thread::spawn(move || {
             let mut client = listener.accept().unwrap();
@@ -395,7 +403,7 @@ mod tests {
     fn a_missing_path_is_an_error() {
         let fixture = Fixture::new("missing");
 
-        let outcome = block(connect_unix(&fixture.socket_of(40)));
+        let outcome = block(connect_unix(&fixture.socket()));
 
         assert!(outcome.is_err());
     }

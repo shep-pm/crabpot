@@ -22,7 +22,8 @@ pub enum Probe {
     Bind,
     /// Bind a Unix socket at the path.
     BindUnix(String),
-    /// Dial the Unix socket at the path, which the harness serves.
+    /// Dial the Unix socket at the path. The harness serves it, so a case
+    /// must not hold a file at that path itself.
     ConnectUnix(String),
 }
 

@@ -1,11 +1,21 @@
 //! The cases in `harness/cases/`, each run under upstream and under crabpot.
 //!
-//! Both sandboxes are macOS's for now. Without Node, or without `npm ci` in
-//! `harness/`, a case skips on a developer's machine and fails when `CI` is set.
-
-#![cfg(target_os = "macos")]
+//! macOS runs every case as a comparison of the two Seatbelt runners. Linux has
+//! no crabpot sandbox yet, so a case there runs under upstream's bwrap path
+//! alone, which is what proves that path holds the settings the same way.
+//! `LINUX_READY` names the cases that also run crabpot on Linux, and each Linux
+//! slice adds the cases it makes pass there.
+//!
+//! Without Node, or without `npm ci` in `harness/`, a case skips on a
+//! developer's machine and fails when `CI` is set. On Linux upstream also needs
+//! `bubblewrap`, `socat` and `ripgrep`, and a kernel that lets bwrap take its
+//! namespaces: `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 
 use crabpot_harness::runner::{self, Crabpot, Upstream};
+
+/// The cases that run under crabpot on Linux. Empty until crabpot sandboxes
+/// there, and each Linux slice of #99 appends the cases it makes pass.
+const LINUX_READY: &[&str] = &[];
 
 /// Runs the case file `harness/cases/<file>`.
 fn run(name: &str, file: &str) {
@@ -20,8 +30,15 @@ fn run(name: &str, file: &str) {
     };
     let path = format!("{}/cases/{file}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(&path).unwrap();
-    if let Err(error) = runner::run_case(&text, name, &upstream, &Crabpot::new(probe)) {
-        panic!("{name}: {error}");
+    let outcome = if cfg!(target_os = "macos") || LINUX_READY.contains(&name) {
+        runner::run_case(&text, name, &upstream, &Crabpot::new(probe))
+    } else {
+        runner::run_upstream_only(&text, name, &upstream)
+    };
+    match outcome {
+        Ok(true) => {}
+        Ok(false) => eprintln!("skipping {name}: the case names another platform"),
+        Err(error) => panic!("{name}: {error}"),
     }
 }
 

@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
-use crate::case::{self, Case, Probe};
+use crate::case::{self, Case, Platform, Probe};
 use crate::{probe, serve};
 
 /// Something that runs one probe in a sandbox and reports the probe's exit code.
@@ -76,7 +76,8 @@ pub enum Error {
         /// The probe that ran.
         probe: Probe,
     },
-    /// Upstream cannot be run, for want of Node or of `npm ci` in `harness/`.
+    /// Upstream cannot be run, for want of Node, of `npm ci` in `harness/`, or,
+    /// on Linux, of `bwrap`.
     NoUpstream(String),
 }
 
@@ -151,17 +152,32 @@ pub fn compare(
     upstream: &dyn Runner,
     crabpot: &dyn Runner,
 ) -> Result<(), Error> {
+    run_probes(case, settings, restore, &[upstream, crabpot])
+}
+
+/// Runs every probe of `case` under each runner in `runners`, in order. Two of
+/// them are compared, and one runner alone is a case run without a comparison:
+/// its probes must still each report a code, so a runner that cannot run the
+/// probe at all fails the case.
+fn run_probes(
+    case: &Case,
+    settings: &Path,
+    restore: &dyn Fn() -> Result<(), Error>,
+    runners: &[&dyn Runner],
+) -> Result<(), Error> {
     for probe in &case.probes {
-        restore()?;
-        let served = serve(probe, settings)?;
-        let upstream = code(upstream, settings, probe)?;
-        drop(served);
-
-        restore()?;
-        let served = serve(probe, settings)?;
-        let crabpot = code(crabpot, settings, probe)?;
-        drop(served);
-
+        let mut codes = Vec::with_capacity(runners.len());
+        for runner in runners {
+            restore()?;
+            let served = serve(probe, settings)?;
+            codes.push(code(*runner, settings, probe)?);
+            drop(served);
+        }
+        let (Some(upstream), Some(crabpot)) = (codes.first().copied(), codes.get(1).copied())
+        else {
+            // One runner alone has nothing to agree with.
+            continue;
+        };
         if upstream != crabpot {
             return Err(Error::Differ {
                 probe: probe.clone(),
@@ -216,8 +232,20 @@ pub fn compare_refused(
     upstream: &dyn Runner,
     crabpot: &dyn Runner,
 ) -> Result<(), Error> {
+    run_refusals(case, settings, restore, &[upstream, crabpot])
+}
+
+/// Runs every probe of `case` under each runner in `runners`, which must all
+/// refuse the settings before any probe runs. A `write` probe is the marker:
+/// its file must not be there afterwards.
+fn run_refusals(
+    case: &Case,
+    settings: &Path,
+    restore: &dyn Fn() -> Result<(), Error>,
+    runners: &[&dyn Runner],
+) -> Result<(), Error> {
     for probe in &case.probes {
-        for runner in [upstream, crabpot] {
+        for runner in runners {
             restore()?;
             if !runner.refuses(settings, probe)? || written(probe) {
                 return Err(Error::NotRefused {
@@ -245,9 +273,10 @@ fn code(runner: &dyn Runner, settings: &Path, probe: &Probe) -> Result<u8, Error
     }
 }
 
-/// Runs the case file's `text` in a fresh root named after `name`: creates its
-/// files and its settings file, serves whatever socket it asks for, then
-/// compares its probes, restoring the root before each run.
+/// Runs the case file's `text` under `upstream` and under `crabpot`.
+///
+/// Reports whether the case ran: one that names platforms this machine is not
+/// one of runs nothing, and is not a failure. See [`Case::runs_on`].
 ///
 /// # Errors
 ///
@@ -258,41 +287,119 @@ pub fn run_case(
     name: &str,
     upstream: &dyn Runner,
     crabpot: &dyn Runner,
-) -> Result<(), Error> {
-    let root = Root::new(name).map_err(Error::Io)?;
-    let case = Case::parse(text, &root.0).map_err(Error::Case)?;
-    let settings = Path::new(&root.0).join("settings.json");
-    let served = case
-        .serve
-        .as_ref()
-        .map(|serve| serve::Served::start(Path::new(&serve.unix_socket), &serve.status))
-        .transpose()
-        .map_err(Error::Io)?;
-    let keep: &Path = case
-        .serve
-        .as_ref()
-        .map_or(Path::new(""), |serve| Path::new(&serve.unix_socket));
-    let restore = || {
-        root.empty(keep).map_err(Error::Io)?;
-        for (path, contents) in &case.files {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(Error::Io)?;
+) -> Result<bool, Error> {
+    run_case_under(text, name, &[upstream, crabpot])
+}
+
+/// Runs the case file's `text` under `upstream` alone, with nothing compared.
+/// Every probe must still report the code it exited with, so a runner that
+/// cannot run its probe at all, or that does not refuse settings the case says
+/// are refused, fails the case.
+///
+/// Reports whether the case ran, as [`run_case`] does.
+///
+/// # Errors
+///
+/// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root, its
+/// files or a served socket cannot be created, [`Error::Erred`] for a probe
+/// that could not tell what the sandbox did, [`Error::Unreported`] for a probe
+/// the runner never ran, and [`Error::NotRefused`] for a probe that ran under
+/// a runner that should have refused the settings first.
+pub fn run_upstream_only(text: &str, name: &str, upstream: &dyn Runner) -> Result<bool, Error> {
+    run_case_under(text, name, &[upstream])
+}
+
+/// Runs the case file's `text` in a fresh root named after `name` under each
+/// runner in `runners`, which is the whole comparison for two of them and one
+/// runner's own run for one.
+fn run_case_under(text: &str, name: &str, runners: &[&dyn Runner]) -> Result<bool, Error> {
+    let prepared = Prepared::new(text, name)?;
+    if !prepared.means_here() {
+        return Ok(false);
+    }
+    prepared.run(runners)?;
+    Ok(true)
+}
+
+/// A case file read into a fresh root: the case, its settings file, and the
+/// socket it asked the harness to serve, which lives as long as the run does.
+struct Prepared {
+    root: Root,
+    case: Case,
+    settings: PathBuf,
+    /// Held for the run, which is what keeps the socket served. See [`Prepared::run`].
+    served: Option<serve::Served>,
+}
+
+impl Prepared {
+    /// Reads `text` into a root named after `name`, and starts whatever socket
+    /// the case asks the harness to serve.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root or
+    /// a served socket cannot be created.
+    fn new(text: &str, name: &str) -> Result<Self, Error> {
+        let root = Root::new(name).map_err(Error::Io)?;
+        let case = Case::parse(text, &root.0).map_err(Error::Case)?;
+        let settings = Path::new(&root.0).join("settings.json");
+        let served = case
+            .serve
+            .as_ref()
+            .map(|serve| serve::Served::start(Path::new(&serve.unix_socket), &serve.status))
+            .transpose()
+            .map_err(Error::Io)?;
+        Ok(Self {
+            root,
+            case,
+            settings,
+            served,
+        })
+    }
+
+    /// Whether the case means the platform this harness runs on.
+    fn means_here(&self) -> bool {
+        self.case.runs_on(Platform::current())
+    }
+
+    /// The closure that puts the fixture back as the case describes it.
+    fn restore(&self) -> impl Fn() -> Result<(), Error> + '_ {
+        let keep = self
+            .case
+            .serve
+            .as_ref()
+            .map_or(Path::new(""), |serve| Path::new(&serve.unix_socket));
+        let root = &self.root;
+        let settings = &self.settings;
+        move || {
+            root.empty(keep).map_err(Error::Io)?;
+            for (path, contents) in &self.case.files {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(Error::Io)?;
+                }
+                fs::write(path, contents).map_err(Error::Io)?;
             }
-            fs::write(path, contents).map_err(Error::Io)?;
+            match &self.case.settings {
+                Value::Null => Ok(()),
+                Value::String(text) => fs::write(settings, text).map_err(Error::Io),
+                other => fs::write(settings, other.to_string()).map_err(Error::Io),
+            }
         }
-        match &case.settings {
-            Value::Null => Ok(()),
-            Value::String(text) => fs::write(&settings, text).map_err(Error::Io),
-            other => fs::write(&settings, other.to_string()).map_err(Error::Io),
+    }
+
+    /// Runs the case's probes under `runners`, restoring the fixture before
+    /// each run.
+    fn run(&self, runners: &[&dyn Runner]) -> Result<(), Error> {
+        // The socket the case asked the harness to serve stays served for the
+        // whole run, and no probe of the case itself may hold it.
+        let _served = &self.served;
+        let restore = self.restore();
+        if self.case.refused {
+            run_refusals(&self.case, &self.settings, &restore, runners)
+        } else {
+            run_probes(&self.case, &self.settings, &restore, runners)
         }
-    };
-    let outcome = if case.refused {
-        compare_refused(&case, &settings, &restore, upstream, crabpot)
-    } else {
-        compare(&case, &settings, &restore, upstream, crabpot)
-    };
-    drop(served);
-    outcome
+    }
 }
 
 /// A fresh folder, its path as `pwd -P` prints it, removed on drop.
@@ -360,15 +467,25 @@ pub struct Upstream {
 
 impl Upstream {
     /// Finds Node and the installed package, to run the `probe` binary at `probe`.
+    /// On Linux it also finds `bwrap`, which upstream's runner needs and a
+    /// developer's machine may not have.
     ///
     /// # Errors
     ///
-    /// [`Error::NoUpstream`] when `node` does not run or `npm ci` has not been
-    /// run in `harness/`.
+    /// [`Error::NoUpstream`] when `node` does not run, when `npm ci` has not been
+    /// run in `harness/`, or, on Linux, when `bwrap` does not run.
     pub fn find(probe: impl Into<PathBuf>) -> Result<Self, Error> {
         let node = Command::new("node").arg("--version").output();
         if !node.is_ok_and(|output| output.status.success()) {
             return Err(Error::NoUpstream("`node --version` fails".to_owned()));
+        }
+        if cfg!(target_os = "linux") {
+            let bwrap = Command::new("bwrap").arg("--version").output();
+            if !bwrap.is_ok_and(|output| output.status.success()) {
+                return Err(Error::NoUpstream(
+                    "`bwrap --version` fails: install bubblewrap, and with it socat and ripgrep, which upstream also needs".to_owned(),
+                ));
+            }
         }
         let cli = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js");
@@ -547,6 +664,7 @@ mod tests {
             refused: false,
             serve: None,
             probes: vec![Probe::Read("/r/in".to_owned()), Probe::Bind],
+            platforms: Vec::new(),
         }
     }
 
@@ -592,6 +710,86 @@ mod tests {
             },
         );
         outcome.unwrap();
+    }
+
+    /// A runner that fails the moment it is asked for anything.
+    struct Never(&'static str);
+
+    impl Runner for Never {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+
+        fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+            unreachable!("{} ran a case that means another platform", self.0)
+        }
+
+        fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+            unreachable!("{} ran a case that means another platform", self.0)
+        }
+    }
+
+    /// A one-probe case that names the platform this test does not run on.
+    fn elsewhere_case() -> String {
+        let elsewhere = match Platform::current() {
+            Platform::MacOs => "linux",
+            Platform::Linux => "macos",
+        };
+        format!(
+            r#"{{"files": {{}}, "settings": {{}}, "platforms": ["{elsewhere}"], "probes": [{{"kind": "bind"}}]}}"#
+        )
+    }
+
+    #[test]
+    fn a_case_that_names_another_platform_runs_on_neither_runner() {
+        let text = elsewhere_case();
+        assert!(!run_case(&text, "elsewhere", &Never("upstream"), &Never("crabpot")).unwrap());
+        assert!(!run_upstream_only(&text, "elsewhere", &Never("upstream")).unwrap());
+    }
+
+    /// One runner alone has nothing to agree with, so a probe it refuses and a
+    /// probe it allows are both a case that passes. A probe it cannot run is
+    /// not.
+    #[test]
+    fn one_runner_alone_runs_a_case_without_comparing_it() {
+        let text =
+            r#"{"files": {}, "settings": {}, "probes": [{"kind": "bind"}, {"kind": "loopback"}]}"#;
+        let ran = run_upstream_only(
+            text,
+            "upstream_only",
+            &StandIn("upstream", |probe| match probe {
+                Probe::Bind => probe::REFUSED,
+                _ => probe::ALLOWED,
+            }),
+        )
+        .unwrap();
+        assert!(ran);
+
+        assert!(matches!(
+            run_upstream_only(
+                text,
+                "upstream_only",
+                &StandIn("upstream", |_| probe::ERROR)
+            ),
+            Err(Error::Erred {
+                runner: "upstream",
+                probe: Probe::Bind,
+            })
+        ));
+    }
+
+    #[test]
+    fn one_runner_alone_must_refuse_a_refused_case() {
+        let text =
+            r#"{"files": {}, "settings": "", "refused": true, "probes": [{"kind": "bind"}]}"#;
+        assert!(run_upstream_only(text, "refused_only", &Refusing("upstream", true)).unwrap());
+        assert!(matches!(
+            run_upstream_only(text, "refused_only", &Refusing("upstream", false)),
+            Err(Error::NotRefused {
+                runner: "upstream",
+                probe: Probe::Bind,
+            })
+        ));
     }
 
     /// Runs a probe by dialing the socket at a `connect-unix` probe's path,

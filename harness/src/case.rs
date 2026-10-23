@@ -50,6 +50,37 @@ pub enum Via {
     Socks5,
 }
 
+/// A platform a case can mean something on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    /// macOS, whose sandbox is `sandbox-exec`.
+    MacOs,
+    /// Linux, whose sandbox is `bubblewrap`.
+    Linux,
+}
+
+impl Platform {
+    /// The platform named `name`, the word a case uses for it in its
+    /// `platforms`, or `None` for a name this harness does not run.
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "macos" => Some(Self::MacOs),
+            "linux" => Some(Self::Linux),
+            _ => None,
+        }
+    }
+
+    /// The platform this harness runs on. The harness runs on macOS and Linux
+    /// only: its probes and wrappers are the Unix ones.
+    pub fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Linux
+        }
+    }
+}
+
 /// A peer the harness serves while a case's probes run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Serve {
@@ -75,6 +106,10 @@ pub struct Case {
     pub serve: Option<Serve>,
     /// The probes, in order.
     pub probes: Vec<Probe>,
+    /// The platforms the case means something on. A case names one only when
+    /// it means nothing elsewhere, as a `denyMachLookup` case does. An empty
+    /// list means every platform.
+    pub platforms: Vec<Platform>,
 }
 
 /// Why a case file is not a case.
@@ -86,6 +121,8 @@ pub enum Error {
     Shape(String),
     /// A probe's `kind` is not one of the kinds in [`Probe`].
     UnknownProbe(String),
+    /// A `platforms` entry names a platform this harness does not run.
+    UnknownPlatform(String),
 }
 
 impl core::fmt::Display for Error {
@@ -94,6 +131,12 @@ impl core::fmt::Display for Error {
             Self::Json(reason) => write!(f, "the case is not JSON: {reason}"),
             Self::Shape(what) => write!(f, "the case has {what}"),
             Self::UnknownProbe(kind) => write!(f, "the case has an unknown probe kind {kind:?}"),
+            Self::UnknownPlatform(name) => {
+                write!(
+                    f,
+                    "the case names the platform {name:?}, which it cannot run on"
+                )
+            }
         }
     }
 }
@@ -109,7 +152,9 @@ impl Case {
     /// [`Error::Json`] when `text` is not JSON, [`Error::Shape`] when `files`,
     /// `settings`, `serve` or `probes` is missing or has the wrong type, as is a `refused`
     /// that is not a boolean, and
-    /// [`Error::UnknownProbe`] when a probe's `kind` is not one this harness knows.
+    /// [`Error::UnknownProbe`] when a probe's `kind` is not one this harness knows,
+    /// and [`Error::UnknownPlatform`] when a `platforms` entry names a platform
+    /// this harness does not run on.
     pub fn parse(text: &str, root: &str) -> Result<Self, Error> {
         let parsed: Value = serde_json::from_str(text).map_err(|e| Error::Json(e.to_string()))?;
         let Value::Object(mut case) = expand(parsed, root) else {
@@ -156,6 +201,18 @@ impl Case {
             }
             Ok(_) => return Err(Error::Shape("a `serve` that is not an object".to_owned())),
         };
+        let platforms = match take("platforms") {
+            Err(_) => Vec::new(),
+            Ok(Value::Array(names)) => names
+                .iter()
+                .map(Platform::from_value)
+                .collect::<Result<_, _>>()?,
+            _ => {
+                return Err(Error::Shape(
+                    "a `platforms` that is not an array".to_owned(),
+                ));
+            }
+        };
         let probes = match take("probes")? {
             Value::Array(probes) => probes
                 .iter()
@@ -169,7 +226,14 @@ impl Case {
             refused,
             serve,
             probes,
+            platforms,
         })
+    }
+
+    /// Whether the case means `platform`. One that names no platform means
+    /// every platform.
+    pub fn runs_on(&self, platform: Platform) -> bool {
+        self.platforms.is_empty() || self.platforms.contains(&platform)
     }
 }
 
@@ -255,6 +319,15 @@ impl Probe {
             "ps" => Ok(Self::Ps),
             _ => Err(Error::UnknownProbe(kind)),
         }
+    }
+}
+
+impl Platform {
+    fn from_value(value: &Value) -> Result<Self, Error> {
+        let name = value
+            .as_str()
+            .ok_or_else(|| Error::Shape("a `platforms` entry that is not a string".to_owned()))?;
+        Self::from_name(name).ok_or_else(|| Error::UnknownPlatform(name.to_owned()))
     }
 }
 
@@ -387,6 +460,47 @@ mod tests {
             assert!(
                 matches!(Case::parse(text, "/r"), Err(Error::Shape(_))),
                 "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_case_without_platforms_runs_everywhere() {
+        let case = Case::parse(r#"{"files": {}, "settings": {}, "probes": []}"#, "/r").unwrap();
+        assert!(case.platforms.is_empty());
+        assert!(case.runs_on(Platform::MacOs));
+        assert!(case.runs_on(Platform::Linux));
+    }
+
+    #[test]
+    fn a_case_runs_only_on_the_platforms_it_names() {
+        let named = |platforms: &str| {
+            Case::parse(
+                &format!(
+                    r#"{{"files": {{}}, "settings": {{}}, "platforms": {platforms}, "probes": []}}"#
+                ),
+                "/r",
+            )
+        };
+
+        let case = named(r#"["macos"]"#).unwrap();
+        assert_eq!(case.platforms, [Platform::MacOs]);
+        assert!(case.runs_on(Platform::MacOs));
+        assert!(!case.runs_on(Platform::Linux));
+
+        let case = named(r#"["linux", "macos"]"#).unwrap();
+        assert_eq!(case.platforms, [Platform::Linux, Platform::MacOs]);
+        assert!(case.runs_on(Platform::MacOs));
+        assert!(case.runs_on(Platform::Linux));
+
+        assert_eq!(
+            named(r#"["windows"]"#),
+            Err(Error::UnknownPlatform("windows".to_owned()))
+        );
+        for platforms in [r#""macos""#, "[1]", r#"["macos", 2]"#] {
+            assert!(
+                matches!(named(platforms), Err(Error::Shape(_))),
+                "{platforms}"
             );
         }
     }

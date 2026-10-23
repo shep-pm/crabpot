@@ -26,7 +26,7 @@ use crate::path::{
 /// An entry of a path list: a spelling, which is a pattern when it reads as
 /// one, or a path that never is (`{ "path": ..., "literal": true }`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PathEntry {
+pub enum PathEntry {
     /// A spelling.
     Spelled(String),
     /// The name of a path, whatever characters it holds.

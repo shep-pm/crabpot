@@ -44,3 +44,16 @@ fn refused_empty_file() {
 fn refused_missing_settings() {
     run("refused_missing_settings", "refused-missing-settings.json");
 }
+
+#[test]
+fn allow_mach_lookup_loads() {
+    run("allow_mach_lookup_loads", "allow-mach-lookup-services.json");
+}
+
+#[test]
+fn refused_allow_mach_lookup_mid_wildcard() {
+    run(
+        "refused_allow_mach_lookup_mid_wildcard",
+        "allow-mach-lookup-mid-wildcard.json",
+    );
+}

@@ -13,6 +13,7 @@ exclude = ["/docs/"]
 
 [dependencies]
 crabpot-core.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

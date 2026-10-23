@@ -71,7 +71,8 @@ pub struct Network {
     /// `allowLocalBinding`, which is not read yet.
     #[serde(default, deserialize_with = "present")]
     pub allow_local_binding: Option<bool>,
-    /// `allowMachLookup`, which is not read yet.
+    /// `allowMachLookup`: the Mach services a command may look up, which the
+    /// macOS profile applies.
     #[serde(default, deserialize_with = "allow_mach_lookup::deserialize")]
     pub allow_mach_lookup: Option<Vec<String>>,
     /// `denyMachLookup`, which is not read yet.

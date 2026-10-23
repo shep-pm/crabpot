@@ -39,6 +39,7 @@ name = "crabpot-macos"
 version = "0.1.0"
 dependencies = [
  "crabpot-core",
+ "serde_json",
 ]
 
 [[package]]

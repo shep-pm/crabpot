@@ -1,0 +1,15 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": [],
+      "deniedDomains": [],
+      "allowMachLookup": ["com.*.x"]
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "refused": true,
+  "probes": [
+    {"kind": "write", "path": "$ROOT/marker"}
+  ]
+}

@@ -32,18 +32,26 @@ const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 pub fn run_from_args() {
     let mut args = env::args_os().skip(1);
     if args.next().is_some_and(|arg| arg == "--crabpot") {
-        std::process::exit(run_args(args));
+        run_args(args);
     }
 }
 
-/// Runs the command `args` name inside a sandbox, and returns the status the
-/// process should exit with. The arguments are the `crabpot` command line
-/// without the program's name: `-s/--settings`, `-c`, `-d` and `--`.
+/// Runs the command `args` name inside a sandbox, then exits the process with
+/// its status. The arguments are the `crabpot` command line without the
+/// program's name: `-s/--settings`, `-c`, `-d` and `--`.
 ///
 /// Blocks until the command ends, forwarding SIGINT and SIGTERM to it
 /// meanwhile. A command line, a settings file or a sandbox that is refused
-/// prints why to stderr and gives 1.
-pub fn run_args(args: impl IntoIterator<Item = OsString>) -> i32 {
+/// prints why to stderr and exits 1.
+///
+/// It never returns: tokio keeps the signal handlers it installs for the
+/// rest of the process, so a caller that carried on would no longer be ended
+/// by SIGINT or SIGTERM.
+pub fn run_args(args: impl IntoIterator<Item = OsString>) -> ! {
+    std::process::exit(run_status(args))
+}
+
+fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
     match prepare(args) {
         Ok((_sandbox, command)) => execute(command),
         Err(e) => {
@@ -87,7 +95,9 @@ fn load_config(settings: Option<&Path>) -> Result<Config, Box<dyn Error>> {
     };
     match fs::read_to_string(&path) {
         Ok(text) => Config::from_json(&text).map_err(|e| format!("{}: {e}", path.display()).into()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound && settings.is_none() => {
+            Ok(Config::default())
+        }
         Err(e) => Err(format!("cannot read {}: {e}", path.display()).into()),
     }
 }
@@ -200,10 +210,16 @@ mod tests {
         let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let args = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
 
-        assert_eq!(run_args(args(&["--", "sh", "-c", "exit 4"])), 4);
-        assert_eq!(run_args(args(&["-c", "exit 5"])), 5);
-        assert_eq!(run_args(args(&["-s", "/no/such/settings.json", "true"])), 0);
-        assert_eq!(run_args(args(&["-d"])), 1, "no command is refused");
+        assert_eq!(run_status(args(&["--", "sh", "-c", "exit 4"])), 4);
+        assert_eq!(run_status(args(&["-c", "exit 5"])), 5);
+        assert_eq!(run_status(args(&["-d"])), 1, "no command is refused");
+    }
+
+    #[test]
+    fn a_settings_file_that_is_named_and_missing_is_refused() {
+        let missing = Path::new("/no/such/settings.json");
+
+        assert!(load_config(Some(missing)).is_err());
     }
 
     #[test]

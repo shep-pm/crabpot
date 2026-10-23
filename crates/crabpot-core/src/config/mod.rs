@@ -1,14 +1,37 @@
 //! The settings a sandbox starts from.
 //!
-//! A stub. It accepts the shape of upstream's default config, whose lists are
-//! all empty, and refuses a list that asks for something, since this slice
-//! applies none of them. It reads no other key, so a key upstream knows and
-//! this stub does not is dropped without notice. The real schema replaces it
-//! and closes that gap (ADR-0004, ADR-0013).
+//! A stub. It reads no key, and refuses every key crabpot cannot honour yet
+//! that asks for something, so a rule is never dropped without an error
+//! (ADR-0013). A key upstream does not know is dropped, as upstream drops it.
+//! The real schema replaces it (ADR-0004).
 
 use core::fmt;
 
-use serde::Deserialize;
+use serde_json::Value;
+
+/// The keys upstream applies and this stub does not, as dotted paths. The
+/// lists are here too, since nothing applies them yet.
+const UNSUPPORTED: &[&str] = &[
+    "network.allowedDomains",
+    "network.deniedDomains",
+    "network.allowUnixSockets",
+    "network.allowAllUnixSockets",
+    "network.allowLocalBinding",
+    "network.httpProxyPort",
+    "network.socksProxyPort",
+    "network.parentProxy",
+    "network.tlsTerminate",
+    "network.denyMachLookup",
+    "filesystem.denyRead",
+    "filesystem.allowRead",
+    "filesystem.allowWrite",
+    "filesystem.denyWrite",
+    "filesystem.allowGitConfig",
+    "credentials",
+    "allowPty",
+    "enableWeakerNestedSandbox",
+    "enableWeakerNetworkIsolation",
+];
 
 /// The settings one sandbox runs under.
 ///
@@ -23,47 +46,39 @@ impl Config {
     /// # Errors
     ///
     /// [`ConfigError::Invalid`] when `json` is not a settings object, and
-    /// [`ConfigError::Unsupported`] when a list asks for something.
+    /// [`ConfigError::Unsupported`] when a key asks for something crabpot
+    /// does not apply yet. A key asks for something when its value is a
+    /// non-empty list, string or object, a number, or `true`.
     pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        let raw: Raw = serde_json::from_str(json).map_err(|e| ConfigError::Invalid {
+        let settings: Value = serde_json::from_str(json).map_err(|e| ConfigError::Invalid {
             reason: e.to_string(),
         })?;
-        let lists = [
-            ("network.allowedDomains", &raw.network.allowed_domains),
-            ("network.deniedDomains", &raw.network.denied_domains),
-            ("filesystem.denyRead", &raw.filesystem.deny_read),
-            ("filesystem.allowRead", &raw.filesystem.allow_read),
-            ("filesystem.allowWrite", &raw.filesystem.allow_write),
-            ("filesystem.denyWrite", &raw.filesystem.deny_write),
-        ];
-        match lists.iter().find(|(_, list)| !list.is_empty()) {
-            Some((key, _)) => Err(ConfigError::Unsupported { key }),
-            None => Ok(Self {}),
+        if !settings.is_object() {
+            return Err(ConfigError::Invalid {
+                reason: "settings are not an object".to_owned(),
+            });
         }
+        for key in UNSUPPORTED {
+            let value = key
+                .split('.')
+                .try_fold(&settings, |value, part| value.get(part));
+            if value.is_some_and(asks) {
+                return Err(ConfigError::Unsupported { key });
+            }
+        }
+        Ok(Self {})
     }
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct Raw {
-    network: RawNetwork,
-    filesystem: RawFilesystem,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct RawNetwork {
-    allowed_domains: Vec<String>,
-    denied_domains: Vec<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct RawFilesystem {
-    deny_read: Vec<String>,
-    allow_read: Vec<String>,
-    allow_write: Vec<String>,
-    deny_write: Vec<String>,
+fn asks(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(set) => *set,
+        Value::Number(_) => true,
+        Value::String(text) => !text.is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(fields) => !fields.is_empty(),
+    }
 }
 
 /// Why a settings file was refused.
@@ -122,6 +137,33 @@ mod tests {
                 key: "network.allowedDomains"
             })
         );
+    }
+
+    #[test]
+    fn a_known_key_that_is_not_a_list_is_refused_too() {
+        for (json, key) in [
+            (r#"{"credentials": {"files": ["~/.aws"]}}"#, "credentials"),
+            (
+                r#"{"network": {"denyMachLookup": ["com.apple.x"]}}"#,
+                "network.denyMachLookup",
+            ),
+            (
+                r#"{"network": {"tlsTerminate": true}}"#,
+                "network.tlsTerminate",
+            ),
+        ] {
+            assert_eq!(
+                Config::from_json(json),
+                Err(ConfigError::Unsupported { key })
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_that_asks_for_nothing_loads() {
+        let json = r#"{"credentials": {}, "network": {"tlsTerminate": false}, "other": 1}"#;
+
+        assert_eq!(Config::from_json(json), Ok(Config::default()));
     }
 
     #[test]

@@ -31,12 +31,15 @@ sections!(
     allow_read,
     move_blocking,
     allow_write,
-    deny_write
+    deny_write,
+    unix_sockets,
+    weaker_isolation
 );
 
-/// Renders the profile `sandbox-exec -p` takes. A command under it reaches
-/// the network only through the HTTP proxy on `proxy_port` and the SOCKS5 proxy
-/// on `socks_port`, if there are any.
+/// Renders the profile `sandbox-exec -p` takes. A command under it reaches the
+/// network only through the HTTP proxy on `proxy_port` and the SOCKS5 proxy on
+/// `socks_port`, if there are any, and only the Unix sockets `allowUnixSockets`
+/// names.
 ///
 /// # Errors
 ///

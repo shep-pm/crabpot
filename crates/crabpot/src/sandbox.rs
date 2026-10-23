@@ -40,6 +40,11 @@ impl Sandbox {
             let proxy = Proxy::start(
                 &config.network.allowed_domains,
                 &config.network.denied_domains,
+                config
+                    .network
+                    .denied_resolved_addresses
+                    .as_deref()
+                    .unwrap_or_default(),
                 // A settings file that leaves the key out reads as not strict, as it
                 // does upstream.
                 config.network.strict_allowlist.unwrap_or(false),

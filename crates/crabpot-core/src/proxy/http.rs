@@ -20,7 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional, joi
 use tokio::net::TcpStream;
 
 use super::filter::Denial;
-use super::shared::{Shared, Stream, dial, drain};
+use super::shared::{DialError, Shared, Stream, dial, drain};
 
 /// A request head longer than this is refused with 431, as Node's default.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -117,18 +117,44 @@ const AUTH_REQUIRED: &str = "HTTP/1.1 407 Proxy Authentication Required\r\n\
      Content-Length: 0\r\n\
      Connection: close\r\n\r\n";
 
-/// The 403 for a refused host. The reason is the status line's phrase for a
-/// tunnel, where upstream puts it, and the body says the same for either.
-fn denied(phrase: &str) -> String {
-    const BODY: &str = "Connection blocked by network allowlist";
+/// A 403 that marks itself with `tag` in `X-Proxy-Error`.
+fn forbidden(phrase: &str, tag: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 403 {phrase}\r\n\
          Content-Type: text/plain\r\n\
-         X-Proxy-Error: blocked-by-allowlist\r\n\
+         X-Proxy-Error: {tag}\r\n\
          Content-Length: {}\r\n\
-         Connection: close\r\n\r\n{BODY}",
-        BODY.len()
+         Connection: close\r\n\r\n{body}",
+        body.len()
     )
+}
+
+/// The 403 for a refused host. The reason is the status line's phrase for a
+/// tunnel, where upstream puts it, and the body says the same for either.
+fn denied(phrase: &str) -> String {
+    forbidden(
+        phrase,
+        "blocked-by-allowlist",
+        "Connection blocked by network allowlist",
+    )
+}
+
+/// What a failed dial answers with. A name that resolved only to addresses the
+/// guard refuses gets a 403 whose body names the host and the class of address.
+/// A tunnel's status line carries the class too, and a plain request's says
+/// "Forbidden".
+fn undialed(error: &DialError, tunnel: bool) -> String {
+    match error {
+        DialError::Refused(refusal) => {
+            let phrase = if tunnel {
+                refusal.reason()
+            } else {
+                "Forbidden".to_owned()
+            };
+            forbidden(&phrase, "blocked-by-sandbox-runtime", &refusal.message())
+        }
+        DialError::Failed(_) => BAD_GATEWAY.to_owned(),
+    }
 }
 
 /// A `CONNECT`: the tunnel to `host:port` if the filter allows it.
@@ -148,8 +174,9 @@ async fn tunnel<S: Stream>(
         Ok(host) => host,
         Err(denial) => return end(client, &denied(denial.reason())).await,
     };
-    let Ok(mut upstream) = dial(&host, port).await else {
-        return end(client, BAD_GATEWAY).await;
+    let mut upstream = match dial(&shared.guard, &host, port).await {
+        Ok(upstream) => upstream,
+        Err(error) => return end(client, &undialed(&error, true)).await,
     };
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -189,8 +216,9 @@ async fn forward<S: Stream>(
         Ok(length) => length,
         Err(refusal) => return end(client, refusal).await,
     };
-    let Ok(mut upstream) = dial(&host, target.port).await else {
-        return end(client, BAD_GATEWAY).await;
+    let mut upstream = match dial(&shared.guard, &host, target.port).await {
+        Ok(upstream) => upstream,
+        Err(error) => return end(client, &undialed(&error, false)).await,
     };
     let mut request = format!("{} {} HTTP/1.1\r\n", head.method, target.path).into_bytes();
     for (name, value) in forwarded_headers(head) {

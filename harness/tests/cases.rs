@@ -31,6 +31,16 @@ fn default_settings() {
 }
 
 #[test]
+fn weaker_isolation_true() {
+    run("weaker_isolation_true", "weaker-isolation-true.json");
+}
+
+#[test]
+fn weaker_isolation_false() {
+    run("weaker_isolation_false", "weaker-isolation-false.json");
+}
+
+#[test]
 fn refused_invalid_json() {
     run("refused_invalid_json", "refused-invalid-json.json");
 }
@@ -247,6 +257,14 @@ fn socks_allowed_example_com() {
 }
 
 #[test]
+fn unix_socket_listed_folder() {
+    run(
+        "unix_socket_listed_folder",
+        "unix-sockets-listed-folder.json",
+    );
+}
+
+#[test]
 fn socks_other_domain_refused() {
     run(
         "socks_other_domain_refused",
@@ -267,6 +285,14 @@ fn mux_socks_allowed() {
 #[test]
 fn mux_other_domain_refused() {
     run("mux_other_domain_refused", "mux-other-domain-refused.json");
+}
+
+#[test]
+fn unix_socket_unlisted_is_refused() {
+    run(
+        "unix_socket_unlisted_is_refused",
+        "unix-sockets-unlisted-is-refused.json",
+    );
 }
 
 #[test]
@@ -297,5 +323,37 @@ fn refused_denied_domains_bad_entry() {
     run(
         "refused_denied_domains_bad_entry",
         "refused-denied-domains-bad-entry.json",
+    );
+}
+
+#[test]
+fn unix_socket_empty_string_grants_cwd() {
+    run(
+        "unix_socket_empty_string_grants_cwd",
+        "unix-sockets-empty-string-grants-cwd.json",
+    );
+}
+
+#[test]
+fn resolved_address_loopback_name() {
+    run(
+        "resolved_address_loopback_name",
+        "resolved-addresses-loopback-name.json",
+    );
+}
+
+#[test]
+fn resolved_address_listed_cidr() {
+    run(
+        "resolved_address_listed_cidr",
+        "resolved-addresses-listed-cidr.json",
+    );
+}
+
+#[test]
+fn refused_resolved_address_bad_cidr() {
+    run(
+        "refused_resolved_address_bad_cidr",
+        "resolved-addresses-bad-cidr.json",
     );
 }

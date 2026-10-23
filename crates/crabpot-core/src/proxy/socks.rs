@@ -5,7 +5,8 @@
 //!
 //! A refusal is a reply with a code, then the connection ends. Both kinds of
 //! [`Denial`] answer "not allowed by ruleset", since a host that is not a DNS
-//! name or an IP literal is one the allow list can never cover.
+//! name or an IP literal is one the allow list can never cover, and so does a
+//! name the guard refuses an address of.
 
 use core::net::SocketAddr;
 use std::io;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 
-use super::shared::{Shared, Stream, dial, drain};
+use super::shared::{DialError, Shared, Stream, dial, drain};
 use super::token::Token;
 
 const VERSION: u8 = 5;
@@ -55,6 +56,15 @@ impl From<&io::Error> for Reply {
     }
 }
 
+impl From<&DialError> for Reply {
+    fn from(error: &DialError) -> Self {
+        match error {
+            DialError::Refused(_) => Self::NotAllowed,
+            DialError::Failed(error) => Self::from(error),
+        }
+    }
+}
+
 /// One connection. A client that goes away mid-exchange is nobody's failure.
 pub(super) async fn handle<S: Stream>(mut client: S, shared: Arc<Shared>) {
     let _ = exchange(&mut client, &shared).await;
@@ -89,7 +99,7 @@ async fn exchange<S: Stream>(client: &mut S, shared: &Shared) -> io::Result<()> 
         Ok(host) => host,
         Err(_) => return refuse(client, Reply::NotAllowed).await,
     };
-    let mut upstream = match dial(&host, port).await {
+    let mut upstream = match dial(&shared.guard, &host, port).await {
         Ok(upstream) => upstream,
         Err(error) => return refuse(client, Reply::from(&error)).await,
     };

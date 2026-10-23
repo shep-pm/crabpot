@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use tokio::runtime::Builder;
 
 use super::super::filter::Filter;
+use super::super::guard::Guard;
 use super::super::shared::Shared;
 use super::super::testing::{origin, proxy_allowing};
 use super::super::token::{Token, base64_encode};
@@ -133,7 +134,11 @@ fn the_first_byte_picks_the_leg_and_the_backend_gets_the_rest() {
     let (backend, socket) = Socket::bind().unwrap();
     let path = socket.path().to_path_buf();
     let token = Token::generate().unwrap();
-    let shared = Arc::new(Shared::new(Filter::new(&[], &[], false), token.clone()));
+    let shared = Arc::new(Shared::new(
+        Filter::new(&[], &[], false),
+        Guard::new(&[], &[], &[]),
+        token.clone(),
+    ));
     let runtime = Builder::new_current_thread()
         .enable_io()
         .enable_time()

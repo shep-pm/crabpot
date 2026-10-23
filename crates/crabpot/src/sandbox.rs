@@ -1,14 +1,22 @@
-//! One sandbox: the profile a command runs under, and the wrapping of a
-//! command into it (ADR-0010).
+//! One sandbox: the profile or the bwrap words a command runs under, and the
+//! wrapping of a command into it (ADR-0010).
 
 use core::fmt;
 use std::io;
 use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::{
+    ffi::OsString,
+    os::fd::OwnedFd,
+    sync::{Mutex, PoisonError},
+};
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crabpot_core::proxy::Proxy;
 #[cfg(target_os = "macos")]
-use crabpot_core::proxy::{Proxy, username_for};
+use crabpot_core::proxy::username_for;
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;
 
@@ -19,9 +27,20 @@ use crabpot_macos::env::Facts;
 pub struct Sandbox {
     #[cfg(target_os = "macos")]
     profile: String,
+    /// The bwrap words, `bwrap` first, that each command's own words follow.
+    #[cfg(target_os = "linux")]
+    words: Vec<OsString>,
+    /// The args files of the commands wrapped so far, each held open for as
+    /// long as the command may run, which is until the sandbox drops.
+    #[cfg(target_os = "linux")]
+    args_files: Mutex<Vec<OwnedFd>>,
     #[cfg(target_os = "macos")]
     facts: Facts,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg_attr(
+        target_os = "linux",
+        expect(dead_code, reason = "held to keep the proxy running")
+    )]
     proxy: Proxy,
 }
 
@@ -30,7 +49,7 @@ impl Sandbox {
     ///
     /// # Errors
     ///
-    /// [`StartError::UnsupportedPlatform`] off macOS, where nothing
+    /// [`StartError::UnsupportedPlatform`] off macOS and Linux, where nothing
     /// confines a command yet, [`StartError::UnresolvedPath`] when a path
     /// in `config` cannot be made absolute, and [`StartError::Proxy`] when the
     /// proxy that carries its network cannot start. On Linux the bwrap checks
@@ -38,7 +57,9 @@ impl Sandbox {
     /// on `PATH`, and [`StartError::Uid0WithoutSetfcap`] for uid 0 without
     /// `CAP_SETFCAP`. A `bwrap` older than 0.5.0 is a warning on stderr.
     pub fn start(config: &Config) -> Result<Self, StartError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(target_os = "linux")]
+        let bwrap = crabpot_linux::deps::check_here()?;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             let proxy = Proxy::start(
                 &config.network.allowed_domains,
@@ -54,26 +75,38 @@ impl Sandbox {
                 config.network.mitm_proxy.as_ref(),
             )
             .map_err(|e| StartError::Proxy(e.kind()))?;
-            let proxy_port = proxy.port();
+            #[cfg(target_os = "macos")]
+            {
+                let proxy_port = proxy.port();
+                Ok(Self {
+                    profile: crabpot_macos::profile::render(
+                        config,
+                        Some(proxy_port),
+                        Some(proxy.socks_port()),
+                    )
+                    .map_err(StartError::UnresolvedPath)?,
+                    // The proxy listens on `127.0.0.1`, and `allowLocalBinding`
+                    // opens every loopback port, so either one is enough for the
+                    // child to reach loopback.
+                    facts: Facts::for_sandbox(config, Some(proxy_port)),
+                    proxy,
+                })
+            }
+            #[cfg(target_os = "linux")]
             Ok(Self {
-                profile: crabpot_macos::profile::render(
+                words: crabpot_linux::wrap::words(
+                    &bwrap,
                     config,
-                    Some(proxy_port),
-                    Some(proxy.socks_port()),
+                    crabpot_linux::deps::is_root_with_setfcap_here(),
                 )
                 .map_err(StartError::UnresolvedPath)?,
-                // The proxy listens on `127.0.0.1`, and `allowLocalBinding`
-                // opens every loopback port, so either one is enough for the
-                // child to reach loopback.
-                facts: Facts::for_sandbox(config, Some(proxy_port)),
+                args_files: Mutex::new(Vec::new()),
                 proxy,
             })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             let _ = config;
-            #[cfg(target_os = "linux")]
-            crabpot_linux::deps::check_here()?;
             Err(StartError::UnsupportedPlatform)
         }
     }
@@ -82,17 +115,20 @@ impl Sandbox {
     /// its place.
     ///
     /// The wrapped command keeps `command`'s program, arguments, working
-    /// directory and environment changes, and gains the sandbox's own
-    /// environment: a name the sandbox owns is set over the caller's, a name
-    /// the caller owns is left to it, and the variables that point its clients
-    /// at the proxy are set over them. It does not keep its standard
+    /// directory and environment changes. It does not keep its standard
     /// streams, which a [`Command`] cannot be asked for, nor an
     /// [`env_clear`](Command::env_clear).
     ///
+    /// On macOS it gains the sandbox's own environment: a name the sandbox owns
+    /// is set over the caller's, a name the caller owns is left to it, and the
+    /// variables that point its clients at the proxy are set over them. On
+    /// Linux the sandbox sets none yet.
+    ///
     /// # Errors
     ///
-    /// [`WrapError::Missing`] when the machine has no `sandbox-exec`, and
-    /// [`WrapError::UnsupportedPlatform`] off macOS.
+    /// [`WrapError::Missing`] when the machine has no `sandbox-exec`,
+    /// [`WrapError::Bwrap`] when the command cannot be put in a bwrap line, and
+    /// [`WrapError::UnsupportedPlatform`] off macOS and Linux.
     pub fn command(&self, command: &Command) -> Result<Command, WrapError> {
         #[cfg(target_os = "macos")]
         {
@@ -110,15 +146,7 @@ impl Sandbox {
                 command.get_program(),
                 command.get_args().map(OsString::from),
             ));
-            if let Some(dir) = command.get_current_dir() {
-                wrapped.current_dir(dir);
-            }
-            for (key, value) in command.get_envs() {
-                match value {
-                    Some(value) => wrapped.env(key, value),
-                    None => wrapped.env_remove(key),
-                };
-            }
+            carry_over(command, &mut wrapped);
             for (key, value) in crabpot_macos::env::vars(&self.facts.for_command(command)) {
                 wrapped.env(key, value);
             }
@@ -142,11 +170,44 @@ impl Sandbox {
             }
             Ok(wrapped)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            let words: Vec<OsString> = core::iter::once(command.get_program())
+                .chain(command.get_args())
+                .map(OsString::from)
+                .collect();
+            let rendered = crabpot_linux::argv::render(&self.words, &words, &std::env::temp_dir())
+                .map_err(|e| WrapError::Bwrap(e.to_string()))?;
+            let mut wrapped = rendered.command;
+            carry_over(command, &mut wrapped);
+            if let Some(args_file) = rendered.args_file {
+                self.args_files
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(args_file);
+            }
+            Ok(wrapped)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             let _ = command;
             Err(WrapError::UnsupportedPlatform)
         }
+    }
+}
+
+/// Gives `wrapped` the working directory and the environment changes `command`
+/// asks for.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn carry_over(command: &Command, wrapped: &mut Command) {
+    if let Some(dir) = command.get_current_dir() {
+        wrapped.current_dir(dir);
+    }
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => wrapped.env(key, value),
+            None => wrapped.env_remove(key),
+        };
     }
 }
 
@@ -156,7 +217,7 @@ impl Sandbox {
 // caller's `match`.
 #[non_exhaustive]
 pub enum StartError {
-    /// The platform has no sandbox yet: only macOS has one.
+    /// The platform has no sandbox yet: only macOS and Linux have one.
     UnsupportedPlatform,
     /// A path in the settings starts with `~` and `HOME` is not set, or is
     /// relative and there is no working directory. A rule written for it would
@@ -192,7 +253,7 @@ impl From<crabpot_linux::deps::DepsError> for StartError {
 impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedPlatform => write!(f, "only macOS has a sandbox yet"),
+            Self::UnsupportedPlatform => write!(f, "only macOS and Linux have a sandbox yet"),
             Self::UnresolvedPath(error) => write!(f, "{error}"),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
             Self::Missing { tool } => write!(f, "{tool} is missing or not executable"),
@@ -207,14 +268,18 @@ impl fmt::Display for StartError {
 impl core::error::Error for StartError {}
 
 /// Why a command was not wrapped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 // A sandbox that can refuse a command for a new reason adds a variant without
 // breaking a caller's `match`.
 #[non_exhaustive]
 pub enum WrapError {
     /// There is no `/usr/bin/sandbox-exec` to run the command under.
     Missing,
-    /// The platform has no sandbox yet: only macOS has one.
+    /// The command cannot be put in a bwrap line: it has too many words or
+    /// bytes, a word holds a NUL byte, or the file the flags move to when the
+    /// line is long could not be opened.
+    Bwrap(String),
+    /// The platform has no sandbox yet: only macOS and Linux have one.
     UnsupportedPlatform,
 }
 
@@ -222,7 +287,8 @@ impl fmt::Display for WrapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Missing => write!(f, "/usr/bin/sandbox-exec is missing"),
-            Self::UnsupportedPlatform => write!(f, "only macOS has a sandbox yet"),
+            Self::Bwrap(reason) => write!(f, "cannot build the bwrap command: {reason}"),
+            Self::UnsupportedPlatform => write!(f, "only macOS and Linux have a sandbox yet"),
         }
     }
 }
@@ -297,15 +363,34 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_sandbox_does_not_start_on_linux_yet() {
-        // Whether it is the checks or the missing sandbox that refuses depends
-        // on the machine's bwrap.
-        assert!(Sandbox::start(&Config::default()).is_err());
+    fn a_command_is_wrapped_in_bwrap() {
+        let sandbox = match Sandbox::start(&Config::default()) {
+            Ok(sandbox) => sandbox,
+            // The machine has no bwrap to wrap a command in.
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => return,
+            Err(error) => panic!("{error}"),
+        };
+        let mut echo = Command::new("echo");
+        echo.arg("hello").env("CALLER", "kept").current_dir("/");
+
+        let wrapped = sandbox.command(&echo).unwrap();
+
+        assert!(wrapped.get_program().to_string_lossy().ends_with("bwrap"));
+        let args: Vec<_> = wrapped
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert_eq!(args[..3], ["--ro-bind", "/", "/"]);
+        assert_eq!(args[args.len() - 3..], ["--", "echo", "hello"]);
+        assert_eq!(wrapped.get_current_dir(), Some(std::path::Path::new("/")));
+        assert!(wrapped.get_envs().any(|(name, value)| {
+            name == "CALLER" && value.is_some_and(|value| value == "kept")
+        }));
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     #[test]
-    fn a_sandbox_does_not_start_off_macos() {
+    fn a_sandbox_does_not_start_on_windows() {
         assert_eq!(
             Sandbox::start(&Config::default()).unwrap_err(),
             StartError::UnsupportedPlatform

@@ -25,7 +25,7 @@ The repository is a workspace (ADR-0012). Each published crate carries symlinks 
 ## Style
 
 - Invoke the `rust-house-style` skill before writing or reviewing Rust. The rules are shep-pm/rust-house-style, IR-1..IR-48. This repo's exceptions go in `docs/rust-house-style-addendum.md`, which wins where the two disagree.
-- `unsafe_code` is `deny` in Cargo.toml, not `forbid`: the OS sandboxes are reached through FFI. Unsafe lives in one module per crate behind `#[allow(unsafe_code)]`, with a `// SAFETY:` comment on every block (IR-22, IR-23).
+- `unsafe_code` is `deny` in Cargo.toml, not `forbid`: the OS sandboxes are reached through FFI. Unsafe lives in one module per crate per OS behind `#[allow(unsafe_code)]`, with a `// SAFETY:` comment on every block (IR-22, IR-23).
 - shep's vocabulary: a `sheep` is one managed process, the plural is `flock`, dogs are plugin processes, and the daemon is only ever "the shepherd".
 - Committed text says "the maintainer", never a name, and uses repo-relative paths.
 

@@ -1,0 +1,54 @@
+//! What running a wrapper reported: the status it ended with, and the code its
+//! probe said it exited with, which is there only if the probe ran.
+
+use std::process::{Command, Stdio};
+
+use crate::probe;
+
+use super::Error;
+
+/// What a wrapper did: the status it exited with, and the code its probe
+/// reported, which is there only if the probe ran.
+struct Wrapped {
+    status: i32,
+    reported: Option<u8>,
+}
+
+/// Runs the wrapper to its end. Its stderr is inherited, so a failing run
+/// leaves its diagnostics in the log; it is never compared.
+fn wrapped(mut command: Command, runner: &'static str) -> Result<Wrapped, Error> {
+    let output = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(Error::Io)?;
+    let status = output.status.code().ok_or(Error::Signalled(runner))?;
+    let reported = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(probe::REPORT)?.parse::<u8>().ok());
+    Ok(Wrapped { status, reported })
+}
+
+/// Runs the wrapper to its end and returns the code its probe reported, which
+/// must be the wrapper's exit status.
+pub(super) fn exit_code(command: Command, runner: &'static str) -> Result<u8, Error> {
+    let Wrapped { status, reported } = wrapped(command, runner)?;
+    match reported {
+        Some(code) if i32::from(code) == status => Ok(code),
+        _ => Err(Error::Unreported { runner, status }),
+    }
+}
+
+/// Runs the wrapper to its end and says whether it refused: it exited 1 and
+/// its probe reported nothing, so the probe never ran.
+pub(super) fn refusal(command: Command, runner: &'static str) -> Result<bool, Error> {
+    match wrapped(command, runner)? {
+        Wrapped {
+            reported: Some(_), ..
+        } => Ok(false),
+        Wrapped { status: 1, .. } => Ok(true),
+        Wrapped { status, .. } => Err(Error::Unreported { runner, status }),
+    }
+}

@@ -35,18 +35,18 @@ pub enum PathEntry {
 
 /// The spellings and the literal paths of a list, apart.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SplitEntries<'a> {
+pub struct SplitEntries<'a> {
     /// What may be a pattern.
-    pub(crate) spelled: Vec<&'a str>,
+    pub spelled: Vec<&'a str>,
     /// What is a name.
-    pub(crate) marked: Vec<&'a str>,
+    pub marked: Vec<&'a str>,
 }
 
 /// Which way a list cuts. A deny takes every reading that may hold, since one
 /// more can only deny more; an allow takes one only for a path that is there
 /// exactly as spelled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ListKind {
+pub enum ListKind {
     /// `allowRead` and `allowWrite`.
     Allow,
     /// `denyRead` and `denyWrite`.
@@ -55,7 +55,7 @@ pub(crate) enum ListKind {
 
 /// One reading of an entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PathReading {
+pub enum PathReading {
     /// The entry is the name of this path.
     Name {
         /// The path.
@@ -73,9 +73,11 @@ pub(crate) enum PathReading {
 
 /// The read lists with the names their spellings also are added.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReadRules {
-    pub(crate) deny_read: Vec<PathEntry>,
-    pub(crate) allow_read: Option<Vec<PathEntry>>,
+pub struct ReadRules {
+    /// `denyRead`, and the names its spellings also are.
+    pub deny_read: Vec<PathEntry>,
+    /// `allowRead`, and the names its spellings also are.
+    pub allow_read: Option<Vec<PathEntry>>,
 }
 
 /// The literal paths of a read config. A list is `None` when it is empty.
@@ -93,7 +95,7 @@ pub(crate) struct LiteralWriteLists {
 }
 
 /// The spellings and the literal paths of a list, apart.
-pub(crate) fn split_path_entries(entries: &[PathEntry]) -> SplitEntries<'_> {
+pub fn split_path_entries(entries: &[PathEntry]) -> SplitEntries<'_> {
     let mut split = SplitEntries::default();
     for entry in entries {
         match entry {
@@ -182,7 +184,7 @@ fn rest_is_unlinked(from: usize, to: usize, prefix: &impl Fn(usize) -> String) -
 ///
 /// [`PathError`] when the spelling needs a home directory or a working
 /// directory and has none.
-pub(crate) fn literal_readings(
+pub fn literal_readings(
     base: &PathBase,
     spelling: &str,
     kind: ListKind,
@@ -274,7 +276,7 @@ pub(crate) fn literal_readings(
 /// # Errors
 ///
 /// [`PathError`] as [`literal_readings`] has it.
-pub(crate) fn read_rules_of(
+pub fn read_rules_of(
     base: &PathBase,
     deny_read: &[PathEntry],
     allow_read: Option<&[PathEntry]>,

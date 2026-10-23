@@ -5,11 +5,6 @@
 //! negates, a set ends at the first `]`, and `{a,b}` and a broken bracket are
 //! text.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the seatbelt profile slice is the first consumer")
-)]
-
 /// One piece of a pattern, as upstream's `GlobToken` reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Token {
@@ -156,7 +151,7 @@ fn parse_glob(pattern: &str) -> Vec<Token> {
 }
 
 /// A regular expression that matches `text` and nothing else.
-fn escape_regex_literal(text: &str) -> String {
+pub fn escape_regex_literal(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for c in text.chars() {
         if ".*+?^${}()|[]\\".contains(c) {
@@ -193,7 +188,7 @@ fn token_to_regex(token: &Token) -> String {
 
 /// The regular expression for `pattern`, anchored at both ends. Whatever the
 /// pattern spells, it compiles.
-pub(crate) fn glob_to_regex(pattern: &str) -> String {
+pub fn glob_to_regex(pattern: &str) -> String {
     let body: String = parse_glob(pattern).iter().map(token_to_regex).collect();
     format!("^{body}$")
 }
@@ -201,11 +196,84 @@ pub(crate) fn glob_to_regex(pattern: &str) -> String {
 /// [`glob_to_regex`] plus an optional `/...` tail, so a deny covers everything
 /// beneath each match the way `subpath` does for a literal. It only ever
 /// widens a deny.
-pub(crate) fn deny_glob_regex(pattern: &str) -> String {
+pub fn deny_glob_regex(pattern: &str) -> String {
     let mut regex = glob_to_regex(pattern);
     regex.pop();
     regex.push_str("(/.*)?$");
     regex
+}
+
+/// Whether [`deny_glob_regex`]'s expression matches `path`, read as a
+/// JavaScript engine reads it: by UTF-16 code unit, with a `.` that stops at a
+/// line terminator.
+pub fn deny_glob_matches(pattern: &str, path: &str) -> bool {
+    let path: Vec<u16> = path.encode_utf16().collect();
+    matches_deny(&parse_glob(pattern), &path)
+}
+
+fn is_line_terminator(unit: u16) -> bool {
+    matches!(unit, 0x0A | 0x0D | 0x2028 | 0x2029)
+}
+
+fn matches_deny(tokens: &[Token], text: &[u16]) -> bool {
+    let slash = u16::from(b'/');
+    // The `.` of `.*` runs up to the first line terminator.
+    let dot_reach = text
+        .iter()
+        .position(|&unit| is_line_terminator(unit))
+        .unwrap_or(text.len());
+    let Some((token, rest)) = tokens.split_first() else {
+        // The optional `/...` tail of a deny.
+        return text.is_empty()
+            || (text[0] == slash && !text[1..].iter().any(|&u| is_line_terminator(u)));
+    };
+    match token {
+        Token::Text(literal) => {
+            let units: Vec<u16> = literal.encode_utf16().collect();
+            text.strip_prefix(units.as_slice())
+                .is_some_and(|after| matches_deny(rest, after))
+        }
+        Token::Separator => text
+            .split_first()
+            .is_some_and(|(&unit, after)| unit == slash && matches_deny(rest, after)),
+        Token::AnyChar => text
+            .split_first()
+            .is_some_and(|(&unit, after)| unit != slash && matches_deny(rest, after)),
+        Token::Star => {
+            let reach = text
+                .iter()
+                .position(|&unit| unit == slash)
+                .unwrap_or(text.len());
+            (0..=reach).any(|n| matches_deny(rest, &text[n..]))
+        }
+        Token::Globstar => (0..=dot_reach).any(|n| matches_deny(rest, &text[n..])),
+        Token::GlobstarSlash => {
+            matches_deny(rest, text)
+                || (0..=dot_reach)
+                    .any(|n| text.get(n) == Some(&slash) && matches_deny(rest, &text[n + 1..]))
+        }
+        Token::Set(members) => text
+            .split_first()
+            .is_some_and(|(&unit, after)| set_holds(members, unit) && matches_deny(rest, after)),
+    }
+}
+
+/// Whether the set spelled `members` holds `unit`, with the reading of
+/// [`spells_a_set`].
+fn set_holds(members: &str, unit: u16) -> bool {
+    let units: Vec<u16> = members.encode_utf16().collect();
+    let mut i = 0;
+    while i < units.len() {
+        let from = units[i];
+        if units.get(i + 1) == Some(&u16::from(b'-')) && i + 2 < units.len() {
+            i += 2;
+        }
+        if (from..=units[i]).contains(&unit) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -366,5 +434,56 @@ mod tests {
     fn a_regex_metacharacter_is_escaped() {
         assert_eq!(glob_to_regex("a.b+c(d)|e^f$g"), r"^a\.b\+c\(d\)\|e\^f\$g$");
         assert_eq!(glob_to_regex(r"a\b"), r"^a\\b$");
+    }
+
+    // Each row is a pattern, a path, and whether `new RegExp(denyGlobRegex(pattern)).test(path)`
+    // said so in the same upstream build as the table above.
+    const MATCHES: &[(&str, &str, bool)] = &[
+        ("/home/x/.claude", "/home/x/.claude/debug", true),
+        ("/home/x/.claude", "/home/x/.claude", true),
+        ("/home/x/.claude", "/home/x/.claudex", false),
+        ("/home/*", "/home/x/.npm/_logs", true),
+        ("/home/*", "/home", false),
+        ("/home/?/.npm", "/home/x/.npm/_logs", true),
+        ("/home/??/.npm", "/home/x/.npm/_logs", false),
+        ("**/.claude", "/home/x/.claude/debug", true),
+        ("**/.claude/**", "/home/x/.claude/debug", true),
+        ("**/.claude/**", "/home/x/.claude", false),
+        ("/home/[a-z]/.npm", "/home/x/.npm/_logs", true),
+        ("/home/[a-z]/.npm", "/home/X/.npm/_logs", false),
+        ("/home/[*?/[]x", "/home/[x", true),
+        ("/home/[*?/[]x", "/home/*x", true),
+        ("/home/[a-]", "/home/-", true),
+        ("/home/[-a]", "/home/-", true),
+        ("/home/[a-c-e]", "/home/-", true),
+        ("/home/[.]", "/home/.", true),
+        ("/home/[.]", "/home/a", false),
+        ("/home/[a]b]", "/home/ab]", true),
+        ("/h/a**b", "/h/a/x\nb", false),
+        ("/h/*", "/h/a\nb", true),
+        ("/h/**", "/h/a/b\nc", false),
+        ("/h/a", "/h/a/b\nc", false),
+        ("/h/{a,b}", "/h/{a,b}", true),
+        ("/h/{a,b}", "/h/a", false),
+        ("/h/\\*", "/h/\\x", true),
+        ("/h/é?", "/h/é😀", false),
+        ("/h/é??", "/h/é😀", true),
+        ("/h/[é-ü]", "/h/ö", true),
+        ("/h/**/", "/h/a/b/", true),
+        ("/h/**/", "/h/", true),
+        ("/h/**/x", "/h/x", true),
+        ("/h/**/x", "/h/a/b/x/y", true),
+        ("/h/a**/x", "/h/ab/x", true),
+    ];
+
+    #[test]
+    fn deny_glob_matches_says_what_the_regular_expression_says() {
+        for &(pattern, path, expected) in MATCHES {
+            assert_eq!(
+                deny_glob_matches(pattern, path),
+                expected,
+                "deny_glob_matches({pattern:?}, {path:?})"
+            );
+        }
     }
 }

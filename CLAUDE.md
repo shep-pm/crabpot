@@ -13,6 +13,12 @@ A Rust port of anthropics/sandbox-runtime (`srt`). It sandboxes a process's file
 
 ## Where things live
 
+The repository is a workspace (ADR-0012). Each published crate carries symlinks to the root `NOTICE`, `LICENSE-MIT` and `LICENSE-APACHE`, which `cargo package` follows.
+
+- `crates/crabpot`: the facade and the only crate users depend on. Depends on `crabpot-core`, and on `crabpot-macos` for `cfg(target_os = "macos")`.
+- `crates/crabpot-core`: what is the same on every platform. Depends on no other crabpot crate.
+- `crates/crabpot-macos`: the seatbelt profile, the child's environment and the `sandbox-exec` argv. Depends on `crabpot-core`, and compiles on every platform.
+- `harness/`: `crabpot-harness`, `publish = false`, excluded from release in `release-plz.toml`.
 - `NOTICE` carries upstream's Apache-2.0 attribution. It ships with the crate, so keep it accurate.
 
 ## Style

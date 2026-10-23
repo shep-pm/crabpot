@@ -25,7 +25,7 @@ reviews:
     - "!Cargo.lock"
     - "!**/CHANGELOG.md"
   path_instructions:
-    - path: "src/**/*.rs"
+    - path: "**/src/**/*.rs"
       instructions: >-
         This crate follows the shep-pm/rust-house-style repository's written
         Rust style, rules IR-1 through IR-48. Those rules are NOT in this
@@ -43,7 +43,7 @@ reviews:
         else, and any unsafe block without a `// SAFETY:` comment.
         Do not suggest widening an input grammar past what the code refuses. A
         refusal here is usually deliberate and says so in its own error.
-    - path: "src/**"
+    - path: "**/src/**"
       instructions: >-
         crabpot is a security boundary. Flag any change that widens what a
         sandboxed process can reach by default: a deny that becomes an allow,

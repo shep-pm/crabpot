@@ -1,29 +1,29 @@
-[package]
-name = "crabpot"
+[workspace]
+resolver = "3"
+members = ["crates/*", "harness"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 # shep's MSRV. A dog or client that needs a newer compiler than the shepherd
 # it works with is a bad example.
 rust-version = "1.88"
-description = "Native Rust sandbox runtime for AI agents, rewritten from Anthropic's sandbox-runtime"
 repository = "https://github.com/shep-pm/crabpot"
 license = "MIT OR Apache-2.0"
-readme = "README.md"
 keywords = ["sandbox", "security", "agents", "bubblewrap", "seatbelt"]
-# docs/ holds planning and design notes. They belong in the repository, not in
-# a published .crate, which is permanent.
-exclude = ["/docs/"]
 
-[dependencies]
+[workspace.dependencies]
+crabpot-core = { path = "crates/crabpot-core", version = "0.1.0" }
+crabpot-macos = { path = "crates/crabpot-macos", version = "0.1.0" }
 
-[lints.rust]
+[workspace.lints.rust]
 missing_docs = "deny"
 missing_debug_implementations = "deny"
 # deny, not forbid: the platform sandboxes are FFI (IR-7). The one module that
 # calls them allows it, and nothing else may (IR-22).
 unsafe_code = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks = "deny"
 

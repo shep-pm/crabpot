@@ -1,0 +1,21 @@
+{
+  "files": {
+    "$ROOT/work/[wip]/secret": "x",
+    "$ROOT/work/w/secret": "x",
+    "$ROOT/work/p/secret": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {
+      "denyRead": [],
+      "allowRead": [],
+      "allowWrite": ["$ROOT/work"],
+      "denyWrite": [{"path": "$ROOT/work/[wip]/secret", "literal": true}]
+    }
+  },
+  "probes": [
+    {"kind": "write", "path": "$ROOT/work/[wip]/secret"},
+    {"kind": "write", "path": "$ROOT/work/w/secret"},
+    {"kind": "write", "path": "$ROOT/work/p/secret"}
+  ]
+}

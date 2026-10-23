@@ -7,8 +7,10 @@
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
+mod filter;
 mod proxy;
 mod rule;
+mod write_roots;
 
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {
@@ -19,7 +21,7 @@ macro_rules! sections {
     };
 }
 
-sections!(base, read, deny_read, write);
+sections!(base, read, deny_read, allow_read, allow_write, deny_write);
 
 /// Renders the profile `sandbox-exec -p` takes. A command under it reaches
 /// the network only through the proxy on `proxy_port`, if there is one.
@@ -55,14 +57,26 @@ mod tests {
             !profile.contains("(allow network"),
             "a default profile allows no network"
         );
-        let writes: Vec<&str> = profile
+        let filters: Vec<&str> = profile
             .lines()
-            .filter(|line| line.starts_with("(allow file-write*"))
+            .skip_while(|line| *line != "(allow file-write*")
+            .skip(1)
+            .take_while(|line| !line.starts_with("  (with message"))
             .collect();
-        assert!(!writes.is_empty(), "the standard devices stay writable");
-        assert!(
-            writes.iter().all(|line| line.contains("(literal \"/dev/")),
-            "a default profile allows no write but to a device: {writes:?}"
-        );
+        assert!(!filters.is_empty(), "the default roots stay writable");
+        for filter in filters {
+            assert!(
+                [
+                    r#"  (subpath "/dev/"#,
+                    r#"  (subpath "/tmp/claude""#,
+                    r#"  (subpath "/private/tmp/claude""#,
+                    r#"/.npm/_logs")"#,
+                    r#"/.claude/debug")"#,
+                ]
+                .iter()
+                .any(|allowed| filter.starts_with(allowed) || filter.ends_with(allowed)),
+                "a default profile allows no write but to the default roots: {filter}"
+            );
+        }
     }
 }

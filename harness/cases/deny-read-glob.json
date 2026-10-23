@@ -1,0 +1,18 @@
+{
+  "files": {
+    "$ROOT/top.key": "x",
+    "$ROOT/a/x.key": "x",
+    "$ROOT/a/b/y.key": "x",
+    "$ROOT/a/notes.txt": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": ["$ROOT/**/*.key"], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/top.key"},
+    {"kind": "read", "path": "$ROOT/a/x.key"},
+    {"kind": "read", "path": "$ROOT/a/b/y.key"},
+    {"kind": "read", "path": "$ROOT/a/notes.txt"}
+  ]
+}

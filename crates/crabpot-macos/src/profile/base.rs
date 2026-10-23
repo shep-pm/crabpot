@@ -1,10 +1,11 @@
 //! The part of the profile that is the same for every config: what a process
 //! needs to start and run at all.
 
-use super::Inputs;
+use crabpot_core::PathError;
+use crabpot_core::config::Config;
 
-pub(super) fn rules(_inputs: &Inputs) -> String {
-    BASE.to_owned()
+pub(super) fn rules(_config: &Config) -> Result<String, PathError> {
+    Ok(BASE.to_owned())
 }
 
 const BASE: &str = r#"(deny default (with message "crabpot"))

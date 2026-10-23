@@ -1,12 +1,10 @@
 //! The network a sandboxed command has: the proxy's loopback port, and nothing else.
 
-use super::Inputs;
-
 /// The rules of upstream's `generateSandboxProfile` for `httpProxyPort`: the
 /// command may bind, accept on and dial that one port. A host is reached by
 /// asking the proxy, which decides.
-pub(super) fn rules(inputs: &Inputs) -> String {
-    let Some(port) = inputs.proxy_port else {
+pub(super) fn rules(proxy_port: Option<u16>) -> String {
+    let Some(port) = proxy_port else {
         return String::new();
     };
     format!(
@@ -25,7 +23,7 @@ mod tests {
 
     #[test]
     fn the_profile_admits_only_the_proxy_port() {
-        let profile = render(&Config::default(), Some(51234));
+        let profile = render(&Config::default(), Some(51234)).unwrap();
 
         let network: Vec<&str> = profile
             .lines()
@@ -43,7 +41,7 @@ mod tests {
 
     #[test]
     fn without_a_proxy_the_profile_admits_no_network() {
-        let profile = render(&Config::default(), None);
+        let profile = render(&Config::default(), None).unwrap();
 
         assert!(!profile.contains("(allow network"), "{profile}");
     }

@@ -4,37 +4,41 @@
 //! earlier one. A section is a file in this folder with a `rules` function,
 //! and it is registered by naming it in the `sections!` call.
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
-/// What the sections render from.
-struct Inputs<'a> {
-    #[expect(dead_code, reason = "no section reads the config's rules yet")]
-    config: &'a Config,
-    /// The loopback port of the proxy, when there is one.
-    proxy_port: Option<u16>,
-}
+mod proxy;
+mod rule;
 
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {
     ($($name:ident),* $(,)?) => {
         $(mod $name;)*
 
-        const SECTIONS: &[fn(&Inputs) -> String] = &[$($name::rules),*];
+        const SECTIONS: &[fn(&Config) -> Result<String, PathError>] = &[$($name::rules),*];
     };
 }
 
-sections!(base, read, write, proxy);
+sections!(base, read, deny_read, write);
 
 /// Renders the profile `sandbox-exec -p` takes. A command under it reaches
 /// the network only through the proxy on `proxy_port`, if there is one.
-#[must_use]
-pub fn render(config: &Config, proxy_port: Option<u16>) -> String {
-    let inputs = Inputs { config, proxy_port };
-    let mut profile = String::from("(version 1)\n");
+///
+/// # Errors
+///
+/// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
+/// or is relative and there is no working directory. A rule written for it
+/// would be dropped, so there is no profile.
+pub fn render(config: &Config, proxy_port: Option<u16>) -> Result<String, PathError> {
+    let mut profile = String::from(
+        "(version 1)
+",
+    );
     for rules in SECTIONS {
-        profile.push_str(&rules(&inputs));
+        profile.push_str(&rules(config)?);
     }
-    profile
+    profile.push_str(&proxy::rules(proxy_port));
+    Ok(profile)
 }
 
 #[cfg(test)]
@@ -43,7 +47,7 @@ mod tests {
 
     #[test]
     fn the_default_profile_denies_network_and_write() {
-        let profile = render(&Config::default(), None);
+        let profile = render(&Config::default(), None).unwrap();
 
         assert!(profile.starts_with("(version 1)\n(deny default"));
         assert!(profile.contains("(allow file-read*)"));

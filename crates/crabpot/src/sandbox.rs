@@ -5,6 +5,7 @@ use core::fmt;
 use std::io;
 use std::process::Command;
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
 #[cfg(target_os = "macos")]
 use crabpot_core::proxy::{Proxy, username_for};
@@ -26,15 +27,17 @@ impl Sandbox {
     /// # Errors
     ///
     /// [`StartError::UnsupportedPlatform`] off macOS, where nothing
-    /// confines a command yet, and [`StartError::Proxy`] when the proxy that
-    /// carries its network cannot start.
+    /// confines a command yet, [`StartError::UnresolvedPath`] when a path
+    /// in `config` cannot be made absolute, and [`StartError::Proxy`] when the
+    /// proxy that carries its network cannot start.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "macos")]
         {
             let proxy = Proxy::start(&config.network.allowed_domains)
                 .map_err(|e| StartError::Proxy(e.kind()))?;
             Ok(Self {
-                profile: crabpot_macos::profile::render(config, Some(proxy.port())),
+                profile: crabpot_macos::profile::render(config, Some(proxy.port()))
+                    .map_err(StartError::UnresolvedPath)?,
                 proxy,
             })
         }
@@ -113,6 +116,10 @@ impl Sandbox {
 pub enum StartError {
     /// The platform has no sandbox yet: only macOS has one.
     UnsupportedPlatform,
+    /// A path in the settings starts with `~` and `HOME` is not set, or is
+    /// relative and there is no working directory. A rule written for it would
+    /// be dropped.
+    UnresolvedPath(PathError),
     /// The proxy could not start: no token, no port, or no thread to run on.
     Proxy(io::ErrorKind),
 }
@@ -121,6 +128,7 @@ impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedPlatform => write!(f, "only macOS has a sandbox yet"),
+            Self::UnresolvedPath(error) => write!(f, "{error}"),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
         }
     }

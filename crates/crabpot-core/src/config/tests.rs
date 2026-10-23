@@ -37,7 +37,6 @@ fn the_default_config_shape_loads() {
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
-    ("network.allowedDomains", r#"["example.com"]"#),
     ("network.deniedDomains", r#"["example.com"]"#),
     ("network.allowUnixSockets", r#"["/tmp/x.sock"]"#),
     ("network.allowMachLookup", r#"["com.apple.x"]"#),
@@ -345,7 +344,7 @@ fn what_upstream_accepts_loads() {
 
 #[test]
 fn a_bad_leaf_beats_an_unsupported_key() {
-    let json = with("network.allowedDomains", json!(["*.com"]));
+    let json = with("network.deniedDomains", json!(["*.com"]));
 
     assert!(matches!(
         Config::from_json(&json),
@@ -355,12 +354,12 @@ fn a_bad_leaf_beats_an_unsupported_key() {
 
 #[test]
 fn deserializing_a_config_refuses_what_from_json_refuses() {
-    let json = with("network.allowedDomains", json!(["example.com"]));
+    let json = with("network.deniedDomains", json!(["example.com"]));
 
     let error = serde_json::from_str::<Config>(&json).unwrap_err();
 
     assert!(
-        error.to_string().contains("network.allowedDomains"),
+        error.to_string().contains("network.deniedDomains"),
         "{error}"
     );
 }

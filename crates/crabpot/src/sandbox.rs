@@ -48,6 +48,7 @@ impl Sandbox {
                 // A settings file that leaves the key out reads as not strict, as it
                 // does upstream.
                 config.network.strict_allowlist.unwrap_or(false),
+                config.network.mitm_proxy.as_ref(),
             )
             .map_err(|e| StartError::Proxy(e.kind()))?;
             Ok(Self {

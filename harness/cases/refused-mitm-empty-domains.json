@@ -1,0 +1,15 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": ["mitm.example.com"],
+      "deniedDomains": [],
+      "mitmProxy": {"socketPath": "$ROOT/mitm.sock", "domains": []}
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "refused": true,
+  "probes": [
+    {"kind": "connect", "host": "mitm.example.com", "port": 443}
+  ]
+}

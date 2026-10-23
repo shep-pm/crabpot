@@ -115,7 +115,7 @@ fn dialing_a_path_nothing_listens_on_is_the_kernels_error() {
     let fixture = Fixture::new("missing");
     let runtime = Builder::new_current_thread().enable_io().build().unwrap();
     let error = runtime
-        .block_on(connect(&fixture.socket_of(110)))
+        .block_on(connect(&fixture.socket_of(100)))
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }

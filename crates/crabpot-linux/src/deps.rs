@@ -138,10 +138,9 @@ fn find_executable(name: &str, path: &OsStr) -> Option<PathBuf> {
 
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
+    use nix::unistd::{AccessFlags, access};
 
-    path.metadata()
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    path.is_file() && access(path, AccessFlags::X_OK).is_ok()
 }
 
 #[cfg(not(unix))]
@@ -228,6 +227,19 @@ mod tests {
         let dir = bin_dir("not-executable", Some((MODERN, 0o644)));
         let (result, _) = run(&dir, Some(NOT_ROOT));
         assert_eq!(result, Err(DepsError::Missing { tool: "bwrap" }));
+    }
+
+    #[test]
+    fn a_bwrap_only_another_user_can_execute_is_passed_over() {
+        // A root process can execute any file with an execute bit.
+        if nix::unistd::geteuid().is_root() {
+            return;
+        }
+        let theirs = bin_dir("theirs", Some((MODERN, 0o010)));
+        let ours = bin_dir("ours", Some((MODERN, 0o755)));
+        let path = env::join_paths([&theirs, &ours]).expect("a path");
+        let result = check(&path, Some(NOT_ROOT), &mut Vec::new());
+        assert_eq!(result, Ok(ours.join("bwrap")));
     }
 
     #[test]

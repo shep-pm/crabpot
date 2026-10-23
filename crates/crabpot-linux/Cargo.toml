@@ -14,5 +14,10 @@ exclude = ["/docs/"]
 # flips this, and `release-plz.toml` with it.
 publish = false
 
+[target.'cfg(unix)'.dependencies]
+# Asks the kernel whether this process may execute a file, through a safe
+# call.
+nix = { version = "0.31", default-features = false, features = ["fs", "user"] }
+
 [lints]
 workspace = true

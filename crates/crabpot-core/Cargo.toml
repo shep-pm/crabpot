@@ -12,6 +12,7 @@ keywords.workspace = true
 exclude = ["/docs/"]
 
 [dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

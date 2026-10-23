@@ -12,8 +12,20 @@ keywords.workspace = true
 # a published .crate, which is permanent.
 exclude = ["/docs/"]
 
+[features]
+# Option: `cli` builds the `crabpot` binary. The library, `run_from_args`
+# included, does not need it, so a host that only links crabpot leaves it off.
+default = ["cli"]
+cli = []
+
+[[bin]]
+name = "crabpot"
+required-features = ["cli"]
+
 [dependencies]
 crabpot-core.workspace = true
+# The wrapper waits on its child and on SIGINT and SIGTERM, and no more.
+tokio = { version = "1", default-features = false, features = ["rt", "process", "signal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 crabpot-macos.workspace = true

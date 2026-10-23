@@ -42,11 +42,12 @@ impl ResolvedPath {
 
     /// The paths `pattern` matches beneath `anchor`, which is a name on disk
     /// and not pattern, since a directory may hold `[`, `*` or `?` in its own
-    /// name. `anchor` has no trailing `/`.
+    /// name. `anchor` has no trailing `/`, except for the root itself.
     #[must_use]
     pub fn beneath(anchor: &str, pattern: &str) -> Self {
+        let separator = if anchor.ends_with('/') { "" } else { "/" };
         Self::Pattern {
-            path: format!("{anchor}/{pattern}"),
+            path: format!("{anchor}{separator}{pattern}"),
             anchor: Some(anchor.to_owned()),
         }
     }
@@ -360,6 +361,13 @@ mod tests {
             Some(r"^/a\[1\]/(.*/)?\.bashrc(/.*)?$")
         );
         assert_eq!(beneath.base_dir(), "/a[1]");
+    }
+
+    #[test]
+    fn a_pattern_beneath_the_root_has_one_separator() {
+        let beneath = ResolvedPath::beneath("/", "**/.bashrc");
+        assert_eq!(beneath.path(), "/**/.bashrc");
+        assert!(beneath.deny_covers("/Users/x/.bashrc"));
     }
 
     #[test]

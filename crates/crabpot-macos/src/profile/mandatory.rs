@@ -73,4 +73,16 @@ mod tests {
         assert_eq!(entries(&base(), false).unwrap().len(), 30);
         assert_eq!(entries(&base(), true).unwrap().len(), 28);
     }
+
+    #[test]
+    fn from_the_root_the_patterns_still_cover_a_nested_repo() {
+        let root = PathBase::new(Some("/crabpot-test-home".to_owned()), Some("/".to_owned()));
+        let entries = entries(&root, false).unwrap();
+        assert!(entries.contains(&ResolvedPath::named("/.bashrc")));
+        let covers = |sample: &str| entries.iter().any(|entry| entry.deny_covers(sample));
+        assert!(covers("/Users/x/proj/.git/hooks/pre-commit"));
+        assert!(covers("/Users/x/proj/.bashrc"));
+        assert!(covers("/Users/x/proj/.git/config"));
+        assert!(!covers("/Users/x/proj/.git/HEAD"));
+    }
 }

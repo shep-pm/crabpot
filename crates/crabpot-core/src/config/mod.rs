@@ -45,7 +45,8 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// [`ConfigError::Invalid`] when `json` is not a settings object, and
+    /// [`ConfigError::Invalid`] when `json` is not a settings object or a group
+    /// in it (`network`, `filesystem`) is not an object, and
     /// [`ConfigError::Unsupported`] when a key asks for something crabpot
     /// does not apply yet. A key asks for something when its value is a
     /// non-empty list, string or object, a number, or `true`.
@@ -59,14 +60,27 @@ impl Config {
             });
         }
         for key in UNSUPPORTED {
-            let value = key
-                .split('.')
-                .try_fold(&settings, |value, part| value.get(part));
+            let value = lookup(&settings, key)?;
             if value.is_some_and(asks) {
                 return Err(ConfigError::Unsupported { key });
             }
         }
         Ok(Self {})
+    }
+}
+
+/// The value at `key`, which nests at most one level deep. A parent that is
+/// there and is not an object is wrong, and is not the same as a key left out.
+fn lookup<'a>(settings: &'a Value, key: &str) -> Result<Option<&'a Value>, ConfigError> {
+    let Some((parent, leaf)) = key.split_once('.') else {
+        return Ok(settings.get(key));
+    };
+    match settings.get(parent) {
+        None => Ok(None),
+        Some(Value::Object(fields)) => Ok(fields.get(leaf)),
+        Some(_) => Err(ConfigError::Invalid {
+            reason: format!("`{parent}` is not an object"),
+        }),
     }
 }
 
@@ -164,6 +178,20 @@ mod tests {
         let json = r#"{"credentials": {}, "network": {"tlsTerminate": false}, "other": 1}"#;
 
         assert_eq!(Config::from_json(json), Ok(Config::default()));
+    }
+
+    #[test]
+    fn a_group_that_is_not_an_object_is_invalid() {
+        for json in [
+            r#"{"filesystem": "~/.ssh"}"#,
+            r#"{"network": ["example.com"]}"#,
+            r#"{"network": null}"#,
+        ] {
+            assert!(
+                matches!(Config::from_json(json), Err(ConfigError::Invalid { .. })),
+                "{json}"
+            );
+        }
     }
 
     #[test]

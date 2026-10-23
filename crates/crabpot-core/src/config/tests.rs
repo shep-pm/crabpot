@@ -39,7 +39,6 @@ fn the_default_config_shape_loads() {
 const ASKING: &[(&str, &str)] = &[
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
     ("network.allowLocalBinding", "true"),
-    ("enableWeakerNetworkIsolation", "true"),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),
     ("network.socksProxyPort", "1080"),
@@ -100,6 +99,19 @@ fn a_key_that_asks_for_nothing_loads() {
         let loaded = Config::from_json(&with(path, value));
 
         assert!(loaded.is_ok(), "{path}: {loaded:?}");
+    }
+}
+
+#[test]
+fn enable_weaker_network_isolation_is_read_into_the_config() {
+    for (value, read) in [(json!(true), Some(true)), (json!(false), Some(false))] {
+        let Config {
+            enable_weaker_network_isolation,
+            ..
+        } = Config::from_json(&with("enableWeakerNetworkIsolation", value.clone()))
+            .unwrap_or_else(|e| panic!("{value}: {e}"));
+
+        assert_eq!(enable_weaker_network_isolation, read, "{value}");
     }
 }
 

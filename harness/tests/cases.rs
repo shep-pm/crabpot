@@ -31,6 +31,16 @@ fn default_settings() {
 }
 
 #[test]
+fn weaker_isolation_true() {
+    run("weaker_isolation_true", "weaker-isolation-true.json");
+}
+
+#[test]
+fn weaker_isolation_false() {
+    run("weaker_isolation_false", "weaker-isolation-false.json");
+}
+
+#[test]
 fn refused_invalid_json() {
     run("refused_invalid_json", "refused-invalid-json.json");
 }

@@ -32,7 +32,8 @@ sections!(
     move_blocking,
     allow_write,
     deny_write,
-    unix_sockets
+    unix_sockets,
+    weaker_isolation
 );
 
 /// Renders the profile `sandbox-exec -p` takes. A command under it reaches the

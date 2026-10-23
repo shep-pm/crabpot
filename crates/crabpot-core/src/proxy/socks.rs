@@ -12,10 +12,9 @@ use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 
-use super::shared::{Shared, dial, drain};
+use super::shared::{Shared, Stream, dial, drain};
 use super::token::Token;
 
 const VERSION: u8 = 5;
@@ -56,13 +55,8 @@ impl From<&io::Error> for Reply {
     }
 }
 
-/// What a client connection is read from and answered on.
-trait Stream: AsyncRead + AsyncWrite + Unpin {}
-
-impl<T: AsyncRead + AsyncWrite + Unpin> Stream for T {}
-
 /// One connection. A client that goes away mid-exchange is nobody's failure.
-pub(super) async fn handle(mut client: TcpStream, shared: Arc<Shared>) {
+pub(super) async fn handle<S: Stream>(mut client: S, shared: Arc<Shared>) {
     let _ = exchange(&mut client, &shared).await;
 }
 
@@ -75,7 +69,7 @@ enum Request {
     Drop,
 }
 
-async fn exchange(client: &mut impl Stream, shared: &Shared) -> io::Result<()> {
+async fn exchange<S: Stream>(client: &mut S, shared: &Shared) -> io::Result<()> {
     match read_greeting(client).await? {
         Some(methods) if methods.contains(&USERNAME_PASSWORD) => {
             client.write_all(&[VERSION, USERNAME_PASSWORD]).await?;

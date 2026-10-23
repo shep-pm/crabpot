@@ -6,8 +6,8 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, copy, sink};
-use tokio::net::{TcpListener, TcpStream, lookup_host};
+use tokio::io::{AsyncRead, AsyncWrite, copy, sink};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream, lookup_host};
 use tokio::time::{sleep, timeout};
 
 use super::filter::Filter;
@@ -33,17 +33,53 @@ impl Shared {
     }
 }
 
+/// What a connection is read from and answered on.
+pub(super) trait Stream: AsyncRead + AsyncWrite + Unpin {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> Stream for T {}
+
+/// A listener that hands out connections of one kind, as tokio's TCP and Unix
+/// listeners do.
+pub(super) trait Listener {
+    /// The kind of connection it hands out.
+    type Connection: Stream + Send + 'static;
+
+    /// The next connection.
+    fn accept(&self) -> impl Future<Output = io::Result<Self::Connection>> + Send;
+}
+
+impl Listener for TcpListener {
+    type Connection = TcpStream;
+
+    async fn accept(&self) -> io::Result<Self::Connection> {
+        TcpListener::accept(self)
+            .await
+            .map(|(connection, _)| connection)
+    }
+}
+
+impl Listener for UnixListener {
+    type Connection = UnixStream;
+
+    async fn accept(&self) -> io::Result<Self::Connection> {
+        UnixListener::accept(self)
+            .await
+            .map(|(connection, _)| connection)
+    }
+}
+
 /// Hands each connection to `listener` to `handle`, until the runtime it runs
 /// on is dropped.
-pub(super) async fn serve<H, F>(listener: TcpListener, shared: Arc<Shared>, handle: H)
+pub(super) async fn serve<L, H, F>(listener: L, shared: Arc<Shared>, handle: H)
 where
-    H: Fn(TcpStream, Arc<Shared>) -> F,
+    L: Listener + Send + Sync,
+    H: Fn(L::Connection, Arc<Shared>) -> F,
     F: Future<Output = ()> + Send + 'static,
 {
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
-                tokio::spawn(handle(stream, Arc::clone(&shared)));
+            Ok(connection) => {
+                tokio::spawn(handle(connection, Arc::clone(&shared)));
             }
             // Out of descriptors, or a peer that reset before it was accepted:
             // wait a moment and take the next one.

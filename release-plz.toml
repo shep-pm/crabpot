@@ -32,7 +32,9 @@ semver_check = true
 publish_no_verify = false
 
 # The test harness is never published, and release-plz would otherwise bump
-# and tag it with the rest of the workspace.
+# and tag it with the rest of the workspace. release-plz refuses to run when
+# its `publish` disagrees with the harness's Cargo.toml.
 [[package]]
 name = "crabpot-harness"
 release = false
+publish = false

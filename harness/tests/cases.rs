@@ -4,7 +4,10 @@
 //! no crabpot sandbox yet, so a case there runs under upstream's bwrap path
 //! alone, which is what proves that path holds the settings the same way.
 //! `LINUX_READY` names the cases that also run crabpot on Linux, and each Linux
-//! slice adds the cases it makes pass there.
+//! slice adds the cases it makes pass there. There, a probe that reported a code
+//! and could not tell what upstream's mounts left it is written to the log as
+//! `report:` rather than failed: a Linux read deny answers by removing what the
+//! probe asks about, and no answer is compared with another runner's.
 //!
 //! Without Node, or without `npm ci` in `harness/`, a case skips on a
 //! developer's machine and fails when `CI` is set. On Linux upstream also needs

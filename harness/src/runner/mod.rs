@@ -172,19 +172,35 @@ pub fn compare(
 /// them are compared, and one runner alone is a case run without a comparison:
 /// its probes must still each report a code, so a runner that cannot run the
 /// probe at all fails the case.
+///
+/// A probe that reported a code and still could not tell what the sandbox did
+/// ([`probe::ERROR`]) fails a comparison, which is what a code is for. With one
+/// runner there is nothing to compare the answer with, so the answer is the
+/// finding and the run reports it and goes on: upstream's bwrap path answers a
+/// read deny by mounting an empty tmpfs over the denied folder, and a probe of
+/// a file that was in it then reads a path that is not there.
 fn run_probes(
     case: &Case,
     settings: &Path,
     restore: &dyn Fn() -> Result<(), Error>,
     runners: &[&dyn Runner],
 ) -> Result<(), Error> {
+    let compare = runners.len() > 1;
     for probe in &case.probes {
         let mut codes = Vec::with_capacity(runners.len());
         for runner in runners {
             restore()?;
             let served = serve(probe, settings)?;
-            codes.push(code(*runner, settings, probe)?);
+            let outcome = code(*runner, settings, probe, compare)?;
             drop(served);
+            if outcome == probe::ERROR {
+                eprintln!(
+                    "report: {probe:?} could not tell under {}: it exited {}",
+                    runner.name(),
+                    probe::ERROR
+                );
+            }
+            codes.push(outcome);
         }
         let (Some(upstream), Some(crabpot)) = (codes.first().copied(), codes.get(1).copied())
         else {
@@ -276,14 +292,17 @@ fn written(probe: &Probe) -> bool {
     matches!(probe, Probe::Write(marker) if Path::new(marker).exists())
 }
 
-fn code(runner: &dyn Runner, settings: &Path, probe: &Probe) -> Result<u8, Error> {
-    match runner.run(settings, probe)? {
-        probe::ERROR => Err(Error::Erred {
+/// The code `runner`'s probe reported. A probe that could not tell is an error
+/// only where its answer is compared with another runner's.
+fn code(runner: &dyn Runner, settings: &Path, probe: &Probe, compare: bool) -> Result<u8, Error> {
+    let outcome = runner.run(settings, probe)?;
+    if compare && outcome == probe::ERROR {
+        return Err(Error::Erred {
             runner: runner.name(),
             probe: probe.clone(),
-        }),
-        code => Ok(code),
+        });
     }
+    Ok(outcome)
 }
 
 /// Runs the case file's `text` under `upstream` and under `crabpot`.
@@ -307,15 +326,17 @@ pub fn run_case(
 /// Runs the case file's `text` under `upstream` alone, with nothing compared.
 /// Every probe must still report the code it exited with, so a runner that
 /// cannot run its probe at all, or that does not refuse settings the case says
-/// are refused, fails the case.
+/// are refused, fails the case. A probe that reported a code and could not tell
+/// what the sandbox did is reported in the log rather than failed: with nothing
+/// to compare it with it says what upstream's runner did, which is what this
+/// leg is for.
 ///
 /// Reports whether the case ran, as [`run_case`] does.
 ///
 /// # Errors
 ///
 /// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root, its
-/// files or a served socket cannot be created, [`Error::Erred`] for a probe
-/// that could not tell what the sandbox did, [`Error::Unreported`] for a probe
+/// files or a served socket cannot be created, [`Error::Unreported`] for a probe
 /// the runner never ran, and [`Error::NotRefused`] for a probe that ran under
 /// a runner that should have refused the settings first.
 pub fn run_upstream_only(text: &str, name: &str, upstream: &dyn Runner) -> Result<bool, Error> {

@@ -114,8 +114,10 @@ fn a_case_that_names_another_platform_runs_on_neither_runner() {
 }
 
 /// One runner alone has nothing to agree with, so a probe it refuses and a
-/// probe it allows are both a case that passes. A probe it cannot run is
-/// not.
+/// probe it allows are both a case that passes, and so is one that reported a
+/// code and could not tell what the sandbox did: with nothing to compare the
+/// answer with, the answer is the finding, and it goes to the log. A runner
+/// that never ran the probe is not.
 #[test]
 fn one_runner_alone_runs_a_case_without_comparing_it() {
     let text =
@@ -131,17 +133,15 @@ fn one_runner_alone_runs_a_case_without_comparing_it() {
     .unwrap();
     assert!(ran);
 
-    assert!(matches!(
+    assert!(
         run_upstream_only(
             text,
             "upstream_only",
             &StandIn("upstream", |_| probe::ERROR)
-        ),
-        Err(Error::Erred {
-            runner: "upstream",
-            probe: Probe::Bind,
-        })
-    ));
+        )
+        .unwrap(),
+        "a probe that could not tell is the finding under one runner, not a failure"
+    );
 }
 
 #[test]

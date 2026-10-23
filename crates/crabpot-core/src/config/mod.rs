@@ -90,7 +90,8 @@ pub struct Filesystem {
     /// `denyRead`: paths a command may not read.
     #[serde(deserialize_with = "deny_read::deserialize")]
     pub deny_read: Vec<PathEntry>,
-    /// `allowRead`, which is not read yet.
+    /// `allowRead`: paths a command may read inside one `denyRead` hides, which
+    /// win over it.
     #[serde(default, deserialize_with = "allow_read::deserialize")]
     pub allow_read: Option<Vec<PathEntry>>,
     /// `allowWrite`: paths a command may write, beside the default write roots.

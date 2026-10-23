@@ -248,6 +248,22 @@ mod tests {
     }
 
     #[test]
+    fn an_allow_read_reopens_only_a_dir_it_is_at_or_above() {
+        let allowing = |allow: &str| {
+            let mut config = denying(&["/crabpot-test-home"]);
+            config.filesystem.allow_read = Some(vec![PathEntry::Spelled(allow.to_owned())]);
+            home_dirs(&config)
+        };
+
+        assert_eq!(
+            allowing("/crabpot-test-home/me/.claude"),
+            ["/crabpot-test-home/me/.claude/debug"]
+        );
+        assert!(allowing("/crabpot-test-home/me/.claude/debug/sub").is_empty());
+        assert!(allowing("/elsewhere").is_empty());
+    }
+
+    #[test]
     fn an_allow_read_glob_reopens_nothing() {
         let mut config = denying(&["/crabpot-test-home/me/.claude"]);
         config.filesystem.allow_read = Some(vec![PathEntry::Spelled(

@@ -2,8 +2,8 @@
 //! seccomp filters and the bwrap dependency checks.
 //!
 //! The crate is the landing place for the Linux slices of the Linux map, and
-//! holds only the ones that have landed: [`argv`], [`deps`] and
-//! [`mandatory`]. It builds on every platform so a Linux slice fails on the
+//! holds only the ones that have landed: [`argv`], [`deps`], [`fs`],
+//! [`mandatory`] and [`wrap`]. It builds on every platform so a Linux slice fails on the
 //! macOS runner too, as
 //! `crabpot-macos` does in reverse; Linux-only code sits behind
 //! `cfg(target_os = "linux")`. The facade depends on it as a target-specific
@@ -12,6 +12,8 @@
 //!
 //! What lives here, or will, per ADR-0014:
 //!
+//! - The bwrap words for a config: [`wrap::words`], over the filesystem
+//!   [`fs::Plan`].
 //! - The bwrap argv, rendered under upstream's size limits ([`argv`]).
 //! - The mandatory-deny walker, matching upstream's `rg` list with `std::fs`
 //!   ([`mandatory`]).

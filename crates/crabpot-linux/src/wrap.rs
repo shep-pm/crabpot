@@ -12,9 +12,8 @@ use crate::fs::Plan;
 /// under `config`.
 ///
 /// `root_with_setfcap` is whether this process is uid 0 with `CAP_SETFCAP`,
-/// which [`deps::is_root_with_setfcap_here`](crate::deps::is_root_with_setfcap_here)
-/// answers. The command follows them, after a `--`, as [`argv::render`](crate::argv::render)
-/// puts it.
+/// which [`is_root_with_setfcap_here`](crate::deps::is_root_with_setfcap_here)
+/// answers. The command follows them, after a `--`, as `argv::render` puts it.
 ///
 /// # Errors
 ///

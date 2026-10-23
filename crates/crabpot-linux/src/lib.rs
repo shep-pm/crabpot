@@ -20,8 +20,10 @@
 //! - The two seccomp filters, built per architecture: `seccomp`, on Linux
 //!   only.
 //! - The bwrap dependency checks, run before a sandbox starts: [`deps`].
-//! - The Linux path entries: `denyRead`, `allowRead`, `allowWrite` and
-//!   `denyWrite` mapped onto bwrap binds.
+//! - The Linux path entries mapped onto bwrap binds: `denyRead` and
+//!   `allowWrite` have landed, the first as a tmpfs over a directory and
+//!   `/dev/null` over a file, the second as a bind of each writable path, and
+//!   `allowRead` and `denyWrite` will follow.
 //!
 //! The helper crabpot's own binary re-enters inside bwrap (ADR-0010) is the
 //! facade's `cli` half, not this crate.

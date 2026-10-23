@@ -5,6 +5,7 @@ use crabpot_core::paths::{PathBase, contains_glob_chars, normalize_path_for_sand
 
 use super::Plan;
 use super::allow_write::words_with;
+use super::deny_read;
 use crate::support::Tree;
 
 /// A tree's path, as a config would spell it.
@@ -27,6 +28,22 @@ fn allowing(entries: &[&str]) -> Config {
     config
 }
 
+/// A config whose only path entries are `denyRead` spellings.
+fn denying(entries: &[&str]) -> Config {
+    let list = entries
+        .iter()
+        .map(|entry| format!("\"{entry}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    Config::from_json(&format!(
+        r#"{{
+            "network": {{"allowedDomains": [], "deniedDomains": []}},
+            "filesystem": {{"denyRead": [{list}], "allowWrite": [], "denyWrite": []}}
+        }}"#
+    ))
+    .expect("a config")
+}
+
 /// The section's words, as text.
 fn words(config: &Config, base: &PathBase) -> Vec<String> {
     words_with(config, base)
@@ -43,6 +60,17 @@ fn plan(config: &Config) -> Vec<String> {
         .expect("the config resolves")
         .words()
         .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The mounts `denyRead` adds to what a config denying nothing adds.
+fn denied_words(entries: &[&str]) -> Vec<String> {
+    let nothing = deny_read::words(&denying(&[])).expect("a config").len();
+    deny_read::words(&denying(entries))
+        .expect("a config")
+        .iter()
+        .skip(nothing)
         .map(|word| word.to_string_lossy().into_owned())
         .collect()
 }
@@ -249,4 +277,82 @@ fn a_link_to_a_sibling_directory_is_not_bound() {
 
     assert!(holds_no_name_below(&binds, "/linked"), "{binds:#?}");
     assert!(holds_no_name_below(&binds, "/real"), "{binds:#?}");
+}
+
+#[test]
+fn a_denied_directory_becomes_a_tmpfs() {
+    let tree = Tree::empty("fs-deny-directory");
+    tree.dir("secrets");
+    tree.file("secrets/key", "");
+    let secrets = at(&tree, "secrets");
+
+    assert_eq!(denied_words(&[&secrets]), ["--tmpfs", &secrets]);
+}
+
+#[test]
+fn a_denied_file_is_bound_from_dev_null() {
+    let tree = Tree::empty("fs-deny-file");
+    tree.file("key", "");
+    let key = at(&tree, "key");
+
+    assert_eq!(denied_words(&[&key]), ["--ro-bind", "/dev/null", &key]);
+}
+
+#[test]
+fn a_missing_denied_path_is_skipped() {
+    let tree = Tree::empty("fs-deny-missing");
+
+    assert_eq!(denied_words(&[&at(&tree, "nowhere")]), Vec::<String>::new());
+}
+
+#[test]
+fn what_is_beneath_a_denied_directory_is_left_to_its_tmpfs() {
+    let tree = Tree::empty("fs-deny-nested");
+    tree.dir("secrets");
+    tree.file("secrets/deeper/key", "");
+    let secrets = at(&tree, "secrets");
+    let key = at(&tree, "secrets/deeper/key");
+
+    assert_eq!(denied_words(&[&key, &secrets]), ["--tmpfs", &secrets]);
+}
+
+#[test]
+fn a_glob_expands_to_the_paths_on_disk() {
+    let tree = Tree::empty("fs-deny-glob");
+    tree.file("top.key", "");
+    tree.file("a/b/y.key", "");
+    tree.file("a/notes.txt", "");
+    let nested = at(&tree, "a/b/y.key");
+    let top = at(&tree, "top.key");
+    let pattern = at(&tree, "**/*.key");
+
+    assert_eq!(
+        denied_words(&[&pattern]),
+        [
+            "--ro-bind",
+            "/dev/null",
+            &nested,
+            "--ro-bind",
+            "/dev/null",
+            &top
+        ]
+    );
+}
+
+#[test]
+fn a_glob_that_matches_nothing_adds_no_word() {
+    let tree = Tree::empty("fs-deny-no-match");
+    tree.file("a/notes.txt", "");
+    let pattern = at(&tree, "**/*.key");
+
+    assert_eq!(denied_words(&[&pattern]), Vec::<String>::new());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_path_in_the_kernels_proc_keeps_its_spelling() {
+    assert_eq!(
+        denied_words(&["/proc/self/environ"]),
+        ["--ro-bind", "/dev/null", "/proc/self/environ"]
+    );
 }

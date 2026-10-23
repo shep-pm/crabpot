@@ -256,7 +256,8 @@ fn name_location(base: &PathBase, path: &str) -> String {
 /// names a path, so its last component stays as written. The root is never a
 /// second spelling, nor is anything among the devices: a rule on a name
 /// blanked with a link to `/dev/null` would be one on `/dev/null` for every
-/// command.
+/// command. Nor is anything in `/proc`, where `/proc/self` resolves to the
+/// pid of the process asking, which a sandbox's own `/proc` does not hold.
 fn in_both_spellings(base: &PathBase, kind: ListKind, entry: ResolvedPath) -> Vec<ResolvedPath> {
     let base_dir = entry.base_dir();
     let canonical = if kind == ListKind::Deny || entry.is_pattern() {
@@ -264,7 +265,11 @@ fn in_both_spellings(base: &PathBase, kind: ListKind, entry: ResolvedPath) -> Ve
     } else {
         name_location(base, &base_dir)
     };
-    if canonical == base_dir || canonical == "/" || is_at_or_under(&canonical, "/dev") {
+    if canonical == base_dir
+        || canonical == "/"
+        || is_at_or_under(&canonical, "/dev")
+        || is_at_or_under(&canonical, "/proc")
+    {
         return vec![entry];
     }
     let resolved = match &entry {

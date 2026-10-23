@@ -12,6 +12,8 @@ use std::ffi::OsString;
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
+mod glob_walk;
+
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {
     ($($name:ident),* $(,)?) => {
@@ -21,8 +23,10 @@ macro_rules! sections {
     };
 }
 
-sections!(base, allow_write, private_mounts);
+sections!(base, allow_write, deny_read, private_mounts);
 
+/// The fixture tree the cases build their paths on needs `symlink`, so the
+/// cases sit with the unix tests.
 #[cfg(all(test, unix))]
 mod tests;
 

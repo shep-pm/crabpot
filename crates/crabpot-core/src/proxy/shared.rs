@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, copy, sink};
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream, lookup_host};
+use tokio::net::{TcpListener, TcpStream, lookup_host};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::time::{sleep, timeout};
 
 use super::filter::Filter;
@@ -82,6 +84,7 @@ impl Listener for TcpListener {
     }
 }
 
+#[cfg(unix)]
 impl Listener for UnixListener {
     type Connection = UnixStream;
 

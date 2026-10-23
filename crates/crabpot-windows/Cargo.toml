@@ -1,0 +1,94 @@
+[package]
+name = "crabpot-windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Windows half of crabpot: upstream's srt-win source, taken in under crabpot's name"
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+# docs/ holds planning and design notes. They belong in the repository, not in
+# a published .crate, which is permanent.
+exclude = ["/docs/"]
+# ADR-0012 never publishes a platform crate empty, and ADR-0005 keeps
+# upstream's internal API off crates.io entirely: this crate is never
+# published, empty or not. The Windows release slice flips `release` in
+# `release-plz.toml` only once the facade depends on it.
+publish = false
+
+# Upstream's two integration tests, kept where upstream keeps them. Each needs
+# the one-line `use crabpot_windows as srt_win;` alias at its head, because the
+# library here is `crabpot_windows` and not `srt_win` (ADR-0005). See
+# PATCHES.md.
+[[test]]
+name = "persistent_grant_access_check"
+path = "srt-win/tests/persistent_grant_access_check.rs"
+
+[[test]]
+name = "sd_access_check_matrix"
+path = "srt-win/tests/sd_access_check_matrix.rs"
+
+[features]
+# Test-only CI smoke hooks (`srt-win probe token` / `probe parent-access`),
+# upstream's own feature. OFF by default, never enabled for a shipped binary.
+test-hooks = []
+
+[target.'cfg(windows)'.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = { version = "0.62.2", features = [
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
+  "Win32_Foundation",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+  "Win32_System_Memory",
+  "Win32_System_Rpc",
+  "Win32_System_Services",
+  "Win32_System_SystemServices",
+  "Win32_System_JobObjects",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_Com",
+  "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Authentication_Identity",
+  "Win32_Security_Cryptography",
+  "Win32_Storage_FileSystem",
+  "Win32_NetworkManagement_WindowsFilteringPlatform",
+  "Win32_NetworkManagement_NetManagement",
+  "Win32_Networking_WinSock",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Registry",
+] }
+# `bundled` compiles the sqlite3 amalgamation via `cc`. Upstream's own note,
+# kept because it is the reason `.github/stubs/` exists: `cargo check --target
+# …-windows-msvc` from a non-Windows host fails at the libsqlite3-sys build
+# script (no MSVC toolchain) unless CC/AR are stubbed. Cross-target clippy with
+# the stubs is the only gate that compiles the clap-derive structs in
+# `cli.rs` off a Windows host.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Not the workspace's table: ADR-0005 brings upstream's source in as upstream
+# wrote it. Its 313 unsafe sites carry no `// SAFETY:` comments, and its public
+# items are not documented to the standard the workspace's `missing_docs` and
+# `missing_debug_implementations` demand. Inheriting the workspace table would
+# mean editing every copied file, so the exemption lives here instead, and
+# `PATCHES.md` stays free of lint patches. `docs/rust-house-style-addendum.md`
+# records it. crabpot's own file in this crate is one short `lib.rs`, which
+# follows the rules like every other crabpot file.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "allow"
+missing_debug_implementations = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "allow"

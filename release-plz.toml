@@ -53,3 +53,12 @@ release = false
 name = "crabpot-linux"
 release = false
 publish = false
+
+# ADR-0005 keeps upstream's `srt-win` out of crates.io under any name, so this
+# crate is never published: it holds upstream's source, not crabpot's API. The
+# Windows map keeps `release = false` for the same reason ADR-0012 gives for an
+# empty platform crate, and no slice flips `publish`.
+[[package]]
+name = "crabpot-windows"
+release = false
+publish = false

@@ -1,0 +1,45 @@
+#!/bin/sh
+# Stand-in for the C compiler, for the cross-target gates that build
+# `rusqlite`'s `bundled` feature (libsqlite3-sys, built with `cc`) for a
+# Windows target from a macOS or Linux runner, where no MSVC toolchain is
+# installed.
+#
+# Only `cargo clippy` and `cargo check` use it: neither links, so an empty
+# object file is enough to get past the build script and compile the Rust.
+# A real build or test run on a Windows runner never sees this file.
+#
+# Set it with `CC_<target>=.github/stubs/stubcc`, where <target> is the cargo
+# env-var form of the target triple (`CC_x86_64_pc_windows_msvc`).
+#
+# Walks the arguments and writes an empty file for whatever output the compiler
+# was told to produce: `-o X` (gcc and clang, and `cc` crate's own spelling) or
+# `-FoX` (cl).
+
+out=
+prev=
+for arg in "$@"; do
+	case "$arg" in
+	-o)
+		prev=-o
+		continue
+		;;
+	-o?*)
+		out=${arg#-o}
+		;;
+	-Fo?*)
+		out=${arg#-Fo}
+		;;
+	*)
+		if [ "$prev" = -o ]; then
+			out=$arg
+			prev=
+		fi
+		;;
+	esac
+done
+
+if [ -n "$out" ]; then
+	: >"$out"
+fi
+
+exit 0

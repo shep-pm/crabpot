@@ -1,7 +1,7 @@
 //! The kelpie keys: one module for each, registered by one line below.
 //!
-//! A module holds what reads and checks its key's value, and its `PATH`, the
-//! dotted path `unsupported` refuses it by until it is honoured. Upstream's
+//! A module holds what reads and checks its key's value, and, until the key is
+//! honoured, its `PATH`, the dotted path `unsupported` refuses it by. Upstream's
 //! other keys are fields of `Config` or are dropped; they have no module.
 
 pub(crate) mod allow_local_binding;

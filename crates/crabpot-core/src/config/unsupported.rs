@@ -17,7 +17,7 @@ use super::error::ConfigError;
 use super::keys::{
     allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
     allowed_domains, denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_read,
-    deny_write, enable_weaker_network_isolation, mitm_proxy,
+    deny_write, mitm_proxy,
 };
 
 /// Dotted paths, in the order they are checked.
@@ -29,7 +29,6 @@ pub(super) const PATHS: &[&str] = &[
     allow_mach_lookup::PATH,
     deny_mach_lookup::PATH,
     allow_local_binding::PATH,
-    enable_weaker_network_isolation::PATH,
     denied_resolved_addresses::PATH,
     mitm_proxy::PATH,
     deny_read::PATH,

@@ -15,7 +15,7 @@ macro_rules! sections {
     };
 }
 
-sections!(base, read, write);
+sections!(base, read, write, weaker_isolation);
 
 /// Renders the profile `sandbox-exec -p` takes.
 #[must_use]

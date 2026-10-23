@@ -1,4 +1,5 @@
 //! The network a sandboxed command has: the proxies' loopback ports, and nothing else.
+//! The Unix sockets a command may use are another section, in `unix_sockets`.
 
 /// The rules of upstream's `generateSandboxProfile` for `httpProxyPort` and
 /// `socksProxyPort`: the command may bind, accept on and dial those ports. A

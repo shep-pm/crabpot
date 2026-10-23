@@ -247,10 +247,26 @@ fn socks_allowed_example_com() {
 }
 
 #[test]
+fn unix_socket_listed_folder() {
+    run(
+        "unix_socket_listed_folder",
+        "unix-sockets-listed-folder.json",
+    );
+}
+
+#[test]
 fn socks_other_domain_refused() {
     run(
         "socks_other_domain_refused",
         "socks-other-domain-refused.json",
+    );
+}
+
+#[test]
+fn unix_socket_unlisted_is_refused() {
+    run(
+        "unix_socket_unlisted_is_refused",
+        "unix-sockets-unlisted-is-refused.json",
     );
 }
 
@@ -282,5 +298,13 @@ fn refused_denied_domains_bad_entry() {
     run(
         "refused_denied_domains_bad_entry",
         "refused-denied-domains-bad-entry.json",
+    );
+}
+
+#[test]
+fn unix_socket_empty_string_grants_cwd() {
+    run(
+        "unix_socket_empty_string_grants_cwd",
+        "unix-sockets-empty-string-grants-cwd.json",
     );
 }

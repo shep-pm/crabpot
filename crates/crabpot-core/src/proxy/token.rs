@@ -71,13 +71,7 @@ pub(super) struct Token(String);
 impl Token {
     /// Reads 16 bytes from `/dev/urandom`.
     pub(super) fn generate() -> io::Result<Self> {
-        let mut bytes = [0u8; 16];
-        File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-        let mut hex = String::with_capacity(32);
-        for byte in bytes {
-            hex.push_str(&format!("{byte:02x}"));
-        }
-        Ok(Self(hex))
+        Ok(Self(random_hex(16)?))
     }
 
     pub(super) fn as_str(&self) -> &str {
@@ -112,6 +106,22 @@ impl Token {
     pub(super) fn accepts_login(&self, user: &str, password: &str) -> bool {
         !user.is_empty() && same(password, &self.0)
     }
+}
+
+/// `bytes` random bytes from `/dev/urandom`, in lowercase hex. The token is one
+/// use of it, and a socket's unique name another.
+///
+/// # Errors
+///
+/// The [`io::Error`] of whatever failed: opening `/dev/urandom` or reading it.
+pub(super) fn random_hex(bytes: usize) -> io::Result<String> {
+    let mut buf = vec![0u8; bytes];
+    File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    let mut hex = String::with_capacity(bytes * 2);
+    for byte in buf {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Ok(hex)
 }
 
 /// Equal strings, in a time that does not depend on where they differ.

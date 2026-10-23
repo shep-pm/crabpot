@@ -14,5 +14,13 @@ exclude = ["/docs/"]
 # flips this, and `release-plz.toml` with it.
 publish = false
 
+[dependencies]
+crabpot-core.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# The user id and the access check that decide whether a directory is denied
+# whole, through safe calls.
+nix = { version = "0.31", default-features = false, features = ["user", "fs"] }
+
 [lints]
 workspace = true

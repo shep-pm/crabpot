@@ -5,25 +5,9 @@
 //! working directory, since a command that can write a shell rc file or a git
 //! hook runs code outside the sandbox the next time one is read.
 
+use crabpot_core::dangerous::{DANGEROUS_DIRECTORIES, DANGEROUS_FILES};
 use crabpot_core::paths::{PathBase, normalize_path_for_sandbox};
 use crabpot_core::{PathError, ResolvedPath};
-
-/// Files that run or configure a program outside the sandbox.
-const DANGEROUS_FILES: [&str; 9] = [
-    ".gitconfig",
-    ".gitmodules",
-    ".bashrc",
-    ".bash_profile",
-    ".zshrc",
-    ".zprofile",
-    ".profile",
-    ".ripgreprc",
-    ".mcp.json",
-];
-
-/// Directories whose contents do the same. `.git` is not one: a command must
-/// write it to use git, so only `.git/hooks` and `.git/config` are denied.
-const DANGEROUS_DIRECTORIES: [&str; 4] = [".vscode", ".idea", ".claude/commands", ".claude/agents"];
 
 /// Each mandatory deny twice: the path in the working directory, and the same
 /// name anywhere beneath it. The working directory is a name on disk, so the

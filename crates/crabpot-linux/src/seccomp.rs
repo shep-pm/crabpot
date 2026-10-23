@@ -302,21 +302,26 @@ fn compile(
 }
 
 const BPF_LD_W_ABS: u16 = 0x20;
+const BPF_JEQ_K: u16 = 0x15;
 const BPF_JGE_K: u16 = 0x35;
 const BPF_RET_K: u16 = 0x06;
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 /// An x32 call carries the x86_64 token with this bit set in its number.
 const X32_SYSCALL_BIT: u32 = 0x4000_0000;
+/// The number `syscall(-1)` and a tracer skipping a call carry. It has the x32
+/// bit but is no call in either ABI, and the kernel answers it ENOSYS.
+const NO_SYSCALL: u32 = u32::MAX;
 
 /// `program` behind a check that kills an x32 call, as libseccomp's x86_64
-/// filters do. seccompiler checks the token only, and x32 numbers are not
-/// x86_64's.
+/// filters do, except for [`NO_SYSCALL`]. seccompiler checks the token only,
+/// and x32 numbers are not x86_64's.
 fn kill_x32(program: Program) -> Program {
-    let step = |code, jf, k| sock_filter { code, jt: 0, jf, k };
+    let step = |code, jt, jf, k| sock_filter { code, jt, jf, k };
     let mut guarded = vec![
-        step(BPF_LD_W_ABS, 0, 0),
-        step(BPF_JGE_K, 1, X32_SYSCALL_BIT),
-        step(BPF_RET_K, 0, SECCOMP_RET_KILL_PROCESS),
+        step(BPF_LD_W_ABS, 0, 0, 0),
+        step(BPF_JEQ_K, 2, 0, NO_SYSCALL),
+        step(BPF_JGE_K, 0, 1, X32_SYSCALL_BIT),
+        step(BPF_RET_K, 0, 0, SECCOMP_RET_KILL_PROCESS),
     ];
     guarded.extend(program);
     guarded

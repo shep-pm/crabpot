@@ -310,3 +310,16 @@ fn a_foreign_architecture_is_killed() {
         );
     }
 }
+
+#[test]
+fn syscall_minus_one_is_not_killed_as_x32() {
+    // `syscall(-1)` and a tracer that skips a call by setting its number to -1
+    // pass the x32 bit test, and are answered ENOSYS by the kernel.
+    for arch in ARCHES {
+        assert_eq!(
+            answer_to(arch, u32::MAX, token(arch), 0),
+            Verdict::Allow,
+            "{arch:?}"
+        );
+    }
+}

@@ -92,6 +92,7 @@ fn rules_with(config: &Config, base: &PathBase) -> Result<String, PathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::write_roots::default_write_paths;
 
     fn base() -> PathBase {
         PathBase::new(
@@ -197,7 +198,10 @@ mod tests {
     ///
     /// What upstream's `wrapCommandWithSandboxMacOS` at 0.0.81 renders for this
     /// config as the two rules that end its read section, with its log tag
-    /// swapped for ours.
+    /// swapped for ours, and with the default write roots left out: they are
+    /// one list on every platform but not one set of filters, since macOS
+    /// resolves `/tmp/claude` through the `/tmp` symlink and it collapses into
+    /// `/private/tmp/claude`. [`default_write_paths`] pins the list.
     #[test]
     fn the_write_roots_are_re_allowed_after_the_read_denies_pin_them() {
         let config = Config::from_json(
@@ -213,8 +217,16 @@ mod tests {
         )
         .unwrap();
 
+        let defaults = default_write_paths(&base(), &config).unwrap();
+        let rules: String = rules_with(&config, &base())
+            .unwrap()
+            .lines()
+            .filter(|line| !defaults.iter().any(|root| line.contains(root)))
+            .map(|line| format!("{line}\n"))
+            .collect();
+
         assert_eq!(
-            rules_with(&config, &base()).unwrap(),
+            rules,
             include_str!("fixtures/read-denies-then-write-roots.txt")
         );
     }

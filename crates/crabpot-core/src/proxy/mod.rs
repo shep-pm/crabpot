@@ -3,9 +3,11 @@
 //!
 //! Each listens on a port of its own on `127.0.0.1`, and both run on one
 //! thread crabpot owns (ADR-0006), so a caller needs no runtime of its own.
-//! They judge a host by the same filter and a client by the same token.
+//! They judge a host by the same filter, the address it resolves to by the same
+//! guard, and a client by the same token.
 
 mod filter;
+mod guard;
 mod host;
 mod http;
 mod mitm;
@@ -26,9 +28,11 @@ use tokio::sync::oneshot;
 
 pub use token::username_for;
 
+use crate::address::AddressRange;
 use crate::config::MitmProxy;
 use crate::domain::DomainEntry;
 use filter::Filter;
+use guard::Guard;
 use shared::{Shared, serve};
 use token::Token;
 
@@ -44,7 +48,10 @@ pub struct Proxy {
 
 impl Proxy {
     /// Starts the proxies, which let a client reach the hosts `allowed` covers
-    /// and no host `denied` covers, which beat `allowed`.
+    /// and no host `denied` covers, which beat `allowed`. A name they dial may
+    /// not resolve to a loopback, link-local, multicast, broadcast, unspecified
+    /// or cloud metadata address, to one of this host's own addresses, or to
+    /// one `listed` holds, unless an IP literal in `allowed` names it.
     ///
     /// `strict` is `network.strictAllowlist`, which changes nothing about what
     /// this proxy lets through yet: crabpot has no ask callback and no
@@ -60,6 +67,7 @@ impl Proxy {
     pub fn start(
         allowed: &[DomainEntry],
         denied: &[DomainEntry],
+        listed: &[AddressRange],
         strict: bool,
         mitm: Option<&MitmProxy>,
     ) -> io::Result<Self> {
@@ -79,6 +87,7 @@ impl Proxy {
         };
         let shared = Arc::new(Shared::new(
             Filter::new(allowed, denied, strict),
+            Guard::new(allowed, denied, listed),
             token.clone(),
             mitm.map(mitm::Route::new),
         ));

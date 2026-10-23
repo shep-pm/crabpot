@@ -21,7 +21,7 @@ use tokio::net::TcpStream;
 
 use super::filter::Denial;
 use super::mitm;
-use super::shared::{Shared, dial, drain};
+use super::shared::{DialError, Shared, dial, drain};
 
 /// A request head longer than this is refused with 431, as Node's default.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -118,22 +118,50 @@ const AUTH_REQUIRED: &str = "HTTP/1.1 407 Proxy Authentication Required\r\n\
      Content-Length: 0\r\n\
      Connection: close\r\n\r\n";
 
-/// The 403 for a refused host. The reason is the status line's phrase for a
-/// tunnel, where upstream puts it, and the body says the same for either.
-fn denied(phrase: &str) -> String {
-    const BODY: &str = "Connection blocked by network allowlist";
+/// A 403 that marks itself with `tag` in `X-Proxy-Error`.
+fn forbidden(phrase: &str, tag: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 403 {phrase}\r\n\
          Content-Type: text/plain\r\n\
-         X-Proxy-Error: blocked-by-allowlist\r\n\
+         X-Proxy-Error: {tag}\r\n\
          Content-Length: {}\r\n\
-         Connection: close\r\n\r\n{BODY}",
-        BODY.len()
+         Connection: close\r\n\r\n{body}",
+        body.len()
     )
 }
 
+/// The 403 for a refused host. The reason is the status line's phrase for a
+/// tunnel, where upstream puts it, and the body says the same for either.
+fn denied(phrase: &str) -> String {
+    forbidden(
+        phrase,
+        "blocked-by-allowlist",
+        "Connection blocked by network allowlist",
+    )
+}
+
+/// What a failed dial answers with. A name that resolved only to addresses the
+/// guard refuses gets a 403 whose body names the host and the class of address.
+/// A tunnel's status line carries the class too, and a plain request's says
+/// "Forbidden".
+fn undialed(error: &DialError, tunnel: bool) -> String {
+    match error {
+        DialError::Refused(refusal) => {
+            let phrase = if tunnel {
+                refusal.reason()
+            } else {
+                "Forbidden".to_owned()
+            };
+            forbidden(&phrase, "blocked-by-sandbox-runtime", &refusal.message())
+        }
+        DialError::Failed(_) => BAD_GATEWAY.to_owned(),
+    }
+}
+
+/// A `CONNECT`: the tunnel to `host:port` if the filter allows it.
 /// A `CONNECT`: the tunnel to `host:port` if the filter allows it, through the
-/// mitm socket when that route covers the host and direct otherwise.
+/// mitm socket when that route covers the host and through the guarded dial
+/// otherwise.
 async fn tunnel(
     client: &mut TcpStream,
     shared: &Shared,
@@ -155,9 +183,9 @@ async fn tunnel(
             Ok(mut upstream) => established(client, &mut upstream, &early).await,
             Err(_) => end(client, BAD_GATEWAY).await,
         },
-        None => match dial(&host, port).await {
+        None => match dial(&shared.guard, &host, port).await {
             Ok(mut upstream) => established(client, &mut upstream, &early).await,
-            Err(_) => end(client, BAD_GATEWAY).await,
+            Err(error) => end(client, &undialed(&error, true)).await,
         },
     }
 }
@@ -235,9 +263,9 @@ async fn forward(
             Ok(mut upstream) => relay(client, &mut upstream, &request, body_left).await,
             Err(_) => end(client, BAD_GATEWAY).await,
         },
-        None => match dial(&host, target.port).await {
+        None => match dial(&shared.guard, &host, target.port).await {
             Ok(mut upstream) => relay(client, &mut upstream, &request, body_left).await,
-            Err(_) => end(client, BAD_GATEWAY).await,
+            Err(error) => end(client, &undialed(&error, false)).await,
         },
     }?;
     drain(client).await;

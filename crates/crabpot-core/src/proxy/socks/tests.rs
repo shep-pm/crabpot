@@ -5,8 +5,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use tokio::runtime::Builder;
 
 use super::super::filter::Filter;
+use super::super::guard::Guard;
 use super::super::shared::Shared;
-use super::super::testing::{origin, proxy_allowing};
+use super::super::testing::{origin, proxy_allowing, proxy_refusing_what_localhost_resolves_to};
 use super::super::token::Token;
 use super::super::{Proxy, username_for};
 use super::exchange;
@@ -48,7 +49,12 @@ fn answer(allowed: &[&str], token: &Token, sent: &[u8]) -> Vec<u8> {
         .iter()
         .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
         .collect();
-    let shared = Shared::new(Filter::new(&entries, &[], false), token.clone(), None);
+    let shared = Shared::new(
+        Filter::new(&entries, &[], false),
+        Guard::new(&entries, &[], &[]),
+        token.clone(),
+        None,
+    );
     let runtime = Builder::new_current_thread().enable_time().build().unwrap();
     runtime.block_on(async {
         let (mut client, mut server) = duplex(1024);
@@ -188,4 +194,17 @@ fn a_host_that_refuses_the_connection_gets_that_reply() {
         .unwrap();
 
     assert_eq!(read_n::<10>(&mut stream), refusal(5));
+}
+
+#[test]
+fn a_name_that_resolves_to_a_refused_address_gets_a_not_allowed_reply() {
+    let proxy = proxy_refusing_what_localhost_resolves_to();
+    let (port, _) = origin(None);
+    let mut stream = authenticated(&proxy);
+
+    stream
+        .write_all(&connect_request(&domain("localhost"), port))
+        .unwrap();
+
+    assert_eq!(read_n::<10>(&mut stream), refusal(2));
 }

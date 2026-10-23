@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 
-use super::super::testing::{origin, proxy_allowing};
+use super::super::testing::{origin, proxy_allowing, proxy_refusing_what_localhost_resolves_to};
 use super::super::token::base64_encode;
 use super::super::{Proxy, username_for};
 use super::{Absolute, parse_connect_target};
@@ -341,6 +341,7 @@ mod mitm {
         Proxy::start(
             &allowed,
             &[],
+            &[],
             false,
             Some(&MitmProxy {
                 socket_path: socket.display().to_string(),
@@ -415,4 +416,45 @@ mod mitm {
              Host: mitm.example.com\r\nConnection: close\r\n\r\n"
         );
     }
+}
+
+const REFUSED: &str = "Connection to localhost blocked: resolved to a deny-listed address";
+
+#[test]
+fn a_tunnel_to_a_name_that_resolves_to_a_refused_address_gets_403_with_the_class() {
+    let proxy = proxy_refusing_what_localhost_resolves_to();
+    let (port, seen) = origin(None);
+    let mut stream = connect(&proxy, &format!("localhost:{port}"), &credential(&proxy));
+
+    let head = head(&mut stream);
+    assert!(
+        head.starts_with("HTTP/1.1 403 resolved to a deny-listed address\r\n"),
+        "{head}"
+    );
+    assert!(
+        head.contains("X-Proxy-Error: blocked-by-sandbox-runtime\r\n"),
+        "{head}"
+    );
+    let mut body = String::new();
+    stream.read_to_string(&mut body).unwrap();
+    assert_eq!(body, REFUSED);
+    // Nothing reached the origin: it is still waiting for its one client.
+    assert!(!seen.is_finished());
+}
+
+#[test]
+fn a_request_to_a_name_that_resolves_to_a_refused_address_gets_403() {
+    let proxy = proxy_refusing_what_localhost_resolves_to();
+    let (port, _) = origin(None);
+    let request = format!(
+        "GET http://localhost:{port}/ HTTP/1.1\r\nHost: localhost\r\n{}\r\n",
+        credential(&proxy)
+    );
+    let mut stream = client(&proxy, &request);
+
+    let head = head(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{head}");
+    let mut body = String::new();
+    stream.read_to_string(&mut body).unwrap();
+    assert_eq!(body, REFUSED);
 }

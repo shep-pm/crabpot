@@ -334,3 +334,27 @@ fn unix_socket_empty_string_grants_cwd() {
         "unix-sockets-empty-string-grants-cwd.json",
     );
 }
+
+#[test]
+fn resolved_address_loopback_name() {
+    run(
+        "resolved_address_loopback_name",
+        "resolved-addresses-loopback-name.json",
+    );
+}
+
+#[test]
+fn resolved_address_listed_cidr() {
+    run(
+        "resolved_address_listed_cidr",
+        "resolved-addresses-listed-cidr.json",
+    );
+}
+
+#[test]
+fn refused_resolved_address_bad_cidr() {
+    run(
+        "refused_resolved_address_bad_cidr",
+        "resolved-addresses-bad-cidr.json",
+    );
+}

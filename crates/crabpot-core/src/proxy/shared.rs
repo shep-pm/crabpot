@@ -1,7 +1,9 @@
-//! What the proxy's servers have in common: the filter and the token every
-//! connection is judged by, the accept loop, and the dial to an allowed host.
+//! What the proxy's servers have in common: the filter, the guard and the token
+//! every connection is judged by, the accept loop, and the dial to an allowed
+//! host.
 
 use core::future::Future;
+use core::net::{IpAddr, SocketAddr};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,6 +13,7 @@ use tokio::net::{TcpListener, TcpStream, lookup_host};
 use tokio::time::{sleep, timeout};
 
 use super::filter::Filter;
+use super::guard::{Guard, Refusal};
 use super::mitm;
 use super::token::Token;
 
@@ -25,6 +28,7 @@ const LINGER: Duration = Duration::from_secs(1);
 #[derive(Debug)]
 pub(super) struct Shared {
     pub(super) filter: Filter,
+    pub(super) guard: Guard,
     pub(super) token: Token,
     /// `network.mitmProxy`: the domains sent to a Unix socket instead of being
     /// dialed direct.
@@ -32,9 +36,15 @@ pub(super) struct Shared {
 }
 
 impl Shared {
-    pub(super) fn new(filter: Filter, token: Token, mitm: Option<mitm::Route>) -> Self {
+    pub(super) fn new(
+        filter: Filter,
+        guard: Guard,
+        token: Token,
+        mitm: Option<mitm::Route>,
+    ) -> Self {
         Self {
             filter,
+            guard,
             token,
             mitm,
         }
@@ -72,20 +82,43 @@ pub(super) async fn drain<R: AsyncRead + Unpin>(client: &mut R) {
     let _ = timeout(LINGER, copy(client, &mut sink())).await;
 }
 
-/// Connects to `host:port`, trying each address its name resolves to.
-pub(super) async fn dial(host: &str, port: u16) -> io::Result<TcpStream> {
+/// Why a dial did not connect.
+#[derive(Debug)]
+pub(super) enum DialError {
+    /// The guard dropped every address the name resolved to.
+    Refused(Refusal),
+    /// The name did not resolve, or no address it resolved to answered.
+    Failed(io::Error),
+}
+
+/// Connects to `host:port`, trying each address its name resolves to that
+/// `guard` allows. The system resolver answers, once.
+pub(super) async fn dial(guard: &Guard, host: &str, port: u16) -> Result<TcpStream, DialError> {
     let attempts = async {
+        let resolved: Vec<IpAddr> = lookup_host((host, port))
+            .await
+            .map_err(DialError::Failed)?
+            .map(|address| address.ip())
+            .collect();
+        let allowed = guard
+            .vet(host, port, &resolved)
+            .map_err(DialError::Refused)?;
         let mut last = io::Error::new(io::ErrorKind::NotFound, "the host has no address");
-        for address in lookup_host((host, port)).await? {
-            match timeout(ATTEMPT_TIMEOUT, TcpStream::connect(address)).await {
+        for address in allowed {
+            match timeout(
+                ATTEMPT_TIMEOUT,
+                TcpStream::connect(SocketAddr::new(address, port)),
+            )
+            .await
+            {
                 Ok(Ok(stream)) => return Ok(stream),
                 Ok(Err(error)) => last = error,
                 Err(_) => last = io::ErrorKind::TimedOut.into(),
             }
         }
-        Err(last)
+        Err(DialError::Failed(last))
     };
     timeout(DIAL_TIMEOUT, attempts)
         .await
-        .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
+        .unwrap_or_else(|_| Err(DialError::Failed(io::ErrorKind::TimedOut.into())))
 }

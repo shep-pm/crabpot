@@ -40,7 +40,6 @@ const ASKING: &[(&str, &str)] = &[
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
     ("network.allowLocalBinding", "true"),
     ("enableWeakerNetworkIsolation", "true"),
-    ("network.deniedResolvedAddresses", r#"["10.0.0.0/8"]"#),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),
     ("network.socksProxyPort", "1080"),
@@ -353,10 +352,12 @@ fn what_upstream_accepts_loads() {
 
 #[test]
 fn a_bad_leaf_beats_an_unsupported_key() {
-    let json = with("network.deniedResolvedAddresses", json!(["10.0.0.0/33"]));
+    let mut settings = minimal();
+    settings["network"]["allowedDomains"] = json!(["*.com"]);
+    settings["network"]["allowLocalBinding"] = json!(true);
 
     assert!(matches!(
-        Config::from_json(&json),
+        Config::from_json(&settings.to_string()),
         Err(ConfigError::Invalid { .. })
     ));
 }

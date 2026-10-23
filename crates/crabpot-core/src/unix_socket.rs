@@ -86,14 +86,15 @@ impl Address {
         }
         let len = PATH_AT + name.len() + 1;
         let mut bytes = [0u8; MAX_ADDRESS];
-        // `len` is at most `MAX_ADDRESS`, which fits the `u8` macOS holds it in.
-        #[cfg(target_vendor = "apple")]
-        {
+        // BSD kernels, macOS among them, lead a `sockaddr_un` with a one-byte
+        // length and a one-byte family. `len` is at most `MAX_ADDRESS`, which
+        // fits the `u8`.
+        if size_of::<libc::sa_family_t>() == 1 {
             bytes[0] = len as u8;
             bytes[1] = libc::AF_UNIX as u8;
+        } else {
+            bytes[..PATH_AT].copy_from_slice(&(libc::AF_UNIX as libc::sa_family_t).to_ne_bytes());
         }
-        #[cfg(not(target_vendor = "apple"))]
-        bytes[..PATH_AT].copy_from_slice(&(libc::AF_UNIX as libc::sa_family_t).to_ne_bytes());
         bytes[PATH_AT..PATH_AT + name.len()].copy_from_slice(name);
         Ok(Self {
             bytes,
@@ -106,26 +107,37 @@ impl Address {
     }
 }
 
+/// What `socket` sets close-on-exec and non-blocking with, in the one call that
+/// makes the descriptor, so that a thread forking meanwhile cannot hand it to a
+/// child. macOS has no such flags.
+#[cfg(not(target_vendor = "apple"))]
+const CREATED_WITH: libc::c_int = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+#[cfg(target_vendor = "apple")]
+const CREATED_WITH: libc::c_int = 0;
+
 /// A stream socket that is close-on-exec and non-blocking, so the sandboxed
-/// child inherits no descriptor of it.
+/// child inherits no descriptor of it. Where `socket` takes no flags for that,
+/// as on macOS, they are set right after, as std does.
 fn socket() -> io::Result<OwnedFd> {
     // SAFETY: `socket` reads nothing from this process's memory.
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | CREATED_WITH, 0) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `fd` is a descriptor `socket` just returned, and nothing else
     // owns it.
     let socket = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: `fcntl` with these commands takes only the descriptor and an int.
-    let flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
-    if flags < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: as above.
-    let status = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
-    if status < 0 {
-        return Err(io::Error::last_os_error());
+    if CREATED_WITH == 0 {
+        // SAFETY: `fcntl` with these commands takes only the descriptor and an int.
+        let flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: as above.
+        let status = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+        if status < 0 {
+            return Err(io::Error::last_os_error());
+        }
     }
     Ok(socket)
 }

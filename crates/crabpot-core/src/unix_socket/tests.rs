@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -118,4 +119,22 @@ fn dialing_a_path_nothing_listens_on_is_the_kernels_error() {
         .block_on(connect(&fixture.socket_of(100)))
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
+}
+
+#[test]
+fn a_listener_is_close_on_exec_and_non_blocking() {
+    let fixture = Fixture::new("flags");
+    let listener = bind(&fixture.socket_of(100)).unwrap();
+    let fd = listener.as_raw_fd();
+
+    // SAFETY: `fd` is the open descriptor of `listener`, and `F_GETFD` and
+    // `F_GETFL` take nothing else.
+    let (descriptor, status) = unsafe {
+        (
+            libc::fcntl(fd, libc::F_GETFD),
+            libc::fcntl(fd, libc::F_GETFL),
+        )
+    };
+    assert_ne!(descriptor & libc::FD_CLOEXEC, 0, "close-on-exec");
+    assert_ne!(status & libc::O_NONBLOCK, 0, "non-blocking");
 }

@@ -1,11 +1,11 @@
 //! The cases in `harness/cases/`, each run under upstream and under crabpot.
 //!
-//! macOS runs every case as a comparison of the two Seatbelt runners. Linux has
-//! no crabpot sandbox yet, so a case there runs under upstream's bwrap path
-//! alone, which is what proves that path holds the settings the same way.
-//! `LINUX_READY` names the cases that also run crabpot on Linux, and each Linux
-//! slice adds the cases it makes pass there. There, a probe that reported a code
-//! and could not tell what upstream's mounts left it is written to the log as
+//! macOS runs every case as a comparison of the two Seatbelt runners. Linux
+//! runs crabpot only on the cases `LINUX_READY` names, and each Linux slice adds
+//! the cases it makes pass there. Any other case runs under upstream's bwrap path
+//! alone, which is what proves that path holds the settings the same way. There,
+//! a probe that reported a code and could not tell what upstream's mounts left
+//! it is written to the log as
 //! `report:` rather than failed: a Linux read deny answers by removing what the
 //! probe asks about, and no answer is compared with another runner's.
 //!
@@ -16,9 +16,23 @@
 
 use crabpot_harness::runner::{self, Crabpot, Upstream};
 
-/// The cases that run under crabpot on Linux. Empty until crabpot sandboxes
-/// there, and each Linux slice of #99 appends the cases it makes pass.
-const LINUX_READY: &[&str] = &[];
+/// The cases that run under crabpot on Linux. Each Linux slice of #99 appends
+/// the cases it makes pass.
+const LINUX_READY: &[&str] = &[
+    "default_settings",
+    "refused_invalid_json",
+    "refused_empty_file",
+    "refused_missing_settings",
+    "refused_deny_read_empty",
+    "refused_deny_read_unmarked_object",
+    "refused_deny_read_trailing_separator_glob",
+    "refused_allowed_domains_bad_entry",
+    "refused_deny_write_trailing_separator_glob",
+    "refused_allow_mach_lookup_mid_wildcard",
+    "refused_denied_domains_bad_entry",
+    "refused_mitm_empty_domains",
+    "refused_resolved_address_bad_cidr",
+];
 
 /// Runs the case file `harness/cases/<file>`.
 fn run(name: &str, file: &str) {

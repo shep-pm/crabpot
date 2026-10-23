@@ -121,12 +121,23 @@ pub fn check(
 ///
 /// As [`check`].
 pub fn check_here() -> Result<PathBuf, DepsError> {
-    let status = std::fs::read_to_string("/proc/self/status").ok();
     check(
         &env::var_os("PATH").unwrap_or_default(),
-        status.as_deref(),
+        proc_status().as_deref(),
         &mut std::io::stderr(),
     )
+}
+
+/// Whether this process is uid 0 with `CAP_SETFCAP` in its bounding set, which
+/// is the one capability a sandbox keeps.
+#[must_use]
+pub fn is_root_with_setfcap_here() -> bool {
+    proc_status().is_some_and(|status| is_root_with_setfcap(&status))
+}
+
+/// The text of `/proc/self/status`, if it could be read.
+fn proc_status() -> Option<String> {
+    std::fs::read_to_string("/proc/self/status").ok()
 }
 
 /// The first executable file called `name` in a directory of `path`. An empty
@@ -158,19 +169,32 @@ fn probe_version(bwrap: &Path) -> Option<Version> {
 
 /// Whether the status is uid 0 with no `CAP_SETFCAP` in the bounding set.
 fn is_doubtful_uid_0(status: &str) -> bool {
-    let field = |name: &str| {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
-            .map(str::trim)
-    };
-    let is_uid_0 = field("Uid")
+    is_uid_0(status) && !has_setfcap(status)
+}
+
+/// Whether the status is uid 0 with `CAP_SETFCAP` in the bounding set.
+#[must_use]
+pub fn is_root_with_setfcap(status: &str) -> bool {
+    is_uid_0(status) && has_setfcap(status)
+}
+
+fn is_uid_0(status: &str) -> bool {
+    field(status, "Uid")
         .and_then(|ids| ids.split_whitespace().next())
-        .is_some_and(|real| real == "0");
-    let has_setfcap = field("CapBnd")
+        .is_some_and(|real| real == "0")
+}
+
+fn has_setfcap(status: &str) -> bool {
+    field(status, "CapBnd")
         .and_then(|mask| u64::from_str_radix(mask, 16).ok())
-        .is_some_and(|mask| mask & (1 << CAP_SETFCAP) != 0);
-    is_uid_0 && !has_setfcap
+        .is_some_and(|mask| mask & (1 << CAP_SETFCAP) != 0)
+}
+
+fn field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+        .map(str::trim)
 }
 
 fn user_namespace_works(bwrap: &Path) -> bool {
@@ -315,5 +339,13 @@ mod tests {
         );
         let (result, _) = run(&dir, Some(WITHOUT_SETFCAP));
         assert_eq!(result, Ok(dir.join("bwrap")));
+    }
+
+    #[test]
+    fn only_uid_0_with_cap_setfcap_is_root_with_setfcap() {
+        assert!(is_root_with_setfcap(WITH_SETFCAP));
+        assert!(!is_root_with_setfcap(WITHOUT_SETFCAP));
+        assert!(!is_root_with_setfcap(NOT_ROOT));
+        assert!(!is_root_with_setfcap("CapBnd:\t000001ffffffffff\n"));
     }
 }

@@ -313,12 +313,14 @@ pub fn run_upstream_only(text: &str, name: &str, upstream: &dyn Runner) -> Resul
 /// runner in `runners`, which is the whole comparison for two of them and one
 /// runner's own run for one.
 fn run_case_under(text: &str, name: &str, runners: &[&dyn Runner]) -> Result<bool, Error> {
-    let prepared = Prepared::new(text, name)?;
-    if !prepared.means_here() {
-        return Ok(false);
-    }
-    prepared.run(runners)?;
-    Ok(true)
+    let mut prepared = Prepared::new(text, name)?;
+    let outcome = if prepared.means_here() {
+        prepared.run(runners).map(|()| true)
+    } else {
+        Ok(false)
+    };
+    prepared.stop_serving();
+    outcome
 }
 
 /// A case file read into a fresh root: the case, its settings file, and the
@@ -327,7 +329,8 @@ struct Prepared {
     root: Root,
     case: Case,
     settings: PathBuf,
-    /// Held for the run, which is what keeps the socket served. See [`Prepared::run`].
+    /// Served for the run, and stopped by [`Prepared::stop_serving`] before the
+    /// root is removed.
     served: Option<serve::Served>,
 }
 
@@ -360,6 +363,15 @@ impl Prepared {
     /// Whether the case means the platform this harness runs on.
     fn means_here(&self) -> bool {
         self.case.runs_on(Platform::current())
+    }
+
+    /// Stops the case's served socket, which must happen before the root goes:
+    /// the socket is under the root, and a serve ends only when something
+    /// connects to its path. A root that is already removed has removed that
+    /// path, and the serve then waits in `accept` for a connect that cannot
+    /// come.
+    fn stop_serving(&mut self) {
+        self.served = None;
     }
 
     /// The closure that puts the fixture back as the case describes it.
@@ -790,6 +802,23 @@ mod tests {
                 probe: Probe::Bind,
             })
         ));
+    }
+
+    /// A case's served socket is under its root, so the root must outlive the
+    /// serve: a listener whose path is gone has no connect that ends the accept
+    /// its serve thread waits in, and the case never ends.
+    #[test]
+    fn a_case_stops_its_served_socket_before_it_removes_its_root() {
+        let text = r#"{"files": {}, "settings": {}, "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "200 OK"}, "probes": [{"kind": "bind"}]}"#;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let upstream: &dyn Runner = &StandIn("upstream", |_| probe::ALLOWED);
+            let _ = tx.send(run_case_under(text, "served_socket", &[upstream]));
+        });
+        let outcome = rx.recv_timeout(std::time::Duration::from_secs(10)).expect(
+            "the case never ended: its served socket waited on a path its root had already removed",
+        );
+        assert!(outcome.unwrap());
     }
 
     /// Runs a probe by dialing the socket at a `connect-unix` probe's path,

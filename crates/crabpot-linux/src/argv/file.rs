@@ -1,39 +1,43 @@
-//! The args file the long form of a bwrap invocation reads its words from.
+//! The args file the long form of a bwrap invocation reads its flags from.
 //!
 //! A port of `openBwrapArgsProfile` from upstream's
-//! `src/sandbox/linux-sandbox-utils.ts`. The file is `O_TMPFILE`, so it has no
-//! name in the directory it is opened in: nothing can race with the name or
-//! read the words through it, and it is gone once the last descriptor to it
-//! closes. That descriptor is the caller's, and the child reaches the words
-//! through it: the file is opened without `O_CLOEXEC`, so `exec` hands it to
-//! the shell, which moves it onto the fd `bwrap` reads.
+//! `src/sandbox/linux-sandbox-utils.ts`. The file is `O_TMPFILE`, so it is
+//! never named in the directory it is opened in: there is nothing for another
+//! process to substitute or read between the wrap and the run, and the file is
+//! gone once the descriptor the caller holds closes.
+//!
+//! The child reaches the words by path and not by inheritance: the path names
+//! this process's own descriptor, `/proc/<pid>/fd/<n>`, which is a fresh
+//! read-only description of the same inode at offset 0. The descriptor is
+//! therefore close-on-exec, and no child is left holding it. Opening the path
+//! here, before the child runs, is upstream's own check and is kept: a host
+//! whose `/proc` will not take the open fails the wrap, where the caller is
+//! told, rather than a redirection that runs no command.
 //!
 //! This is the crate's one module of FFI (IR-22).
 
 #![allow(unsafe_code)]
 
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CString, OsString};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::argv::SEPARATOR;
-
 /// The words the file holds, and the descriptor that holds them open.
 pub(crate) struct ArgsFile {
     /// The descriptor the caller keeps open for as long as its child runs.
     /// Closing it is what deletes the file.
     pub(crate) fd: OwnedFd,
-    /// Where the child opens the file from: this very descriptor, which the
-    /// `exec` handed to the child.
+    /// Where the child opens the file from: this process's own descriptor,
+    /// which stays open while the child runs.
     pub(crate) path: PathBuf,
 }
 
-/// Open an args file in `dir` holding `flags`, the `--` that ends them, and
-/// `command`, as entries terminated each by a NUL byte.
-pub(crate) fn open(dir: &Path, flags: &[OsString], command: &[OsString]) -> io::Result<ArgsFile> {
+/// Open an args file in `dir` holding `flags` as words terminated each by a
+/// NUL byte, which is how bwrap splits an args file.
+pub(crate) fn open(dir: &Path, flags: &[OsString]) -> io::Result<ArgsFile> {
     let dir = CString::new(dir.as_os_str().as_bytes()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -43,14 +47,14 @@ pub(crate) fn open(dir: &Path, flags: &[OsString], command: &[OsString]) -> io::
 
     // SAFETY: `dir` is a `CString`, so its pointer is a valid NUL-terminated
     // path for the whole call. `O_TMPFILE` takes a mode, and `0o600` is one
-    // only the file's owner can read and write. The descriptor is left without
-    // `O_CLOEXEC` on purpose: the args-file form hands the file to its child
-    // through it, and `O_DIRECTORY` is what `O_TMPFILE` asks for so the path
-    // must be a directory.
+    // only the file's owner can read and write. `O_TMPFILE` is the asm-generic
+    // value with the `O_DIRECTORY` it is defined to carry, so a kernel or
+    // filesystem that does not know it fails the open on the directory instead
+    // of creating a named file.
     let raw = unsafe {
         libc::open(
             dir.as_ptr(),
-            libc::O_RDWR | libc::O_TMPFILE | libc::O_DIRECTORY,
+            libc::O_RDWR | libc::O_TMPFILE | libc::O_DIRECTORY | libc::O_CLOEXEC,
             0o600_u32,
         )
     };
@@ -62,12 +66,7 @@ pub(crate) fn open(dir: &Path, flags: &[OsString], command: &[OsString]) -> io::
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
 
     let mut words: Vec<u8> = Vec::new();
-    for word in flags
-        .iter()
-        .map(|word| word.as_os_str())
-        .chain(std::iter::once(OsStr::new(SEPARATOR)))
-        .chain(command.iter().map(|word| word.as_os_str()))
-    {
+    for word in flags {
         words.extend_from_slice(word.as_bytes());
         words.push(0);
     }
@@ -75,7 +74,24 @@ pub(crate) fn open(dir: &Path, flags: &[OsString], command: &[OsString]) -> io::
     let mut file = File::from(fd);
     file.write_all(&words)?;
     let fd = OwnedFd::from(file);
-    let path = PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()));
+
+    // Read-only from here: this process is done writing it.
+    // SAFETY: `fd` is a descriptor this code owns, and `fchmod` takes no
+    // pointer at all: the descriptor and a mode value.
+    let readonly = unsafe { libc::fchmod(fd.as_raw_fd(), 0o400) };
+    if readonly < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let path = PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        fd.as_raw_fd()
+    ));
+    // The child opens this path. Fail here, where the caller is told why,
+    // rather than in a redirection that runs no command. The probe closes with
+    // the statement.
+    File::open(&path)?;
 
     Ok(ArgsFile { fd, path })
 }

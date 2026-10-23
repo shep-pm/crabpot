@@ -46,7 +46,7 @@ The process that holds one sandbox's proxies and runs the sandboxed command as i
 _Avoid_: launcher, shim, the srt process
 
 **Args file**:
-The unnamed file a bwrap policy too long for one `exec` line moves its words to, which `bwrap` reads back with `--args`. It is opened `O_TMPFILE`, and the descriptor that holds it open is the wrapper's own.
+The unnamed file a bwrap policy too long for one `exec` line moves its flags to, which `bwrap` reads back with `--args`. It is opened `O_TMPFILE`, and the line reaches it through `/proc/<pid>/fd/<n>`.
 _Avoid_: profile file, args profile, response file
 
 ### Consumers

@@ -1,11 +1,15 @@
 //! The `bwrap` command line that runs a command inside a sandbox.
 //!
 //! A port of `renderBwrapInvocation` from upstream's
-//! `src/sandbox/linux-sandbox-utils.ts`. The words that build the sandbox and
+//! `src/sandbox/linux-sandbox-utils.ts`. The flags that build the sandbox and
 //! the command that runs inside it are passed to `bwrap` as `exec` arguments,
-//! which a long policy can overflow. When they do, the words move to a file
-//! `bwrap` reads with `--args`, and only the short line that opens that file
-//! is passed as arguments.
+//! which a long policy can overflow. When they do, the flags move to a file
+//! `bwrap` reads with `--args` at the position they had, and the command stays
+//! on the line.
+//!
+//! Every word stays a `Command` argument. Upstream builds its line as one
+//! quoted shell string, which is the argument the kernel caps: crabpot builds
+//! no shell string, and caps the whole line against the same figure.
 
 use core::fmt;
 use std::ffi::{OsStr, OsString};
@@ -22,37 +26,35 @@ mod file;
 /// `bwrapPath`, and the caller puts that path first in the words.
 pub const BWRAP: &str = "/usr/bin/bwrap";
 
-/// The most words one bwrap invocation may carry: the `bwrap` to run, its
-/// flags, the `--` that ends them, and the command.
+/// The most words bwrap parses: the flags, the `--` that ends them, and the
+/// command. The `bwrap` that parses them is not one of them.
 ///
-/// Past it a policy is a mistake rather than a sandbox, and upstream refuses
-/// it instead of handing `bwrap` a line no `exec` takes.
+/// Past it a policy is a mistake rather than a sandbox, and upstream refuses it
+/// instead of handing bwrap a line no `exec` takes.
 pub const BWRAP_MAX_ARGS: usize = 9_000;
 
-/// The longest one word an `exec` call takes. Linux's `MAX_ARG_STRLEN` is 32
-/// pages of 4 KiB, and the NUL that ends the word is one of them.
+/// The longest one word an `exec` call takes: Linux's `MAX_ARG_STRLEN`, 32
+/// pages, less the NUL that ends the word.
+///
+/// Upstream reads the page size from `/proc/self/auxv` and so takes 2 MiB on a
+/// 64 KiB-page host. crabpot takes the 4 KiB floor, which only moves a profile
+/// to the args file sooner than it had to.
 ///
 /// The args file lifts this limit off the flags `bwrap` reads from it, and off
 /// none of the words `bwrap` hands to `exec` when it runs the command: a
 /// command word past it is refused in either form.
 pub const MAX_ARG_STRLEN: usize = 32 * 4096 - 1;
 
-/// The fd `bwrap` reads its `--args` words from, and the fd the args-file
-/// form hands it.
+/// The fd `bwrap` reads its `--args` words from, and the fd the args-file form
+/// hands it.
+///
+/// One digit, because the shell dash is `/bin/sh` to many hosts rejects a
+/// redirection to a multi-digit fd. High, because a caller hands the command
+/// low fds of its own.
 pub const BWRAP_ARGS_FD: u32 = 9;
 
-/// The most bytes one `exec` call takes for its words and its environment
-/// together.
-///
-/// Linux quarters the stack limit for it, and 128 KiB is the least a host is
-/// configured with. crabpot takes the args-file form rather than trust a
-/// bigger `getconf ARG_MAX`, so a policy that fits here is refused by no
-/// `exec`.
-const ARG_MAX_BYTES: usize = 128 * 1024;
-
-/// Bytes held back out of [`ARG_MAX_BYTES`] for what the direct line carries
-/// beside its words: the caller's environment, and the `/bin/sh -c` line the
-/// args-file form needs in its place.
+/// Room left below [`MAX_ARG_STRLEN`] when deciding whether the flags stay on
+/// the line: the caller's environment shares the `exec` budget with its words.
 const ARG_HEADROOM_BYTES: usize = 4096;
 
 /// Where the args-file form finds the shell that opens the args file.
@@ -60,11 +62,16 @@ const ARG_HEADROOM_BYTES: usize = 4096;
 const SH: &str = "/bin/sh";
 
 /// The word that ends the flags and starts the command.
-pub(crate) const SEPARATOR: &str = "--";
+const SEPARATOR: &str = "--";
+
+/// The name the args-file shell gives itself: `$0`, which `shift` drops. A
+/// name and not a path, since nothing runs it.
+#[cfg(target_os = "linux")]
+const ARGS_LABEL: &str = "crabpot-args";
 
 /// The shell line the args-file form runs in place of `bwrap`: it opens the
 /// args file as [`BWRAP_ARGS_FD`], drops it from the words, and execs the
-/// rest. `$0` is `bwrap`'s own path, and `$1` the args file.
+/// rest. `$0` is [`ARGS_LABEL`], and `$1` the args file.
 #[cfg(target_os = "linux")]
 fn args_wrapper() -> String {
     format!("exec {BWRAP_ARGS_FD}<\"$1\" && shift && exec \"$@\"")
@@ -73,15 +80,16 @@ fn args_wrapper() -> String {
 /// A bwrap invocation ready to spawn.
 #[derive(Debug)]
 pub struct Rendered {
-    /// The command to spawn: `bwrap` with the words as its arguments, or
-    /// `/bin/sh` with the words in the args file.
+    /// The command to spawn: `bwrap` with the flags and the command as its
+    /// arguments, or `/bin/sh` with the flags in the args file.
     pub command: Command,
     /// The args file's descriptor, which the caller keeps open for as long as
     /// `command` runs. `None` when the words went to `bwrap` directly.
     ///
-    /// It is not close-on-exec, since the shell `command` runs reads the words
-    /// through it. The caller closes it once `command` has started, so it is
-    /// left in no other child of this process.
+    /// It is close-on-exec: `command`'s own shell reaches the file through the
+    /// path this process's `/proc` entry gives it, and holds no descriptor of
+    /// its own. The caller closes this one once `command` has finished, which
+    /// is what deletes the file.
     pub args_file: Option<OwnedFd>,
 }
 
@@ -91,8 +99,8 @@ pub struct Rendered {
 /// `words` is never empty: its first word names the `bwrap` to run, which a
 /// host that keeps it elsewhere sets from `bwrapPath`.
 ///
-/// `args_dir` is the directory the args file is opened in when the words are
-/// too long to pass as `exec` arguments.
+/// `args_dir` is the directory the args file is opened in when the line the
+/// words make is too long for one `exec` argument.
 pub fn render(
     words: &[OsString],
     command: &[OsString],
@@ -100,7 +108,8 @@ pub fn render(
 ) -> Result<Rendered, ArgvError> {
     debug_assert!(!words.is_empty(), "a bwrap invocation names bwrap");
 
-    let total = words.len() + 1 + command.len();
+    // What bwrap counts, which is every word of the line but the binary.
+    let total = (words.len() - 1) + 1 + command.len();
     if total > BWRAP_MAX_ARGS {
         return Err(ArgvError::TooManyArguments { words: total });
     }
@@ -120,7 +129,7 @@ pub fn render(
         return Err(ArgvError::CommandTooLong { bytes: longest });
     }
 
-    let bytes = words
+    let inline_bytes = words
         .iter()
         .chain(command)
         .map(|word| word.len() + 1)
@@ -128,7 +137,7 @@ pub fn render(
         + SEPARATOR.len()
         + 1;
 
-    if bytes + ARG_HEADROOM_BYTES <= ARG_MAX_BYTES {
+    if inline_bytes + ARG_HEADROOM_BYTES <= MAX_ARG_STRLEN {
         let mut bwrap = Command::new(&words[0]);
         bwrap.args(&words[1..]);
         bwrap.arg(SEPARATOR);
@@ -139,32 +148,39 @@ pub fn render(
         });
     }
 
-    render_through_args_file(words, command, args_dir)
+    render_through_args_file(words, command, args_dir, total)
 }
 
-/// Render the invocation with its words in an args file, which is the form a
-/// policy too long for one `exec` line takes.
+/// Render the invocation with its flags in an args file, which is the form a
+/// policy too long for one `exec` line takes. The command stays on the line.
 #[cfg(target_os = "linux")]
 fn render_through_args_file(
     words: &[OsString],
     command: &[OsString],
     args_dir: &Path,
+    total: usize,
 ) -> Result<Rendered, ArgvError> {
-    let file = file::open(args_dir, &words[1..], command).map_err(|error| {
-        ArgvError::ArgsFileUnavailable {
+    // `--args <fd>` are two more words for bwrap to parse.
+    if total + 2 > BWRAP_MAX_ARGS {
+        return Err(ArgvError::TooManyArguments { words: total + 2 });
+    }
+
+    let file =
+        file::open(args_dir, &words[1..]).map_err(|error| ArgvError::ArgsFileUnavailable {
             dir: args_dir.to_path_buf(),
             reason: error.kind(),
-        }
-    })?;
+        })?;
 
     let mut sh = Command::new(SH);
     sh.arg("-c")
         .arg(args_wrapper())
-        .arg(&words[0])
+        .arg(ARGS_LABEL)
         .arg(&file.path)
         .arg(&words[0])
         .arg("--args")
-        .arg(BWRAP_ARGS_FD.to_string());
+        .arg(BWRAP_ARGS_FD.to_string())
+        .arg(SEPARATOR)
+        .args(command);
 
     Ok(Rendered {
         command: sh,
@@ -179,6 +195,7 @@ fn render_through_args_file(
     _words: &[OsString],
     _command: &[OsString],
     args_dir: &Path,
+    _total: usize,
 ) -> Result<Rendered, ArgvError> {
     Err(ArgvError::ArgsFileUnavailable {
         dir: args_dir.to_path_buf(),
@@ -285,12 +302,12 @@ mod tests {
         assert_eq!(
             error,
             ArgvError::TooManyArguments {
-                words: BWRAP_MAX_ARGS + 3
+                words: BWRAP_MAX_ARGS + 2
             }
         );
     }
 
-    /// A command long enough that its words no longer fit one `exec` line.
+    /// A command long enough that the line no longer fits one `exec` argument.
     #[cfg(target_os = "linux")]
     fn long_command() -> Vec<OsString> {
         (0..1_200)
@@ -298,31 +315,50 @@ mod tests {
             .collect()
     }
 
+    /// Where this process's own descriptor `fd` can be opened again.
+    #[cfg(target_os = "linux")]
+    fn proc_fd(fd: &std::os::fd::OwnedFd) -> String {
+        use std::os::fd::AsRawFd;
+
+        format!("/proc/{}/fd/{}", std::process::id(), fd.as_raw_fd())
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn a_long_command_moves_the_words_to_the_args_file() {
-        use std::os::fd::AsRawFd;
+        use std::os::unix::ffi::OsStrExt;
 
         let rendered = render(&words(), &long_command(), &std::env::temp_dir())
             .expect("the words fit the args file");
         let fd = rendered
             .args_file
-            .expect("a line past 128 KiB moves the words to the args file");
+            .expect("a line past the string limit moves the words to the args file");
+
+        let mut expected = vec![
+            OsString::from("-c"),
+            OsString::from("exec 9<\"$1\" && shift && exec \"$@\""),
+            OsString::from("crabpot-args"),
+            OsString::from(proc_fd(&fd)),
+            OsString::from(BWRAP),
+            OsString::from("--args"),
+            OsString::from("9"),
+            OsString::from("--"),
+        ];
+        expected.extend(command());
 
         assert_eq!(rendered.command.get_program(), OsStr::new(SH));
-        assert_eq!(
-            rendered.command.get_args().collect::<Vec<_>>(),
-            [
-                "-c",
-                "exec 9<\"$1\" && shift && exec \"$@\"",
-                BWRAP,
-                &format!("/proc/self/fd/{}", fd.as_raw_fd()),
-                BWRAP,
-                "--args",
-                "9",
-            ]
-            .map(OsString::from)
-        );
+        assert_eq!(rendered.command.get_args().collect::<Vec<_>>(), expected);
+
+        // The flags are in the file the line points at, and the command is not.
+        let args_file = std::fs::read(proc_fd(&fd)).expect("the args file the line points at");
+        let mut words_in_file = words();
+        words_in_file.remove(0);
+        let mut expected_words: Vec<u8> = Vec::new();
+        for word in &words_in_file {
+            expected_words.extend_from_slice(word.as_bytes());
+            expected_words.push(0);
+        }
+        assert_eq!(args_file, expected_words);
     }
 
     #[test]

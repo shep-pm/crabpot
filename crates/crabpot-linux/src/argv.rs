@@ -58,7 +58,6 @@ pub const BWRAP_ARGS_FD: u32 = 9;
 const ARG_HEADROOM_BYTES: usize = 4096;
 
 /// Where the args-file form finds the shell that opens the args file.
-#[cfg(target_os = "linux")]
 const SH: &str = "/bin/sh";
 
 /// The word that ends the flags and starts the command.
@@ -66,15 +65,22 @@ const SEPARATOR: &str = "--";
 
 /// The name the args-file shell gives itself: `$0`, which `shift` drops. A
 /// name and not a path, since nothing runs it.
-#[cfg(target_os = "linux")]
 const ARGS_LABEL: &str = "crabpot-args";
 
 /// The shell line the args-file form runs in place of `bwrap`: it opens the
 /// args file as [`BWRAP_ARGS_FD`], drops it from the words, and execs the
 /// rest. `$0` is [`ARGS_LABEL`], and `$1` the args file.
-#[cfg(target_os = "linux")]
 fn args_wrapper() -> String {
     format!("exec {BWRAP_ARGS_FD}<\"$1\" && shift && exec \"$@\"")
+}
+
+/// An args file: where a child opens the words from, and the descriptor that
+/// holds them open. Closing the descriptor is what deletes the file.
+struct ArgsFile {
+    // This process's own descriptor entry, which a child opens read-only.
+    path: PathBuf,
+    // The descriptor the caller keeps open for as long as its child runs.
+    fd: OwnedFd,
 }
 
 /// A bwrap invocation ready to spawn.
@@ -153,7 +159,6 @@ pub fn render(
 
 /// Render the invocation with its flags in an args file, which is the form a
 /// policy too long for one `exec` line takes. The command stays on the line.
-#[cfg(target_os = "linux")]
 fn render_through_args_file(
     words: &[OsString],
     command: &[OsString],
@@ -166,41 +171,51 @@ fn render_through_args_file(
     }
 
     let file =
-        file::open(args_dir, &words[1..]).map_err(|error| ArgvError::ArgsFileUnavailable {
+        open_args_file(args_dir, &words[1..]).map_err(|error| ArgvError::ArgsFileUnavailable {
             dir: args_dir.to_path_buf(),
             reason: error.kind(),
         })?;
+
+    Ok(Rendered {
+        command: args_file_argv(&file.path, words, command),
+        args_file: Some(file.fd),
+    })
+}
+
+/// The `/bin/sh` line that stands in for bwrap when its flags are in an args
+/// file: it opens the file at `path` as [`BWRAP_ARGS_FD`], drops that path from
+/// the words, and execs bwrap with `--args <fd>` where the flags were. The
+/// command and the `--` that starts it stay on the line.
+fn args_file_argv(path: &Path, words: &[OsString], command: &[OsString]) -> Command {
+    debug_assert!(!words.is_empty(), "a bwrap invocation names bwrap");
 
     let mut sh = Command::new(SH);
     sh.arg("-c")
         .arg(args_wrapper())
         .arg(ARGS_LABEL)
-        .arg(&file.path)
+        .arg(path)
         .arg(&words[0])
         .arg("--args")
         .arg(BWRAP_ARGS_FD.to_string())
         .arg(SEPARATOR)
         .args(command);
-
-    Ok(Rendered {
-        command: sh,
-        args_file: Some(file.fd),
-    })
+    sh
 }
 
-/// The args-file form is Linux's: it is `bwrap` that overflows, and only Linux
-/// opens an args file.
+/// Open the args file. Only Linux has one: it is bwrap that overflows, and
+/// `O_TMPFILE` is Linux's.
+#[cfg(target_os = "linux")]
+fn open_args_file(dir: &Path, flags: &[OsString]) -> io::Result<ArgsFile> {
+    file::open(dir, flags)
+}
+
+/// There is no args file to open off Linux, and the caller is told so.
 #[cfg(not(target_os = "linux"))]
-fn render_through_args_file(
-    _words: &[OsString],
-    _command: &[OsString],
-    args_dir: &Path,
-    _total: usize,
-) -> Result<Rendered, ArgvError> {
-    Err(ArgvError::ArgsFileUnavailable {
-        dir: args_dir.to_path_buf(),
-        reason: io::ErrorKind::Unsupported,
-    })
+fn open_args_file(_dir: &Path, _flags: &[OsString]) -> io::Result<ArgsFile> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "only Linux opens a bwrap args file",
+    ))
 }
 
 /// Why a bwrap invocation cannot be rendered.
@@ -260,17 +275,10 @@ impl fmt::Display for ArgvError {
 impl core::error::Error for ArgvError {}
 
 /// Whether `word` holds a NUL byte, which ends it wherever it is passed.
-#[cfg(unix)]
 fn holds_nul(word: &OsStr) -> bool {
     use std::os::unix::ffi::OsStrExt;
 
     word.as_bytes().contains(&0)
-}
-
-/// Whether `word` holds a NUL byte, which ends it wherever it is passed.
-#[cfg(not(unix))]
-fn holds_nul(word: &OsStr) -> bool {
-    word.encode_wide().any(|unit| unit == 0)
 }
 
 #[cfg(test)]
@@ -308,7 +316,6 @@ mod tests {
     }
 
     /// A command long enough that the line no longer fits one `exec` argument.
-    #[cfg(target_os = "linux")]
     fn long_command() -> Vec<OsString> {
         (0..1_200)
             .map(|n| OsString::from(format!("--input-{n}-{}", "x".repeat(100))))
@@ -323,34 +330,66 @@ mod tests {
         format!("/proc/{}/fd/{}", std::process::id(), fd.as_raw_fd())
     }
 
+    /// The words that follow the args file's path on the line that replaces
+    /// bwrap: the flags are gone, and the command is all of it.
+    #[test]
+    fn the_args_file_line_splices_the_flags_and_keeps_the_command() {
+        let long = long_command();
+        let sh = args_file_argv(Path::new("/proc/4242/fd/9"), &words(), &long);
+        assert_eq!(sh.get_program(), OsStr::new(SH));
+
+        let head = [
+            "-c",
+            "exec 9<\"$1\" && shift && exec \"$@\"",
+            "crabpot-args",
+            "/proc/4242/fd/9",
+            BWRAP,
+            "--args",
+            "9",
+            "--",
+        ]
+        .map(OsStr::new);
+
+        let args = sh.get_args().collect::<Vec<_>>();
+        assert_eq!(&args[..head.len()], &head[..]);
+        let tail = long.iter().map(OsString::as_os_str).collect::<Vec<_>>();
+        assert_eq!(&args[head.len()..], &tail[..]);
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn a_long_command_moves_the_words_to_the_args_file() {
         use std::os::unix::ffi::OsStrExt;
 
-        let rendered = render(&words(), &long_command(), &std::env::temp_dir())
-            .expect("the words fit the args file");
+        let command = long_command();
+        let rendered =
+            render(&words(), &command, &std::env::temp_dir()).expect("the words fit the args file");
         let fd = rendered
             .args_file
             .expect("a line past the string limit moves the words to the args file");
 
-        let mut expected = vec![
-            OsString::from("-c"),
-            OsString::from("exec 9<\"$1\" && shift && exec \"$@\""),
-            OsString::from("crabpot-args"),
-            OsString::from(proc_fd(&fd)),
-            OsString::from(BWRAP),
-            OsString::from("--args"),
-            OsString::from("9"),
-            OsString::from("--"),
-        ];
-        expected.extend(command());
-
         assert_eq!(rendered.command.get_program(), OsStr::new(SH));
-        assert_eq!(rendered.command.get_args().collect::<Vec<_>>(), expected);
+
+        let path = proc_fd(&fd);
+        let head = [
+            "-c",
+            "exec 9<\"$1\" && shift && exec \"$@\"",
+            "crabpot-args",
+            path.as_str(),
+            BWRAP,
+            "--args",
+            "9",
+            "--",
+        ]
+        .map(OsStr::new);
+
+        let args = rendered.command.get_args().collect::<Vec<_>>();
+        assert_eq!(&args[..head.len()], &head[..]);
+        let tail = command.iter().map(OsString::as_os_str).collect::<Vec<_>>();
+        assert_eq!(&args[head.len()..], &tail[..]);
 
         // The flags are in the file the line points at, and the command is not.
-        let args_file = std::fs::read(proc_fd(&fd)).expect("the args file the line points at");
+        let args_file = std::fs::read(&path).expect("the args file the line points at");
         let mut words_in_file = words();
         words_in_file.remove(0);
         let mut expected_words: Vec<u8> = Vec::new();
@@ -359,6 +398,22 @@ mod tests {
             expected_words.push(0);
         }
         assert_eq!(args_file, expected_words);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn an_args_file_is_refused_where_no_bwrap_overflows() {
+        let dir = std::env::temp_dir();
+
+        let error = render(&words(), &long_command(), &dir)
+            .expect_err("only Linux opens an args file, so a line that needs one is refused");
+        assert_eq!(
+            error,
+            ArgvError::ArgsFileUnavailable {
+                dir,
+                reason: std::io::ErrorKind::Unsupported,
+            }
+        );
     }
 
     #[test]

@@ -25,15 +25,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-/// The words the file holds, and the descriptor that holds them open.
-pub(crate) struct ArgsFile {
-    /// The descriptor the caller keeps open for as long as its child runs.
-    /// Closing it is what deletes the file.
-    pub(crate) fd: OwnedFd,
-    /// Where the child opens the file from: this process's own descriptor,
-    /// which stays open while the child runs.
-    pub(crate) path: PathBuf,
-}
+use crate::argv::ArgsFile;
 
 /// Open an args file in `dir` holding `flags` as words terminated each by a
 /// NUL byte, which is how bwrap splits an args file.

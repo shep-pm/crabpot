@@ -20,4 +20,8 @@
 //! The helper crabpot's own binary re-enters inside bwrap (ADR-0010) is the
 //! facade's `cli` half, not this crate.
 
+/// The bwrap argv is unix's: its words are `exec` arguments, and the args file
+/// is a descriptor. `argv` sits behind `cfg(unix)`, and the args file it opens
+/// behind `cfg(target_os = "linux")`.
+#[cfg(unix)]
 pub mod argv;

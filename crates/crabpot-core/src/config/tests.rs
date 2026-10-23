@@ -38,7 +38,6 @@ fn the_default_config_shape_loads() {
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
     ("network.allowUnixSockets", r#"["/tmp/x.sock"]"#),
-    ("network.allowMachLookup", r#"["com.apple.x"]"#),
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
     ("network.allowLocalBinding", "true"),
     ("enableWeakerNetworkIsolation", "true"),

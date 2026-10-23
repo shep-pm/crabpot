@@ -1,4 +1,4 @@
-//! The environment a sandboxed command starts with.
+//! The environment a sandboxed command is given.
 //!
 //! A part is a file in this folder with a `vars` function, and it is
 //! registered by naming it in the `parts!` call. The parts apply in that
@@ -10,6 +10,12 @@
 //! what makes the folder it names writable. A name the command owns, such as
 //! `JAVA_TOOL_OPTIONS`, is set only when a part has something to add, and
 //! then as the command's own value with that addition joined on.
+//!
+//! [`http`] is the proxy's part. The wrapper applies it beside [`vars`], for
+//! it needs the proxy's port and credential, which the wrapper holds and
+//! this module does not.
+
+pub mod http;
 
 use std::ffi::OsString;
 use std::process::Command;

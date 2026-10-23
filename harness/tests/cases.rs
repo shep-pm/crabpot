@@ -85,3 +85,35 @@ fn refused_deny_read_trailing_separator_glob() {
         "refused-deny-read-trailing-separator-glob.json",
     );
 }
+
+#[test]
+fn allowed_domain_example_com() {
+    run(
+        "allowed_domain_example_com",
+        "allowed-domains-example-com.json",
+    );
+}
+
+#[test]
+fn other_domain_example_org_is_refused() {
+    run(
+        "other_domain_example_org_is_refused",
+        "allowed-domains-other-domain.json",
+    );
+}
+
+#[test]
+fn refused_allowed_domains_bad_entry() {
+    run(
+        "refused_allowed_domains_bad_entry",
+        "refused-allowed-domains-bad-entry.json",
+    );
+}
+
+#[test]
+fn allowed_domain_untrimmed_matches_nothing() {
+    run(
+        "allowed_domain_untrimmed_matches_nothing",
+        "allowed-domains-untrimmed.json",
+    );
+}

@@ -16,14 +16,13 @@ use serde_json::Value;
 use super::error::ConfigError;
 use super::keys::{
     allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
-    allowed_domains, denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_write,
+    denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_write,
     enable_weaker_network_isolation, mitm_proxy,
 };
 
 /// Dotted paths, in the order they are checked.
 pub(super) const PATHS: &[&str] = &[
     // The kelpie keys, each refused until its slice builds it.
-    allowed_domains::PATH,
     denied_domains::PATH,
     allow_unix_sockets::PATH,
     allow_mach_lookup::PATH,

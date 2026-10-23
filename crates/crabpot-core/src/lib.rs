@@ -10,6 +10,7 @@ mod domain;
 mod glob;
 mod path;
 mod path_entries;
+pub mod proxy;
 mod resolved_path;
 #[cfg(all(test, unix))]
 mod test_tree;

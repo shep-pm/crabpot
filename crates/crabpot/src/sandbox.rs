@@ -2,22 +2,26 @@
 //! command into it (ADR-0010).
 
 use core::fmt;
+use std::io;
 use std::process::Command;
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
+use crabpot_core::proxy::{Proxy, username_for};
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;
 
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
 /// with [`Sandbox::command`], and drop it when they have all ended, since the
-/// proxies a later release adds stop with it.
+/// proxy stops with it.
 #[derive(Debug)]
 pub struct Sandbox {
     #[cfg(target_os = "macos")]
     profile: String,
     #[cfg(target_os = "macos")]
     facts: Facts,
+    #[cfg(target_os = "macos")]
+    proxy: Proxy,
 }
 
 impl Sandbox {
@@ -26,17 +30,21 @@ impl Sandbox {
     /// # Errors
     ///
     /// [`StartError::UnsupportedPlatform`] off macOS, where nothing
-    /// confines a command yet, and [`StartError::UnresolvedPath`] when a path
-    /// in `config` cannot be made absolute.
+    /// confines a command yet, [`StartError::UnresolvedPath`] when a path
+    /// in `config` cannot be made absolute, and [`StartError::Proxy`] when the
+    /// proxy that carries its network cannot start.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "macos")]
         {
+            let proxy = Proxy::start(&config.network.allowed_domains)
+                .map_err(|e| StartError::Proxy(e.kind()))?;
             Ok(Self {
-                profile: crabpot_macos::profile::render(config)
+                profile: crabpot_macos::profile::render(config, Some(proxy.port()))
                     .map_err(StartError::UnresolvedPath)?,
-                // No config crabpot accepts yet lets a command reach loopback:
-                // allowLocalBinding is refused, and no proxy port is open.
-                facts: Facts::from_process(false),
+                // The proxy listens on `127.0.0.1`, so the child reaches
+                // loopback through it.
+                facts: Facts::from_process(true),
+                proxy,
             })
         }
         #[cfg(not(target_os = "macos"))]
@@ -51,8 +59,9 @@ impl Sandbox {
     ///
     /// The wrapped command keeps `command`'s program, arguments, working
     /// directory and environment changes, and gains the sandbox's own
-    /// environment: a name the sandbox owns is set over the caller's, and a
-    /// name the caller owns is left to it. It does not keep its standard
+    /// environment: a name the sandbox owns is set over the caller's, a name
+    /// the caller owns is left to it, and the variables that point its clients
+    /// at the proxy are set over them. It does not keep its standard
     /// streams, which a [`Command`] cannot be asked for, nor an
     /// [`env_clear`](Command::env_clear).
     ///
@@ -89,6 +98,17 @@ impl Sandbox {
             for (key, value) in crabpot_macos::env::vars(&self.facts.for_command(command)) {
                 wrapped.env(key, value);
             }
+            let line = core::iter::once(command.get_program())
+                .chain(command.get_args())
+                .map(|word| word.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let username = username_for(&line);
+            for (name, value) in
+                crabpot_macos::env::http::vars(self.proxy.port(), &username, self.proxy.token())
+            {
+                wrapped.env(name, value);
+            }
             Ok(wrapped)
         }
         #[cfg(not(target_os = "macos"))]
@@ -111,6 +131,8 @@ pub enum StartError {
     /// relative and there is no working directory. A rule written for it would
     /// be dropped.
     UnresolvedPath(PathError),
+    /// The proxy could not start: no token, no port, or no thread to run on.
+    Proxy(io::ErrorKind),
 }
 
 impl fmt::Display for StartError {
@@ -118,6 +140,7 @@ impl fmt::Display for StartError {
         match self {
             Self::UnsupportedPlatform => write!(f, "only macOS has a sandbox yet"),
             Self::UnresolvedPath(error) => write!(f, "{error}"),
+            Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
         }
     }
 }
@@ -170,6 +193,25 @@ mod tests {
         assert!(!target.exists(), "the refused write left a file");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_wrapped_command_is_pointed_at_the_proxy() {
+        let sandbox = Sandbox::start(&Config::default()).unwrap();
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+
+        let proxy = wrapped
+            .get_envs()
+            .find(|(name, _)| *name == "HTTPS_PROXY")
+            .and_then(|(_, value)| value)
+            .expect("HTTPS_PROXY is set")
+            .to_string_lossy();
+        assert!(
+            proxy.ends_with(&format!("@localhost:{}", sandbox.proxy.port())),
+            "{proxy}"
+        );
+        assert!(proxy.starts_with("http://srt.dHJ1ZQ%3D%3D:"), "{proxy}");
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_sandbox_does_not_start_off_macos() {
@@ -200,8 +242,8 @@ mod tests {
         assert_ne!(lines[1], "/caller/tmp", "the sandbox's TMPDIR wins");
         assert_eq!(lines[2], "kept", "the caller's own variable survives");
         assert_eq!(
-            lines[3], "-Xmx2g",
-            "JAVA_TOOL_OPTIONS is left to the caller"
+            lines[3], "-Xmx2g -Djava.net.preferIPv4Stack=true",
+            "the flag joins the caller's own value, since the proxy is on loopback"
         );
     }
 }

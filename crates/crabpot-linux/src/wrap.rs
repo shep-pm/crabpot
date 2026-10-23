@@ -61,7 +61,12 @@ mod tests {
         let words = words_for(false);
 
         assert_eq!(words[..4], [BWRAP, "--ro-bind", "/", "/"]);
-        for flag in ["--unshare-net", "--die-with-parent"] {
+        for flag in [
+            "--unshare-net",
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-pid",
+        ] {
             assert!(words.iter().any(|word| word == flag), "{flag}: {words:?}");
         }
         for mount in [["--dev", "/dev"], ["--proc", "/proc"]] {
@@ -71,6 +76,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("{mount:?}: {words:?}"));
             assert!(at > 1, "{mount:?} mounts over the root, so it follows it");
         }
+
+        let position = |flag: &str| words.iter().position(|word| word == flag).unwrap();
+        assert!(
+            position("--unshare-pid") < position("--proc"),
+            "a proc mount needs the pid namespace it shows: {words:?}"
+        );
     }
 
     #[test]

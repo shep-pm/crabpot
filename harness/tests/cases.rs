@@ -191,3 +191,35 @@ fn refused_deny_write_trailing_separator_glob() {
         "refused-deny-write-trailing-separator-glob.json",
     );
 }
+
+#[test]
+fn local_binding_bind_refused_by_default() {
+    run(
+        "local_binding_bind_refused_by_default",
+        "local-binding-bind-refused-by-default.json",
+    );
+}
+
+#[test]
+fn local_binding_bind_allowed() {
+    run(
+        "local_binding_bind_allowed",
+        "local-binding-bind-allowed.json",
+    );
+}
+
+#[test]
+fn local_binding_connect_to_loopback() {
+    run(
+        "local_binding_connect_to_loopback",
+        "local-binding-connect-to-loopback.json",
+    );
+}
+
+#[test]
+fn local_binding_other_host_still_refused() {
+    run(
+        "local_binding_other_host_still_refused",
+        "local-binding-other-host-still-refused.json",
+    );
+}

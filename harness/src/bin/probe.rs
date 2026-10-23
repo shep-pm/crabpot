@@ -1,4 +1,5 @@
-//! `probe read <path> | write <path> | connect <host> <port> | bind`: see [`crabpot_harness::probe`].
+//! `probe read <path> | write <path> | connect <host> <port> | bind | loopback`: see
+//! [`crabpot_harness::probe`].
 //!
 //! `probe --crabpot ...` is crabpot's wrapper (ADR-0010), which lets a case run
 //! crabpot through this same binary.

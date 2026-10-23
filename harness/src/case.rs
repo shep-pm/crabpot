@@ -20,6 +20,8 @@ pub enum Probe {
     },
     /// Bind a loopback socket.
     Bind,
+    /// Bind a loopback listener, dial it and accept the dial.
+    Loopback,
 }
 
 /// A case file, with `$ROOT` expanded.
@@ -45,7 +47,7 @@ pub enum Error {
     Json(String),
     /// A field is missing or is not the kind of value it should be.
     Shape(String),
-    /// A probe's `kind` is not `read`, `write`, `connect` or `bind`.
+    /// A probe's `kind` is not `read`, `write`, `connect`, `bind` or `loopback`.
     UnknownProbe(String),
 }
 
@@ -143,6 +145,7 @@ impl Probe {
                 vec!["connect".to_owned(), host.clone(), port.to_string()]
             }
             Self::Bind => vec!["bind".to_owned()],
+            Self::Loopback => vec!["loopback".to_owned()],
         }
     }
 
@@ -168,6 +171,7 @@ impl Probe {
                     })?,
             }),
             "bind" => Ok(Self::Bind),
+            "loopback" => Ok(Self::Loopback),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -187,7 +191,8 @@ mod tests {
                 {"kind": "read", "path": "$ROOT/in"},
                 {"kind": "write", "path": "$ROOT/out"},
                 {"kind": "connect", "host": "example.com", "port": 443},
-                {"kind": "bind"}
+                {"kind": "bind"},
+                {"kind": "loopback"}
             ]
         }"#;
         let case = Case::parse(text, "/r").unwrap();
@@ -206,6 +211,7 @@ mod tests {
                     port: 443
                 },
                 Probe::Bind,
+                Probe::Loopback,
             ]
         );
     }

@@ -15,8 +15,9 @@ pub const ERROR: u8 = 2;
 pub const REPORT: &str = "probe exited ";
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Why a probe could not tell whether the sandbox allowed its action.
 #[derive(Debug)]
@@ -35,7 +36,7 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Usage => f.write_str(
-                "usage: probe read <path> | write <path> | connect <host> <port> | bind",
+                "usage: probe read <path> | write <path> | connect <host> <port> | bind | loopback",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadAnswer(line) => write!(f, "the proxy answered {line:?}, not a status line"),
@@ -77,6 +78,7 @@ fn attempt(args: &[String], http_proxy: Option<&str>) -> Outcome {
         ["write", path] => write(path),
         ["connect", host, port] => connect(host, port, http_proxy),
         ["bind"] => bind(),
+        ["loopback"] => loopback(),
         _ => Err(Error::Usage),
     }
 }
@@ -129,7 +131,8 @@ fn connect(host: &str, port: &str, http_proxy: Option<&str>) -> Outcome {
     }
 }
 
-/// How long to wait on a peer that has stopped answering before calling it an error.
+/// How long to wait on a peer before calling it an error: a connect that never
+/// completes, or an accept whose dial never lands.
 const PATIENCE: Duration = Duration::from_secs(10);
 
 /// Dials the first of `address`'s endpoints that answers within [`PATIENCE`].
@@ -244,9 +247,61 @@ fn base64(bytes: &[u8]) -> String {
 
 fn bind() -> Outcome {
     judge(
-        std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).map(drop),
+        TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).map(drop),
         NETWORK_REFUSED,
     )
+}
+
+/// How long to wait before asking a listener that has taken nothing again.
+const ASK_AGAIN: Duration = Duration::from_millis(20);
+
+/// Bind a loopback listener, dial it and accept the dial, which are the three
+/// operations `allowLocalBinding` opens: `network-bind`, `network-outbound` and
+/// `network-inbound`. The probe dials itself rather than a port someone else
+/// opened, so a case needs no listener of its own and no port it expects to be
+/// free.
+fn loopback() -> Outcome {
+    let listener = match TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)) {
+        Ok(listener) => listener,
+        Err(error) => return judge(Err(error), NETWORK_REFUSED),
+    };
+    let port = listener.local_addr().map_err(Error::Io)?.port();
+    // So that the accept below waits for a connect still on its way instead of
+    // for a peer that never dials.
+    listener.set_nonblocking(true).map_err(Error::Io)?;
+
+    // The kernel answers a connect to a listening socket before anything
+    // accepts it, so the dial is read on its own.
+    let dialed = match dial(("127.0.0.1", port)) {
+        Ok(stream) => stream,
+        Err(error) => return judge(Err(error), NETWORK_REFUSED),
+    };
+    let accepted = accept(&listener);
+    // The dial stays open while the listener takes it, so what the accept
+    // answers is the sandbox's ruling and not the end of a connection.
+    drop(dialed);
+    accepted
+}
+
+/// The connection `listener` is next to take. A refused one answers at once, so
+/// the wait is only for a connect that has not landed.
+fn accept(listener: &TcpListener) -> Outcome {
+    let until = Instant::now() + PATIENCE;
+    loop {
+        match listener.accept() {
+            Ok((_stream, _address)) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= until {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "nothing dialed the listener",
+                    )));
+                }
+                thread::sleep(ASK_AGAIN);
+            }
+            Err(error) => return judge(Err(error), NETWORK_REFUSED),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -254,10 +309,8 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::thread;
 
     /// A folder unique to one test, removed with its permissions restored on drop.
     struct Fixture(PathBuf);
@@ -359,6 +412,11 @@ mod tests {
     #[test]
     fn bind_exits_0() {
         assert_eq!(probe(&["bind"]), 0);
+    }
+
+    #[test]
+    fn loopback_exits_0() {
+        assert_eq!(probe(&["loopback"]), 0);
     }
 
     #[test]

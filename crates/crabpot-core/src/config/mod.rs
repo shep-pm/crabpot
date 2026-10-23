@@ -27,8 +27,8 @@ pub use crate::domain::{DomainEntry, DomainParseError, DomainPattern};
 pub use crate::path_entries::PathEntry;
 
 use self::keys::{
-    allow_mach_lookup, allow_read, allow_write, allowed_domains, denied_domains,
-    denied_resolved_addresses, deny_read, deny_write, mitm_proxy,
+    allow_local_binding, allow_mach_lookup, allow_read, allow_write, allowed_domains,
+    denied_domains, denied_resolved_addresses, deny_read, deny_write, mitm_proxy,
 };
 use self::leaf::present;
 
@@ -68,8 +68,9 @@ pub struct Network {
     /// `allowUnixSockets`, which is not read yet.
     #[serde(default, deserialize_with = "present")]
     pub allow_unix_sockets: Option<Vec<String>>,
-    /// `allowLocalBinding`, which is not read yet.
-    #[serde(default, deserialize_with = "present")]
+    /// `allowLocalBinding`: whether the command may bind, accept on and dial
+    /// any local port.
+    #[serde(default, deserialize_with = "allow_local_binding::deserialize")]
     pub allow_local_binding: Option<bool>,
     /// `allowMachLookup`, which is not read yet.
     #[serde(default, deserialize_with = "allow_mach_lookup::deserialize")]

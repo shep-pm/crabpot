@@ -39,12 +39,14 @@ impl Sandbox {
         {
             let proxy = Proxy::start(&config.network.allowed_domains)
                 .map_err(|e| StartError::Proxy(e.kind()))?;
+            let proxy_port = proxy.port();
             Ok(Self {
-                profile: crabpot_macos::profile::render(config, Some(proxy.port()))
+                profile: crabpot_macos::profile::render(config, Some(proxy_port))
                     .map_err(StartError::UnresolvedPath)?,
-                // The proxy listens on `127.0.0.1`, so the child reaches
-                // loopback through it.
-                facts: Facts::from_process(true),
+                // The proxy listens on `127.0.0.1`, and `allowLocalBinding`
+                // opens every loopback port, so either one is enough for the
+                // child to reach loopback.
+                facts: Facts::for_sandbox(config, Some(proxy_port)),
                 proxy,
             })
         }

@@ -21,7 +21,15 @@ macro_rules! sections {
     };
 }
 
-sections!(base, read, deny_read, allow_read, allow_write, deny_write);
+sections!(
+    base,
+    read,
+    deny_read,
+    allow_read,
+    allow_write,
+    deny_write,
+    local_binding
+);
 
 /// Renders the profile `sandbox-exec -p` takes. A command under it reaches
 /// the network only through the proxy on `proxy_port`, if there is one.

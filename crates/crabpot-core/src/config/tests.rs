@@ -41,7 +41,6 @@ const ASKING: &[(&str, &str)] = &[
     ("network.allowUnixSockets", r#"["/tmp/x.sock"]"#),
     ("network.allowMachLookup", r#"["com.apple.x"]"#),
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
-    ("network.allowLocalBinding", "true"),
     ("enableWeakerNetworkIsolation", "true"),
     ("network.deniedResolvedAddresses", r#"["10.0.0.0/8"]"#),
     (

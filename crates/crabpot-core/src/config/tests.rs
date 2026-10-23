@@ -37,7 +37,6 @@ fn the_default_config_shape_loads() {
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
-    ("network.deniedDomains", r#"["example.com"]"#),
     ("network.allowUnixSockets", r#"["/tmp/x.sock"]"#),
     ("network.denyMachLookup", r#"["com.apple.x"]"#),
     ("network.allowLocalBinding", "true"),
@@ -340,7 +339,7 @@ fn what_upstream_accepts_loads() {
 
 #[test]
 fn a_bad_leaf_beats_an_unsupported_key() {
-    let json = with("network.deniedDomains", json!(["*.com"]));
+    let json = with("network.deniedResolvedAddresses", json!(["10.0.0.0/33"]));
 
     assert!(matches!(
         Config::from_json(&json),
@@ -350,14 +349,14 @@ fn a_bad_leaf_beats_an_unsupported_key() {
 
 #[test]
 fn deserializing_a_config_refuses_what_from_json_refuses() {
-    let json = with("network.deniedDomains", json!(["example.com"]));
+    let json = with(
+        "network.mitmProxy",
+        json!({"socketPath": "/tmp/m.sock", "domains": ["example.com"]}),
+    );
 
     let error = serde_json::from_str::<Config>(&json).unwrap_err();
 
-    assert!(
-        error.to_string().contains("network.deniedDomains"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("network.mitmProxy"), "{error}");
 }
 
 mod files {

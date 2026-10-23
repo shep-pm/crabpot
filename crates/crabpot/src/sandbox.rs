@@ -48,8 +48,9 @@ impl Sandbox {
     ///
     /// The wrapped command keeps `command`'s program, arguments, working
     /// directory and environment changes, and gains the sandbox's own
-    /// environment over them. It does not keep its standard streams, which a
-    /// [`Command`] cannot be asked for, nor an
+    /// environment: a name the sandbox owns is set over the caller's, and a
+    /// name the caller owns is left to it. It does not keep its standard
+    /// streams, which a [`Command`] cannot be asked for, nor an
     /// [`env_clear`](Command::env_clear).
     ///
     /// # Errors
@@ -82,7 +83,7 @@ impl Sandbox {
                     None => wrapped.env_remove(key),
                 };
             }
-            for (key, value) in crabpot_macos::env::vars(&self.facts) {
+            for (key, value) in crabpot_macos::env::vars(&self.facts.for_command(command)) {
                 wrapped.env(key, value);
             }
             Ok(wrapped)
@@ -178,9 +179,10 @@ mod tests {
         let mut probe = Command::new("sh");
         probe
             .arg("-c")
-            .arg(r#"printf '%s\n' "$SANDBOX_RUNTIME" "$TMPDIR" "$CALLER""#);
+            .arg(r#"printf '%s\n' "$SANDBOX_RUNTIME" "$TMPDIR" "$CALLER" "$JAVA_TOOL_OPTIONS""#);
         probe.env("CALLER", "kept");
         probe.env("TMPDIR", "/caller/tmp");
+        probe.env("JAVA_TOOL_OPTIONS", "-Xmx2g");
 
         let output = sandbox.command(&probe).unwrap().output().unwrap();
         assert!(output.status.success(), "{output:?}");
@@ -189,5 +191,9 @@ mod tests {
         assert_eq!(lines[0], "1", "SANDBOX_RUNTIME");
         assert_ne!(lines[1], "/caller/tmp", "the sandbox's TMPDIR wins");
         assert_eq!(lines[2], "kept", "the caller's own variable survives");
+        assert_eq!(
+            lines[3], "-Xmx2g",
+            "JAVA_TOOL_OPTIONS is left to the caller"
+        );
     }
 }

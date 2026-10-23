@@ -10,31 +10,30 @@
 //! allow and deny lists have been weighed before this is asked.
 
 use std::io;
-#[cfg(unix)]
 use std::path::Path;
-#[cfg(unix)]
 use std::time::Duration;
 
-#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+// Windows carries an AF_UNIX stream in the socket type of its TCP one.
+#[cfg(windows)]
+use tokio::net::TcpStream as Stream;
 #[cfg(unix)]
-use tokio::net::UnixStream;
-#[cfg(unix)]
+use tokio::net::UnixStream as Stream;
 use tokio::time::timeout;
 
 use crate::config::MitmProxy;
 use crate::domain::DomainPattern;
 #[cfg(unix)]
-use crate::unix_socket;
+use crate::unix_socket::connect;
+#[cfg(windows)]
+use crate::win32::connect_unix as connect;
 
 /// How long a socket may take to open, and to answer the `CONNECT`, which is
 /// upstream's `CONNECT_TIMEOUT_MS`.
-#[cfg(unix)]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How far a `CONNECT` answer may grow before the tunnel is refused, which is
 /// the cap Node's `openConnectTunnel` holds itself to.
-#[cfg(unix)]
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 
 /// The domains routed through a Unix socket, and the socket they go to.
@@ -65,20 +64,10 @@ impl Route {
 
 /// What an opened tunnel is: the socket, behind a reader that keeps the bytes
 /// that came with the `CONNECT` answer.
-#[cfg(unix)]
-type Tunnel = BufReader<UnixStream>;
+type Tunnel = BufReader<Stream>;
 
 /// A stream for a plain request.
-#[cfg(unix)]
-type Socket = UnixStream;
-
-/// A platform with no Unix sockets has no route to one either.
-#[cfg(not(unix))]
-type Tunnel = tokio::io::Empty;
-
-/// As above, for a plain request.
-#[cfg(not(unix))]
-type Socket = tokio::io::Empty;
+type Socket = Stream;
 
 /// Open a tunnel to `host:port` through the Unix socket at `path`: write the
 /// `CONNECT`, read the answer, and hand back the socket for relaying when the
@@ -90,11 +79,10 @@ type Socket = tokio::io::Empty;
 /// or never ends, or the handshake outlives [`CONNECT_TIMEOUT`]. A `socketPath`
 /// that names nothing is one of these, and the caller answers the client 502
 /// for it.
-#[cfg(unix)]
 pub(super) async fn open_tunnel(path: &str, host: &str, port: u16) -> io::Result<Tunnel> {
     let authority = connect_authority(host, port);
     let handshake = async {
-        let mut upstream = BufReader::new(unix_socket::connect(Path::new(path)).await?);
+        let mut upstream = BufReader::new(connect(Path::new(path)).await?);
         upstream
             .write_all(
                 format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes(),
@@ -125,9 +113,8 @@ pub(super) async fn open_tunnel(path: &str, host: &str, port: u16) -> io::Result
 ///
 /// The [`io::Error`] of a socket that cannot be opened, or of one that does not
 /// open within [`CONNECT_TIMEOUT`].
-#[cfg(unix)]
 pub(super) async fn open_socket(path: &str) -> io::Result<Socket> {
-    match timeout(CONNECT_TIMEOUT, unix_socket::connect(Path::new(path))).await {
+    match timeout(CONNECT_TIMEOUT, connect(Path::new(path))).await {
         Ok(outcome) => outcome,
         Err(_) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -136,29 +123,8 @@ pub(super) async fn open_socket(path: &str) -> io::Result<Socket> {
     }
 }
 
-/// There is no Unix socket off Unix, so no route to one.
-#[cfg(not(unix))]
-pub(super) async fn open_tunnel(_path: &str, _host: &str, _port: u16) -> io::Result<Tunnel> {
-    Err(no_unix_sockets())
-}
-
-/// As above, for a plain request.
-#[cfg(not(unix))]
-pub(super) async fn open_socket(_path: &str) -> io::Result<Socket> {
-    Err(no_unix_sockets())
-}
-
-#[cfg(not(unix))]
-fn no_unix_sockets() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the platform has no Unix sockets",
-    )
-}
-
 /// Read the answer up to its blank line, and return its status line.
-#[cfg(unix)]
-async fn read_status_line(upstream: &mut BufReader<UnixStream>) -> io::Result<String> {
+async fn read_status_line(upstream: &mut BufReader<Stream>) -> io::Result<String> {
     let mut head = Vec::new();
     while head.len() < MAX_HEAD_BYTES {
         if upstream.read_until(b'\n', &mut head).await? == 0 {
@@ -179,7 +145,6 @@ async fn read_status_line(upstream: &mut BufReader<UnixStream>) -> io::Result<St
 }
 
 /// Whether `line` is the 2xx answer upstream's `openConnectTunnel` accepts.
-#[cfg(unix)]
 fn accepted(line: &str) -> bool {
     let Some(rest) = line
         .strip_prefix("HTTP/1.1 ")
@@ -194,7 +159,6 @@ fn accepted(line: &str) -> bool {
         && (phrase.is_empty() || phrase.starts_with(char::is_whitespace))
 }
 
-#[cfg(unix)]
 fn refused(status: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::ConnectionRefused,
@@ -204,7 +168,6 @@ fn refused(status: &str) -> io::Error {
 
 /// `host:port` as a `CONNECT` target names it: an IPv6 address in brackets, and
 /// the port always there.
-#[cfg(unix)]
 fn connect_authority(host: &str, port: u16) -> String {
     if host.contains(':') {
         format!("[{host}]:{port}")
@@ -213,7 +176,7 @@ fn connect_authority(host: &str, port: u16) -> String {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::future::Future;
@@ -277,14 +240,35 @@ mod tests {
         runtime.block_on(within(task))
     }
 
+    /// What a listener accepts: the blocking end of a connection.
+    #[cfg(unix)]
+    type Peer = std::os::unix::net::UnixStream;
+    #[cfg(windows)]
+    type Peer = std::net::TcpStream;
+
+    /// Listens on `socket`, and hands back what takes one connection from it.
+    #[cfg(unix)]
+    fn listen(socket: &Path) -> impl FnOnce() -> Peer + Send + 'static {
+        let listener = crate::unix_socket::bind(socket).unwrap();
+        listener.set_nonblocking(false).unwrap();
+        move || listener.accept().unwrap().0
+    }
+
+    #[cfg(windows)]
+    fn listen(socket: &Path) -> impl FnOnce() -> Peer + Send + 'static {
+        let listener = crate::win32::bind_unix(socket).unwrap();
+        move || listener.accept().unwrap()
+    }
+
     /// A Unix socket that answers one `CONNECT` with `answer` as it was given,
     /// then echoes what it reads. It hands back the head it saw.
     fn stand_in(socket: &Path, answer: &'static str) -> thread::JoinHandle<String> {
-        let listener = unix_socket::bind(socket).unwrap();
-        listener.set_nonblocking(false).unwrap();
+        let accept = listen(socket);
         thread::spawn(move || {
-            let (mut client, _) = listener.accept().unwrap();
-            client.set_read_timeout(Some(PATIENCE)).unwrap();
+            let mut client = accept();
+            // Windows' AF_UNIX may take no receive timeout, and `within` ends a
+            // test that waits anyway.
+            let _ = client.set_read_timeout(Some(PATIENCE));
             let mut head = Vec::new();
             let mut buf = [0u8; 1024];
             while !head.ends_with(b"\r\n\r\n") {
@@ -308,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn connect_is_written_to_the_socket_and_a_2xx_opens_the_relay() {
+    fn a_mitm_tunnel_carries_bytes_over_af_unix() {
         let fixture = Fixture::new("relay");
         let socket = fixture.socket();
         // The 200 and the first bytes of the tunnel arrive in one packet, which

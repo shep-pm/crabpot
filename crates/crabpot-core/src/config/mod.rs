@@ -57,7 +57,7 @@ pub struct Config {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Network {
-    /// `allowedDomains`, which is not read yet.
+    /// `allowedDomains`: the hosts the proxy lets a command reach.
     #[serde(deserialize_with = "allowed_domains::deserialize")]
     pub allowed_domains: Vec<DomainEntry>,
     /// `deniedDomains`, which is not read yet.

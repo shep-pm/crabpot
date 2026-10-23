@@ -40,7 +40,7 @@ mod tests {
         );
         let config = Config::from_json(&settings).unwrap_or_else(|e| panic!("{settings}: {e}"));
 
-        render(&config).unwrap()
+        render(&config, None).unwrap()
     }
 
     #[test]

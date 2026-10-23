@@ -8,9 +8,9 @@ use crabpot_core::{PathError, ResolvedPath};
 
 use super::rule;
 
-/// The filter that matches what a deny of `path` hides: a pattern's regular
+/// The filter that matches what a deny of `path` covers: a pattern's regular
 /// expression, or a name and everything beneath it.
-fn filter(path: &ResolvedPath) -> String {
+pub(super) fn filter(path: &ResolvedPath) -> String {
     match path.deny_regex() {
         Some(regex) => format!("(regex {})", rule::string(&regex)),
         None => format!("(subpath {})", rule::string(path.path())),

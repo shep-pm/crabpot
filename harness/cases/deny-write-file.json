@@ -1,0 +1,15 @@
+{
+  "files": {
+    "$ROOT/work/seed": "x",
+    "$ROOT/work/.env": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT/work"], "denyWrite": ["$ROOT/work/.env"]}
+  },
+  "probes": [
+    {"kind": "write", "path": "$ROOT/work/created"},
+    {"kind": "write", "path": "$ROOT/work/seed"},
+    {"kind": "write", "path": "$ROOT/work/.env"}
+  ]
+}

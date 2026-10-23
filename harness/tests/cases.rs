@@ -228,6 +228,11 @@ fn move_blocking_read() {
 }
 
 #[test]
+fn move_blocking_read_glob() {
+    run("move_blocking_read_glob", "move-blocking-read-glob.json");
+}
+
+#[test]
 fn refused_deny_write_trailing_separator_glob() {
     run(
         "refused_deny_write_trailing_separator_glob",

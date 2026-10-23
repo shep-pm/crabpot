@@ -1,0 +1,23 @@
+{
+  "files": {
+    "$ROOT/work/sub/.env": "x",
+    "$ROOT/work/sub/secrets/key": "x",
+    "$ROOT/work/sub/plain": "x",
+    "$ROOT/work/empty/seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": ["$ROOT/work/**/.env", "$ROOT/work/**/secrets"], "allowRead": [], "allowWrite": ["$ROOT/work"], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/work/sub/.env"},
+    {"kind": "read", "path": "$ROOT/work/sub/secrets/key"},
+    {"kind": "rename", "from": "$ROOT/work/sub/.env", "to": "$ROOT/work/sub/x"},
+    {"kind": "rename", "from": "$ROOT/work/sub/secrets", "to": "$ROOT/work/sub/s2"},
+    {"kind": "rename", "from": "$ROOT/work/sub/secrets/key", "to": "$ROOT/work/sub/key"},
+    {"kind": "rename", "from": "$ROOT/work/sub/plain", "to": "$ROOT/work/sub/plain2"},
+    {"kind": "rename", "from": "$ROOT/work/sub", "to": "$ROOT/work/sub2"},
+    {"kind": "write", "path": "$ROOT/work/empty/.env"},
+    {"kind": "write", "path": "$ROOT/work/empty/created"}
+  ]
+}

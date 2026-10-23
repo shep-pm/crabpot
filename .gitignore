@@ -21,3 +21,6 @@ target/
 
 # The maintainer's local log of kelpie gaps (shep-pm/shep-kelpie#897)
 docs/kelpie-journey.md
+
+# The differential harness's upstream
+harness/node_modules/

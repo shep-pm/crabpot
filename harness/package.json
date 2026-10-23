@@ -1,0 +1,8 @@
+{
+  "name": "crabpot-harness",
+  "private": true,
+  "description": "Upstream's srt at the baseline, which the differential cases run beside crabpot",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.81"
+  }
+}

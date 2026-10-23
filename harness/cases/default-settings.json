@@ -1,0 +1,13 @@
+{
+  "files": {
+    "$ROOT/readable": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/readable"},
+    {"kind": "write", "path": "$ROOT/created"}
+  ]
+}

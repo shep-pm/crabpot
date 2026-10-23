@@ -27,6 +27,10 @@ dependencies = [
 [[package]]
 name = "crabpot-harness"
 version = "0.1.0"
+dependencies = [
+ "crabpot",
+ "serde_json",
+]
 
 [[package]]
 name = "crabpot-macos"

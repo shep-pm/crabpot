@@ -1,4 +1,6 @@
-//! The network a sandboxed command has: the proxy's loopback port, and nothing else.
+//! The network a sandboxed command has through the proxy: its loopback port,
+//! and no other host. The Unix sockets a command may use are another section,
+//! in `unix_sockets`.
 
 /// The rules of upstream's `generateSandboxProfile` for `httpProxyPort`: the
 /// command may bind, accept on and dial that one port. A host is reached by

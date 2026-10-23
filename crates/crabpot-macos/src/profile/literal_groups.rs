@@ -113,13 +113,16 @@ impl Group {
     }
 }
 
+/// A folder and the names denied in it.
+type Folder<'a> = (&'a str, Vec<&'a str>);
+
 /// Folds the names in `entries` that fit a group of at least [`MIN_FOLDERS`]
 /// folders. Patterns, names that do not fit a group, and folders too long for
 /// one regex stay in `rest`, in order.
 pub(super) fn fold(entries: &[ResolvedPath]) -> Folded<'_> {
     // Directory, then its folders, then the names denied in each, all in the
     // order first seen.
-    let mut by_dir: Vec<(&str, Vec<(&str, Vec<&str>)>)> = Vec::new();
+    let mut by_dir: Vec<(&str, Vec<Folder>)> = Vec::new();
     for entry in entries.iter().filter(|entry| !entry.is_pattern()) {
         let path = entry.path();
         let parent = dirname(path);

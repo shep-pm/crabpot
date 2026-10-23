@@ -1,0 +1,16 @@
+{
+  "files": {
+    "$ROOT/secrets/ok.txt": "x",
+    "$ROOT/secrets/other.txt": "x",
+    "$ROOT/open/readable": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": ["$ROOT/secrets"], "allowRead": ["$ROOT/secrets/ok.txt"], "allowWrite": [], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "read", "path": "$ROOT/secrets/ok.txt"},
+    {"kind": "read", "path": "$ROOT/secrets/other.txt"},
+    {"kind": "read", "path": "$ROOT/open/readable"}
+  ]
+}

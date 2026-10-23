@@ -108,3 +108,63 @@ fn refused_deny_read_trailing_separator_glob() {
         "refused-deny-read-trailing-separator-glob.json",
     );
 }
+
+#[test]
+fn allowed_domain_example_com() {
+    run(
+        "allowed_domain_example_com",
+        "allowed-domains-example-com.json",
+    );
+}
+
+#[test]
+fn other_domain_example_org_is_refused() {
+    run(
+        "other_domain_example_org_is_refused",
+        "allowed-domains-other-domain.json",
+    );
+}
+
+#[test]
+fn refused_allowed_domains_bad_entry() {
+    run(
+        "refused_allowed_domains_bad_entry",
+        "refused-allowed-domains-bad-entry.json",
+    );
+}
+
+#[test]
+fn allowed_domain_untrimmed_matches_nothing() {
+    run(
+        "allowed_domain_untrimmed_matches_nothing",
+        "allowed-domains-untrimmed.json",
+    );
+}
+
+#[test]
+fn allow_write_folder() {
+    run("allow_write_folder", "allow-write-folder.json");
+}
+
+#[test]
+fn allow_write_outside_is_refused() {
+    run(
+        "allow_write_outside_is_refused",
+        "allow-write-outside-is-refused.json",
+    );
+}
+
+#[test]
+fn allow_write_glob() {
+    run("allow_write_glob", "allow-write-glob.json");
+}
+
+#[test]
+fn default_write_dev_null() {
+    run("default_write_dev_null", "default-write-dev-null.json");
+}
+
+#[test]
+fn default_write_tmp_claude() {
+    run("default_write_tmp_claude", "default-write-tmp-claude.json");
+}

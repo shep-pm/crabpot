@@ -4,7 +4,6 @@ use serde::Deserializer;
 
 use super::super::Filesystem;
 use super::super::leaf::path_list;
-use crate::home_write_dirs;
 use crate::path::{PathBase, PathError};
 use crate::path_entries::PathEntry;
 use crate::resolved_path::{ResolvedPath, allow_entries};
@@ -27,23 +26,6 @@ impl Filesystem {
     pub fn read_allows(&self) -> Result<Vec<ResolvedPath>, PathError> {
         allow_entries(
             &PathBase::from_env(),
-            self.allow_read.as_deref().unwrap_or_default(),
-        )
-    }
-
-    /// The folders under the home directory a command may write without
-    /// asking (`~/.npm/_logs`, `~/.claude/debug`), less those `denyRead`
-    /// hides. An `allowRead` entry beneath the deny that covers one gives it
-    /// back. The caller adds what is left to its write allows.
-    ///
-    /// # Errors
-    ///
-    /// [`PathError`] when `HOME` is not set, or an entry is relative and there
-    /// is no working directory.
-    pub fn convenience_write_dirs(&self) -> Result<Vec<String>, PathError> {
-        home_write_dirs::kept(
-            &PathBase::from_env(),
-            &self.deny_read,
             self.allow_read.as_deref().unwrap_or_default(),
         )
     }

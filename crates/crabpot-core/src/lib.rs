@@ -8,9 +8,10 @@ mod address;
 pub mod config;
 mod domain;
 mod glob;
-mod home_write_dirs;
 mod path;
 mod path_entries;
+pub mod paths;
+pub mod proxy;
 mod resolved_path;
 #[cfg(all(test, unix))]
 mod test_tree;

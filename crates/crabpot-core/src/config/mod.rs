@@ -53,7 +53,7 @@ pub struct Config {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Network {
-    /// `allowedDomains`, which is not read yet.
+    /// `allowedDomains`: the hosts the proxy lets a command reach.
     #[serde(deserialize_with = "allowed_domains::deserialize")]
     pub allowed_domains: Vec<DomainEntry>,
     /// `deniedDomains`, which is not read yet.
@@ -94,7 +94,7 @@ pub struct Filesystem {
     /// win over it.
     #[serde(default, deserialize_with = "allow_read::deserialize")]
     pub allow_read: Option<Vec<PathEntry>>,
-    /// `allowWrite`, which is not read yet.
+    /// `allowWrite`: paths a command may write, beside the default write roots.
     #[serde(deserialize_with = "allow_write::deserialize")]
     pub allow_write: Vec<PathEntry>,
     /// `denyWrite`, which is not read yet.

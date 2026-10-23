@@ -193,6 +193,7 @@ name = "crabpot-linux"
 version = "0.1.2"
 dependencies = [
  "crabpot-core",
+ "libc",
  "nix",
 ]
 

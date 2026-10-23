@@ -5,6 +5,5 @@ mod run;
 mod sandbox;
 
 pub use crabpot_core::config::{Config, ConfigError};
-pub use crabpot_core::paths::PathError;
 pub use run::{run_args, run_from_args};
 pub use sandbox::{Sandbox, StartError, WrapError};

@@ -8,14 +8,20 @@
 //! until it lands an `allowWrite` root is writable all the way down.
 
 use crabpot_core::config::Config;
+use crabpot_core::PathError;
 use crabpot_core::paths::{
-    ListKind, PathBase, PathError, remove_trailing_glob_suffix, split_path_entries,
+    ListKind, PathBase, remove_trailing_glob_suffix, split_path_entries,
 };
 
-use super::filter::{Entry, caller_entries, render_rule};
+use super::filter::{Entry, caller_entries};
+use super::rule;
 use super::write_roots::default_write_paths;
 
-pub(super) fn rules(config: &Config, base: &PathBase) -> Result<String, PathError> {
+pub(super) fn rules(config: &Config) -> Result<String, PathError> {
+    rules_with(config, &PathBase::from_env())
+}
+
+fn rules_with(config: &Config, base: &PathBase) -> Result<String, PathError> {
     let split = split_path_entries(&config.filesystem.allow_write);
     // A trailing `/**` says "the directory and all under it", which a subpath
     // already does. A glob that still is one is kept: only Linux drops it.
@@ -28,9 +34,10 @@ pub(super) fn rules(config: &Config, base: &PathBase) -> Result<String, PathErro
     );
     let marked: Vec<String> = split.marked.into_iter().map(str::to_owned).collect();
     let roots = caller_entries(base, ListKind::Allow, &allow_only, &marked)?;
+    let filters: Vec<String> = roots.iter().map(Entry::filter).collect();
     Ok(format!(
         "\n; Writes\n{}",
-        render_rule("allow", &["file-write*"], roots.iter().map(Entry::filter))
+        rule::render("allow", &["file-write*"], &filters)
     ))
 }
 
@@ -59,7 +66,7 @@ mod tests {
 
     /// The filters of the one `(allow file-write*` rule, in order.
     fn filters(config: &Config) -> Vec<String> {
-        let rules = rules(config, &base()).unwrap();
+        let rules = rules_with(config, &base()).unwrap();
         let lines: Vec<&str> = rules.lines().collect();
         let start = lines
             .iter()

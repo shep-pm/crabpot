@@ -87,7 +87,7 @@ pub struct Network {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Filesystem {
-    /// `denyRead`, which is not read yet.
+    /// `denyRead`: paths a command may not read.
     #[serde(deserialize_with = "deny_read::deserialize")]
     pub deny_read: Vec<PathEntry>,
     /// `allowRead`, which is not read yet.

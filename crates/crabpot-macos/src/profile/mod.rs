@@ -4,39 +4,35 @@
 //! earlier one. A section is a file in this folder with a `rules` function,
 //! and it is registered by naming it in the `sections!` call.
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
-use crabpot_core::paths::{PathBase, PathError};
+
+mod filter;
+mod rule;
+mod write_roots;
 
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {
     ($($name:ident),* $(,)?) => {
         $(mod $name;)*
 
-        const SECTIONS: &[fn(&Config, &PathBase) -> Result<String, PathError>] =
-            &[$($name::rules),*];
+        const SECTIONS: &[fn(&Config) -> Result<String, PathError>] = &[$($name::rules),*];
     };
 }
 
-sections!(base, read, allow_write);
+sections!(base, read, deny_read, allow_write);
 
-mod filter;
-mod write_roots;
-
-/// Renders the profile `sandbox-exec -p` takes, with `HOME` and the working
-/// directory of this process as what `~` and a relative path mean.
+/// Renders the profile `sandbox-exec -p` takes.
 ///
 /// # Errors
 ///
-/// [`PathError`] when the config or the defaults need a home directory or a
-/// working directory and there is none.
+/// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
+/// or is relative and there is no working directory. A rule written for it
+/// would be dropped, so there is no profile.
 pub fn render(config: &Config) -> Result<String, PathError> {
-    render_with(config, &PathBase::from_env())
-}
-
-fn render_with(config: &Config, base: &PathBase) -> Result<String, PathError> {
     let mut profile = String::from("(version 1)\n");
     for rules in SECTIONS {
-        profile.push_str(&rules(config, base)?);
+        profile.push_str(&rules(config)?);
     }
     Ok(profile)
 }
@@ -45,16 +41,9 @@ fn render_with(config: &Config, base: &PathBase) -> Result<String, PathError> {
 mod tests {
     use super::*;
 
-    fn base() -> PathBase {
-        PathBase::new(
-            Some("/crabpot-test-home/me".to_owned()),
-            Some("/crabpot-test-work".to_owned()),
-        )
-    }
-
     #[test]
     fn the_default_profile_denies_network_and_write() {
-        let profile = render_with(&Config::default(), &base()).unwrap();
+        let profile = render(&Config::default()).unwrap();
 
         assert!(profile.starts_with("(version 1)\n(deny default"));
         assert!(profile.contains("(allow file-read*)"));
@@ -75,10 +64,11 @@ mod tests {
                     r#"  (subpath "/dev/"#,
                     r#"  (subpath "/tmp/claude""#,
                     r#"  (subpath "/private/tmp/claude""#,
-                    r#"  (subpath "/crabpot-test-home/me/."#,
+                    r#"/.npm/_logs")"#,
+                    r#"/.claude/debug")"#,
                 ]
                 .iter()
-                .any(|allowed| filter.starts_with(allowed)),
+                .any(|allowed| filter.starts_with(allowed) || filter.ends_with(allowed)),
                 "a default profile allows no write but to the default roots: {filter}"
             );
         }

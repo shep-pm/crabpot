@@ -5,11 +5,6 @@
 //! `src/utils/real-path.ts`. The Windows branches are left out, and so is the
 //! debug line upstream logs when a `..` survives.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the seatbelt profile slice is the first consumer")
-)]
-
 mod lexical;
 mod real_path;
 #[cfg(all(test, unix))]
@@ -19,7 +14,7 @@ use core::fmt;
 use std::env;
 
 pub use lexical::is_at_or_under;
-pub(crate) use lexical::{collapse_interior_spellings, is_absolute, resolve};
+pub(crate) use lexical::{collapse_interior_spellings, dirname, is_absolute, resolve};
 pub(crate) use real_path::{is_absence_error, real_path_of};
 
 /// What a relative path and a leading `~` are read against.

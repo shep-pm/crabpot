@@ -7,10 +7,11 @@
 //! for. Upstream also judges them against the credential denies, and
 //! `credentials` is refused here, so there are none to judge by.
 
+use crabpot_core::PathError;
 use crabpot_core::config::{Config, PathEntry};
 use crabpot_core::paths::{
-    PathBase, PathError, contains_glob_chars, deny_glob_matches, is_at_or_under,
-    normalize_path_for_sandbox, read_rules_of, remove_trailing_glob_suffix,
+    PathBase, contains_glob_chars, deny_glob_matches, is_at_or_under, normalize_path_for_sandbox,
+    read_rules_of, remove_trailing_glob_suffix,
 };
 
 /// What the sandbox needs writable: the child's stdio and the `TMPDIR` it is

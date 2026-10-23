@@ -11,5 +11,9 @@ mod glob;
 mod path;
 mod path_entries;
 pub mod paths;
+mod resolved_path;
 #[cfg(all(test, unix))]
 mod test_tree;
+
+pub use path::PathError;
+pub use resolved_path::ResolvedPath;

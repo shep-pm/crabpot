@@ -46,6 +46,29 @@ fn refused_missing_settings() {
 }
 
 #[test]
+fn allow_read_file() {
+    run("allow_read_file", "allow-read-file.json");
+}
+
+#[test]
+fn allow_read_folder() {
+    run("allow_read_folder", "allow-read-folder.json");
+}
+
+#[test]
+fn allow_read_glob() {
+    run("allow_read_glob", "allow-read-glob.json");
+}
+
+#[test]
+fn allow_read_folder_alone_glob() {
+    run(
+        "allow_read_folder_alone_glob",
+        "allow-read-folder-alone-glob.json",
+    );
+}
+
+#[test]
 fn deny_read_folder() {
     run("deny_read_folder", "deny-read-folder.json");
 }
@@ -144,6 +167,29 @@ fn default_write_dev_null() {
 #[test]
 fn default_write_tmp_claude() {
     run("default_write_tmp_claude", "default-write-tmp-claude.json");
+}
+
+#[test]
+fn deny_write_file() {
+    run("deny_write_file", "deny-write-file.json");
+}
+
+#[test]
+fn deny_write_glob() {
+    run("deny_write_glob", "deny-write-glob.json");
+}
+
+#[test]
+fn deny_write_literal() {
+    run("deny_write_literal", "deny-write-literal.json");
+}
+
+#[test]
+fn refused_deny_write_trailing_separator_glob() {
+    run(
+        "refused_deny_write_trailing_separator_glob",
+        "refused-deny-write-trailing-separator-glob.json",
+    );
 }
 
 #[test]

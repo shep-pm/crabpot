@@ -9,11 +9,16 @@
 //! Upstream's `generateMoveBlockingRules`, `moveBlockingFilters` and
 //! `getAncestorDirectories`. This section is the read half, for `denyRead`;
 //! `deny_write` adds the write half with [`filters`].
+//!
+//! The pin is followed by the same two operations re-allowed for every write
+//! root. A deny of a named operation is not lifted by the write section's later
+//! `(allow file-write*)`, so without it a write root that sits under a denied
+//! region takes no new file and no `rm`.
 
 use core::iter;
 
 use crabpot_core::config::Config;
-use crabpot_core::paths::dirname;
+use crabpot_core::paths::{PathBase, dirname};
 use crabpot_core::{PathError, ResolvedPath};
 
 use super::rule;
@@ -70,12 +75,30 @@ pub(super) fn deny_rule(filters: &[String]) -> String {
 }
 
 pub(super) fn rules(config: &Config) -> Result<String, PathError> {
-    Ok(deny_rule(&filters(&config.filesystem.read_denies()?)))
+    rules_with(config, &PathBase::from_env())
+}
+
+/// The pin of the read denies, then the write roots re-opened for the two
+/// operations of a rename.
+fn rules_with(config: &Config, base: &PathBase) -> Result<String, PathError> {
+    let denied = deny_rule(&filters(&config.filesystem.read_denies()?));
+    let roots = super::allow_write::root_filters(config, base)?;
+    Ok(format!(
+        "{denied}{}",
+        rule::render("allow", &OPERATIONS, &roots)
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn base() -> PathBase {
+        PathBase::new(
+            Some("/crabpot-test-home/me".to_owned()),
+            Some("/crabpot-test-work".to_owned()),
+        )
+    }
 
     fn name(path: &str) -> ResolvedPath {
         ResolvedPath::named(path)
@@ -127,7 +150,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            rules(&config).unwrap(),
+            deny_rule(&filters(&config.filesystem.read_denies().unwrap())),
             r#"(deny file-write-unlink file-write-create
   (regex "^/(.*/)?[^/]*\\.key(/.*)?$")
   (with message "crabpot"))
@@ -152,7 +175,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            rules(&config).unwrap(),
+            deny_rule(&filters(&config.filesystem.read_denies().unwrap())),
             r#"(deny file-write-unlink file-write-create
   (subpath "/crabpot-nowhere/secrets/key")
   (literal "/crabpot-nowhere/secrets")
@@ -165,5 +188,34 @@ mod tests {
     #[test]
     fn nothing_denied_pins_nothing() {
         assert_eq!(deny_rule(&filters(&[])), "");
+    }
+
+    /// A deny of a named operation is not lifted by a later
+    /// `(allow file-write*)`, so the read section re-allows the two operations
+    /// of a rename for every write root it just denied around. Without it a
+    /// write root under a denied region takes no new file at all.
+    ///
+    /// What upstream's `wrapCommandWithSandboxMacOS` at 0.0.81 renders for this
+    /// config as the two rules that end its read section, with its log tag
+    /// swapped for ours.
+    #[test]
+    fn the_write_roots_are_re_allowed_after_the_read_denies_pin_them() {
+        let config = Config::from_json(
+            r#"{
+                "network": {"allowedDomains": [], "deniedDomains": []},
+                "filesystem": {
+                    "denyRead": ["/crabpot-nowhere/.shep"],
+                    "allowRead": ["/crabpot-nowhere/.shep/worktree/seed"],
+                    "allowWrite": ["/crabpot-nowhere/.shep/worktree"],
+                    "denyWrite": []
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rules_with(&config, &base()).unwrap(),
+            include_str!("fixtures/read-denies-then-write-roots.txt")
+        );
     }
 }

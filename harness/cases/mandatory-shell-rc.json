@@ -1,0 +1,19 @@
+{
+  "files": {
+    "$ROOT/.bashrc": "x",
+    "$ROOT/notes.txt": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT"], "denyWrite": []}
+  },
+  "probes": [
+    {"kind": "write", "path": "$ROOT/.bashrc"},
+    {"kind": "write", "path": "$ROOT/.zshrc"},
+    {"kind": "write", "path": "$ROOT/.mcp.json"},
+    {"kind": "write", "path": "$ROOT/.vscode/tasks.json"},
+    {"kind": "write", "path": "$ROOT/.claude/commands/x"},
+    {"kind": "write", "path": "$ROOT/.claude/settings.json"},
+    {"kind": "write", "path": "$ROOT/notes.txt"}
+  ]
+}

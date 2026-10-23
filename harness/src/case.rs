@@ -11,6 +11,13 @@ pub enum Probe {
     Read(String),
     /// Open the path for writing, creating it.
     Write(String),
+    /// Rename `from` to `to`.
+    Rename {
+        /// The path to move.
+        from: String,
+        /// The path to move it to.
+        to: String,
+    },
     /// Connect to the host and port.
     Connect {
         /// The host to dial.
@@ -45,7 +52,7 @@ pub enum Error {
     Json(String),
     /// A field is missing or is not the kind of value it should be.
     Shape(String),
-    /// A probe's `kind` is not `read`, `write`, `connect` or `bind`.
+    /// A probe's `kind` is not `read`, `write`, `rename`, `connect` or `bind`.
     UnknownProbe(String),
 }
 
@@ -139,6 +146,7 @@ impl Probe {
         match self {
             Self::Read(path) => vec!["read".to_owned(), path.clone()],
             Self::Write(path) => vec!["write".to_owned(), path.clone()],
+            Self::Rename { from, to } => vec!["rename".to_owned(), from.clone(), to.clone()],
             Self::Connect { host, port } => {
                 vec!["connect".to_owned(), host.clone(), port.to_string()]
             }
@@ -158,6 +166,10 @@ impl Probe {
         match kind.as_str() {
             "read" => Ok(Self::Read(text("path")?)),
             "write" => Ok(Self::Write(text("path")?)),
+            "rename" => Ok(Self::Rename {
+                from: text("from")?,
+                to: text("to")?,
+            }),
             "connect" => Ok(Self::Connect {
                 host: text("host")?,
                 port: field("port")
@@ -186,6 +198,7 @@ mod tests {
             "probes": [
                 {"kind": "read", "path": "$ROOT/in"},
                 {"kind": "write", "path": "$ROOT/out"},
+                {"kind": "rename", "from": "$ROOT/in", "to": "$ROOT/moved"},
                 {"kind": "connect", "host": "example.com", "port": 443},
                 {"kind": "bind"}
             ]
@@ -201,6 +214,10 @@ mod tests {
             [
                 Probe::Read("/r/in".to_owned()),
                 Probe::Write("/r/out".to_owned()),
+                Probe::Rename {
+                    from: "/r/in".to_owned(),
+                    to: "/r/moved".to_owned()
+                },
                 Probe::Connect {
                     host: "example.com".to_owned(),
                     port: 443

@@ -335,7 +335,8 @@ impl Upstream {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args())
-            .env("HOME", home(settings));
+            .env("HOME", home(settings))
+            .current_dir(home(settings));
         command
     }
 }
@@ -380,13 +381,15 @@ impl Crabpot {
             .arg("--")
             .arg(&self.probe)
             .args(probe.args())
-            .env("HOME", home(settings));
+            .env("HOME", home(settings))
+            .current_dir(home(settings));
         command
     }
 }
 
 /// The case's root, which holds the settings file: a `~` in a case names a path
-/// the case made and not the machine's.
+/// the case made and not the machine's. It is also the working directory, which
+/// the mandatory write denies are under.
 fn home(settings: &Path) -> &Path {
     settings.parent().unwrap_or(settings)
 }

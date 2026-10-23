@@ -2,8 +2,9 @@
 //! seccomp filters and the bwrap dependency checks.
 //!
 //! The crate is the landing place for the Linux slices of the Linux map, and
-//! holds only the ones that have landed: [`mandatory`] and [`deps`] so far. It
-//! builds on every platform so a Linux slice fails on the macOS runner too, as
+//! holds only the ones that have landed: [`argv`], [`deps`] and
+//! [`mandatory`]. It builds on every platform so a Linux slice fails on the
+//! macOS runner too, as
 //! `crabpot-macos` does in reverse; Linux-only code sits behind
 //! `cfg(target_os = "linux")`. The facade depends on it as a target-specific
 //! dependency under `cfg(target_os = "linux")`, the way it gates
@@ -11,7 +12,7 @@
 //!
 //! What lives here, or will, per ADR-0014:
 //!
-//! - The bwrap argv, rendered under upstream's size limits.
+//! - The bwrap argv, rendered under upstream's size limits ([`argv`]).
 //! - The mandatory-deny walker, matching upstream's `rg` list with `std::fs`
 //!   ([`mandatory`]).
 //! - The two seccomp filters, built per architecture.
@@ -22,7 +23,11 @@
 //! The helper crabpot's own binary re-enters inside bwrap (ADR-0010) is the
 //! facade's `cli` half, not this crate.
 
+/// The bwrap argv is unix's: its words are `exec` arguments, and the args file
+/// is a descriptor. `argv` sits behind `cfg(unix)`, and the args file it opens
+/// behind `cfg(target_os = "linux")`.
+#[cfg(unix)]
+pub mod argv;
 pub mod deps;
-
 #[cfg(unix)]
 pub mod mandatory;

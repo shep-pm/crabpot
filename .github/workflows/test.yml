@@ -133,7 +133,9 @@ jobs:
         run: |
           $out = cargo run --quiet --locked -p crabpot -- --srt-win --help 2>&1 | Out-String
           Write-Output $out
-          if ($LASTEXITCODE -ne 0 -or $out -notmatch 'Usage: srt-win') { exit 1 }
+          # clap names the program from argv[0], so the usage line says
+          # `crabpot.exe`; the subcommand list is srt-win's own.
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch 'Spawn a process inside the sandbox') { exit 1 }
 
   windows-harness:
     # The differential cases on Windows, which run upstream's `srt-win` path

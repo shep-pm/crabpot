@@ -4,11 +4,14 @@
 //! exit code is the wrapper's exit status.
 //!
 //! `upstream` and `crabpot` build the two wrapper commands, and `wrapper` reads
-//! what running one of them reported. They are separate files because the
+//! what running one of them reported. `windows` holds what upstream's Windows
+//! runner needs set up first. They are separate files because the
 //! comparison and both wrappers together passed 1000 lines (IR-48).
 
 mod crabpot;
 mod upstream;
+#[cfg(windows)]
+mod windows;
 mod wrapper;
 
 #[cfg(test)]
@@ -93,7 +96,7 @@ pub enum Error {
         probe: Probe,
     },
     /// Upstream cannot be run, for want of Node, of `npm ci` in `harness/`, or,
-    /// on Linux, of `bwrap`.
+    /// on Linux, of `bwrap`, or, on Windows, of `windows-install`.
     NoUpstream(String),
 }
 
@@ -575,7 +578,7 @@ fn folder(name: &str) -> String {
 /// the path takes forward slashes. The `\\?\` prefix of a drive path that
 /// `canonicalize` adds is dropped, since a path without a backslash needs none.
 /// A UNC path stays as it is.
-pub(super) fn spell_for_upstream(path: &str) -> String {
+fn spell_for_upstream(path: &str) -> String {
     let plain = match path.strip_prefix(r"\\?\") {
         Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest,
         Some(_) => return path.to_owned(),

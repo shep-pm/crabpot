@@ -28,6 +28,10 @@ required-features = ["cli"]
 name = "windows_status"
 harness = false
 
+[[test]]
+name = "windows_installed"
+harness = false
+
 [dependencies]
 crabpot-core.workspace = true
 # The three srt-win queries a Windows status reads print JSON.
@@ -44,9 +48,15 @@ crabpot-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crabpot-windows.workspace = true
-# `ProcessIdToSessionId`, the one Windows call the facade makes itself. Tokio
-# already pulls the crate into the lock.
-windows-sys = { version = "0.61", default-features = false, features = ["Win32_System_RemoteDesktop"] }
+# `ProcessIdToSessionId` and a file's DACL, the Windows calls the facade makes
+# itself. Tokio already pulls the crate into the lock.
+windows-sys = { version = "0.61", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_RemoteDesktop",
+] }
 
 [lints]
 workspace = true

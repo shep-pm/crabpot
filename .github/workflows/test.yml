@@ -134,6 +134,20 @@ jobs:
       # harness: it is its own host for the `--srt-win` relaunch.
       - name: windows_status reads a machine with no install
         run: cargo test --locked -p crabpot --test windows_status
+      # crabpot's own install, which elevates itself (the runner's admin
+      # account takes that without a prompt), then the status it leaves, then
+      # the removal. A failed native command does not stop a PowerShell step,
+      # so each exit code is checked.
+      - name: crabpot windows-install and windows-uninstall round trip
+        run: |
+          cargo build --quiet --locked -p crabpot
+          ./target/debug/crabpot.exe windows-install
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo test --locked -p crabpot --test windows_installed
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./target/debug/crabpot.exe windows-uninstall
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo test --locked -p crabpot --test windows_status
       - name: crabpot --srt-win --help prints srt-win's usage
         run: |
           $out = cargo run --quiet --locked -p crabpot -- --srt-win --help 2>&1 | Out-String
@@ -168,6 +182,8 @@ jobs:
       - run: node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js windows-install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: rustup toolchain install stable --profile minimal
+      # The install is shared: upstream's satisfies crabpot's `windows_status()`.
+      - run: cargo test --locked -p crabpot --test windows_installed
       - run: cargo test --locked -p crabpot-harness
       # Upstream refuses a session whose `network.allowLocalBinding` is not the
       # loopback mode the filters were installed with, in either direction. The

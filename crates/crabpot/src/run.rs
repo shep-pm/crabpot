@@ -20,8 +20,9 @@ use tokio::signal::unix::{SignalKind, signal};
 #[cfg(unix)]
 use tokio::task::JoinHandle;
 
-use crate::args::{self, Helper, HelperMode, Invocation};
+use crate::args::{self, Helper, HelperMode, Invocation, Subcommand};
 use crate::sandbox::Sandbox;
+use crate::windows::install::{self, Machine};
 
 #[cfg(unix)]
 const SIGINT: i32 = 2;
@@ -118,6 +119,10 @@ fn fail(reason: impl core::fmt::Display) -> ! {
 /// its status. The arguments are the `crabpot` command line without the
 /// program's name: `-s/--settings`, `-c`, `-d` and `--`.
 ///
+/// A first argument of `windows-install` or `windows-uninstall` sets the
+/// Windows sandbox up or takes it down instead, and exits 0 when that is done
+/// and 1 when it is refused or fails.
+///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
 /// that is refused prints why to stderr and exits 1. A SIGINT, SIGTERM or
 /// console Ctrl-C is the command's to answer: the wrapper keeps waiting for it
@@ -131,8 +136,34 @@ pub fn run_args(args: impl IntoIterator<Item = OsString>) -> ! {
 }
 
 fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
+    let args: Vec<OsString> = args.into_iter().collect();
+    match args::parse_subcommand(args.iter().cloned()) {
+        Some(Ok(subcommand)) => return run_subcommand(subcommand),
+        Some(Err(e)) => {
+            eprintln!("crabpot: {e}");
+            return 1;
+        }
+        None => {}
+    }
     match prepare(args) {
         Ok((_sandbox, command)) => execute(command),
+        Err(e) => {
+            eprintln!("crabpot: {e}");
+            1
+        }
+    }
+}
+
+/// Sets the Windows sandbox up or takes it down, and returns the status the
+/// wrapper exits with.
+fn run_subcommand(subcommand: Subcommand) -> i32 {
+    let mut machine = Machine;
+    let done = match subcommand {
+        Subcommand::WindowsInstall(options) => install::install(&mut machine, &options),
+        Subcommand::WindowsUninstall(options) => install::uninstall(&mut machine, &options),
+    };
+    match done {
+        Ok(()) => 0,
         Err(e) => {
             eprintln!("crabpot: {e}");
             1
@@ -361,6 +392,16 @@ mod tests {
         assert_eq!(run_status(args(&["--", "sh", "-c", "exit 4"])), 4);
         assert_eq!(run_status(args(&["-c", "exit 5"])), 5);
         assert_eq!(run_status(args(&["-d"])), 1, "no command is refused");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_windows_subcommands_are_refused_off_windows() {
+        let args = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+
+        assert_eq!(run_status(args(&["windows-install"])), 1);
+        assert_eq!(run_status(args(&["windows-uninstall"])), 1);
+        assert_eq!(run_status(args(&["windows-install", "--nope"])), 1);
     }
 
     fn route_of(args: &[&str]) -> Option<Route> {

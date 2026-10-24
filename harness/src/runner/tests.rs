@@ -1,7 +1,10 @@
+#[cfg(unix)]
 use super::wrapper::{exit_code, refusal};
 use super::*;
 use std::cell::Cell;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::process::Command;
 
 use serde_json::json;
@@ -98,7 +101,7 @@ impl Runner for Never {
 /// A one-probe case that names the platform this test does not run on.
 fn elsewhere_case() -> String {
     let elsewhere = match Platform::current() {
-        Platform::MacOs => "linux",
+        Platform::MacOs | Platform::Windows => "linux",
         Platform::Linux => "macos",
     };
     format!(
@@ -161,6 +164,7 @@ fn one_runner_alone_must_refuse_a_refused_case() {
 /// serve: a listener whose path is gone has no connect that ends the accept
 /// its serve thread waits in, and the case never ends.
 #[test]
+#[cfg(unix)]
 fn a_case_stops_its_served_socket_before_it_removes_its_root() {
     let text = r#"{"files": {}, "settings": {}, "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "200 OK"}, "probes": [{"kind": "bind"}]}"#;
     let (tx, rx) = std::sync::mpsc::channel();
@@ -179,6 +183,7 @@ fn a_case_stops_its_served_socket_before_it_removes_its_root() {
 /// `Prepared`, and its `Drop` stops the served socket before the root takes the
 /// socket's path with it.
 #[test]
+#[cfg(unix)]
 fn a_case_ends_when_a_runner_panics_under_it() {
     struct Panicking(&'static str);
 
@@ -221,8 +226,10 @@ fn a_case_ends_when_a_runner_panics_under_it() {
 /// Runs a probe by dialing the socket at a `connect-unix` probe's path,
 /// resolving a relative one against the case root as a wrapper's working
 /// directory does.
+#[cfg(unix)]
 struct Dialer;
 
+#[cfg(unix)]
 impl Runner for Dialer {
     fn name(&self) -> &'static str {
         "dialer"
@@ -245,6 +252,7 @@ impl Runner for Dialer {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_connect_unix_probe_finds_a_socket_served_for_it() {
     let root = std::env::temp_dir().join(format!("crabpot-serve-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -272,6 +280,7 @@ fn a_connect_unix_probe_finds_a_socket_served_for_it() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_case_folder_leaves_room_for_a_socket_under_it() {
     let root = Root::new("unix_socket_listed_folder").unwrap();
     let socket = Path::new(&root.0).join("socks/live.sock");
@@ -361,6 +370,7 @@ fn each_runner_gets_a_restored_fixture_for_each_probe() {
     .unwrap();
 }
 
+#[cfg(unix)]
 fn sh(script: &str) -> Command {
     let mut command = Command::new("sh");
     command.args(["-c", script]);
@@ -368,6 +378,7 @@ fn sh(script: &str) -> Command {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_wrapper_that_fails_before_the_probe_runs_is_not_a_refusal() {
     let outcome = exit_code(sh("echo 'crabpot: bad settings' >&2; exit 1"), "crabpot");
     assert!(matches!(
@@ -380,12 +391,14 @@ fn a_wrapper_that_fails_before_the_probe_runs_is_not_a_refusal() {
 }
 
 #[test]
+#[cfg(unix)]
 fn the_code_a_probe_reports_is_the_wrappers_status() {
     let outcome = exit_code(sh("echo 'probe exited 1'; exit 1"), "upstream");
     assert_eq!(outcome.unwrap(), probe::REFUSED);
 }
 
 #[test]
+#[cfg(unix)]
 fn a_status_the_probe_did_not_report_is_not_a_probe_outcome() {
     let outcome = exit_code(sh("echo 'probe exited 0'; exit 71"), "upstream");
     assert!(matches!(
@@ -398,17 +411,20 @@ fn a_status_the_probe_did_not_report_is_not_a_probe_outcome() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_wrapper_that_exits_1_without_its_probe_refuses() {
     assert!(refusal(sh("echo 'crabpot: bad settings' >&2; exit 1"), "crabpot").unwrap());
 }
 
 #[test]
+#[cfg(unix)]
 fn a_wrapper_whose_probe_ran_did_not_refuse() {
     assert!(!refusal(sh("echo 'probe exited 0'; exit 0"), "upstream").unwrap());
     assert!(!refusal(sh("echo 'probe exited 1'; exit 1"), "upstream").unwrap());
 }
 
 #[test]
+#[cfg(unix)]
 fn a_wrapper_that_fails_in_another_way_is_not_a_refusal() {
     assert!(matches!(
         refusal(sh("exit 71"), "upstream"),
@@ -502,4 +518,22 @@ fn a_marker_left_behind_fails_the_case_even_when_both_refuse() {
             ..
         })
     ));
+}
+
+/// Upstream wraps an argument with a backslash in single quotes, which `cmd`
+/// does not read as quotes, so a Windows root is spelled with forward slashes
+/// and without the `\\?\` prefix `canonicalize` gives it.
+#[test]
+fn a_windows_path_is_spelled_with_forward_slashes_for_upstream() {
+    for (path, spelled) in [
+        (
+            r"\\?\C:\Users\runner\Temp\c1-case",
+            "C:/Users/runner/Temp/c1-case",
+        ),
+        (r"C:\Users\runner\Temp", "C:/Users/runner/Temp"),
+        (r"\\?\UNC\host\share\dir", r"\\?\UNC\host\share\dir"),
+        ("/tmp/c1-case", "/tmp/c1-case"),
+    ] {
+        assert_eq!(spell_for_upstream(path), spelled, "{path}");
+    }
 }

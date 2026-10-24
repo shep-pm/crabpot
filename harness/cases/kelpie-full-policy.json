@@ -32,6 +32,7 @@
     "enableWeakerNetworkIsolation": true
   },
   "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "200 Connection Established"},
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "read", "path": "$ROOT/.shep/worktree/seed"},
     {"kind": "read", "path": "$ROOT/.shep/state"},

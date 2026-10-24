@@ -18,12 +18,16 @@ mod socks;
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+#[cfg(unix)]
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use crate::signal;
 
 /// Why a probe could not tell whether the sandbox allowed its action.
@@ -106,10 +110,14 @@ fn attempt(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>)
         ["connect", host, port] => connect(host, port, http_proxy),
         ["connect", host, port, "--via", "socks5"] => connect_socks(host, port, socks_proxy),
         ["bind"] => bind(),
+        #[cfg(unix)]
         ["bind-unix", path] => bind_unix(path),
+        #[cfg(unix)]
         ["connect-unix", path] => connect_unix(path),
         ["loopback"] => loopback(),
+        #[cfg(unix)]
         ["signal-group"] => signal_group(),
+        #[cfg(unix)]
         ["ps"] => ps(),
         _ => Err(Error::Usage),
     }
@@ -379,19 +387,23 @@ fn accept(listener: &TcpListener) -> Outcome {
 /// such a path before the kernel is asked, and the probe answers it the way a
 /// refusal reads: the command cannot use that socket path. Upstream keeps the
 /// limit where it hits it, and so does crabpot (ADR-0003).
+#[cfg(unix)]
 const SOCKET_PATH_LIMIT: usize = if cfg!(target_os = "macos") { 104 } else { 108 };
 
 /// Whether `path` is too long for a Unix socket to be named by.
+#[cfg(unix)]
 fn socket_path_too_long(path: &str) -> bool {
     path.len() >= SOCKET_PATH_LIMIT
 }
 
 /// A socket the sandbox will not let the command use answers `EPERM`, which is
 /// what a refused `bind` or `connect` on `AF_UNIX` gives back.
+#[cfg(unix)]
 const UNIX_BIND_REFUSED: &[std::io::ErrorKind] = &[std::io::ErrorKind::PermissionDenied];
 
 /// A dial of a socket file nobody is listening on is answered, and an answer
 /// is not a refusal.
+#[cfg(unix)]
 const UNIX_CONNECT_REFUSED: &[std::io::ErrorKind] = &[
     std::io::ErrorKind::PermissionDenied,
     std::io::ErrorKind::ConnectionRefused,
@@ -399,6 +411,7 @@ const UNIX_CONNECT_REFUSED: &[std::io::ErrorKind] = &[
 
 /// Binds a Unix socket at `path`, which is how a command takes a path the
 /// profile lists for it.
+#[cfg(unix)]
 fn bind_unix(path: &str) -> Outcome {
     if socket_path_too_long(path) {
         return Ok(false);
@@ -408,6 +421,7 @@ fn bind_unix(path: &str) -> Outcome {
 
 /// Dials the Unix socket at `path`, which is how a command reaches a socket
 /// the profile lists for it.
+#[cfg(unix)]
 fn connect_unix(path: &str) -> Outcome {
     if socket_path_too_long(path) {
         return Ok(false);
@@ -416,19 +430,23 @@ fn connect_unix(path: &str) -> Outcome {
 }
 
 /// The program the probe starts as the member of the group it means to signal.
+#[cfg(unix)]
 const SLEEP: &str = "/bin/sleep";
 
 /// The program that names a process and how it runs, which a host asks when it
 /// decides whether a session it attached to still holds.
+#[cfg(unix)]
 const PS: &str = "/bin/ps";
 
 /// How long the probe's child lives on its own, in seconds. A sandbox that
 /// refuses both the group signal and the signal to the child alone still leaves
 /// nothing behind once this runs out.
+#[cfg(unix)]
 const CHILD_LIFE: &str = "5";
 
 /// Starts `sleep` as the leader of a process group of its own, which is how a
 /// host leads a group it means to signal: the child's pid is the group's.
+#[cfg(unix)]
 fn start_group() -> Result<Child, Error> {
     Command::new(SLEEP)
         .arg(CHILD_LIFE)
@@ -444,6 +462,7 @@ fn start_group() -> Result<Child, Error> {
 /// Allowed when the group died by it, refused when the sandbox would not let a
 /// group signal through, which is what a host meets when it ends a call it
 /// started inside a worker.
+#[cfg(unix)]
 fn signal_group() -> Outcome {
     let mut child = start_group()?;
     let group = child.id();
@@ -470,6 +489,7 @@ fn signal_group() -> Outcome {
 /// runs and names nothing: macOS answers `EPERM` to a sandboxed command that
 /// tries to run it, which is the sandbox refusing the action and not the probe
 /// failing to run.
+#[cfg(unix)]
 fn ps() -> Outcome {
     let mut child = start_group()?;
     let pid = child.id();
@@ -494,7 +514,9 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::{BufRead, BufReader, Write};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
 
@@ -513,6 +535,7 @@ mod tests {
             &self.0
         }
 
+        #[cfg(unix)]
         fn set_mode(&self, path: &Path, mode: u32) {
             fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
         }
@@ -520,6 +543,7 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
+            #[cfg(unix)]
             let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
             let _ = fs::remove_dir_all(&self.0);
         }
@@ -568,6 +592,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_of_an_unreadable_file_exits_1() {
         let fixture = Fixture::new("read-denied");
         let file = fixture.path().join("file");
@@ -589,6 +614,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn write_into_a_read_only_folder_exits_1() {
         let fixture = Fixture::new("write-denied");
         fixture.set_mode(fixture.path(), 0o555);
@@ -609,6 +635,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn rename_in_a_read_only_folder_exits_1() {
         let fixture = Fixture::new("rename-denied");
         let from = fixture.path().join("from");
@@ -641,6 +668,7 @@ mod tests {
     /// and asks `ps` about a process. Under a sandbox either can be refused,
     /// which is what the `kelpie-group-signal` and `kelpie-ps` cases pin.
     #[test]
+    #[cfg(unix)]
     fn signal_group_and_ps_exit_0_unsandboxed() {
         assert_eq!(probe(&["signal-group"]), 0);
         assert_eq!(probe(&["ps"]), 0);
@@ -652,6 +680,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn bind_unix_and_connect_unix_exit_0_on_a_free_path() {
         let fixture = Fixture::new("unix-ok");
         let bound = fixture.path().join("bound.sock");
@@ -664,6 +693,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn connect_unix_to_a_socket_nobody_listens_on_exits_1() {
         // The file is left behind by a listener that has gone, so the dial
         // reaches it and is answered.
@@ -674,6 +704,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_unix_probe_that_reaches_no_socket_exits_2() {
         let fixture = Fixture::new("unix-absent");
 
@@ -688,6 +719,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_unix_probe_without_a_path_exits_2() {
         assert_eq!(probe(&["bind-unix"]), 2);
         assert_eq!(probe(&["connect-unix"]), 2);
@@ -698,6 +730,7 @@ mod tests {
     /// against is under the same temp folder, so the room here is the room a
     /// case has.
     #[test]
+    #[cfg(unix)]
     fn a_socket_path_at_the_limit_is_refused_and_one_byte_under_is_not() {
         let fixture = Fixture::new("socket-limit");
         let dir = fixture.path().to_str().unwrap();

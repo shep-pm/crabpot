@@ -12,6 +12,7 @@
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
   },
   "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "200 Connection Established"},
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "connect", "host": "mitm.example.com", "port": 443}
   ]

@@ -19,6 +19,7 @@
       "denyWrite": []
     }
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "bind-unix", "path": "$ROOT/s/s.sock"},
     {"kind": "bind-unix", "path": "$ROOT/scratch/worker-scratch-folder-that-is-long-on-purpose-0123456789/crabpot-kelpie-lease.sock"}

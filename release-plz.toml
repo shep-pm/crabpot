@@ -39,8 +39,9 @@ name = "crabpot-harness"
 release = false
 publish = false
 
-# The facade depends on the unpublished Linux crate on Linux, so it cannot be
-# published either. The Linux release slice (#124) removes this entry.
+# The facade depends on the unpublished Linux crate on Linux and the
+# unpublished Windows crate on Windows, so it cannot be published either. The
+# Linux release slice (#124) and #165 remove this entry.
 [[package]]
 name = "crabpot"
 release = false

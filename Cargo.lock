@@ -213,6 +213,7 @@ version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
+ "crabpot-core",
  "rusqlite",
  "serde",
  "serde_json",

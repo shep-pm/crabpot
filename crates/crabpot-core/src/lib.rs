@@ -14,6 +14,7 @@ mod resolved_path;
 mod test_tree;
 #[cfg(unix)]
 mod unix_socket;
+mod write_paths;
 // The crate's Windows FFI, which is the one module allowed unsafe code there.
 #[cfg(windows)]
 #[allow(unsafe_code)]

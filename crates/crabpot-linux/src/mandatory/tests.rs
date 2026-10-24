@@ -7,10 +7,7 @@ use std::{
 
 use super::*;
 
-#[path = "../../tests/support/mod.rs"]
-mod support;
-
-use support::Tree;
+use crate::support::Tree;
 
 /// Deep enough for every name of the fixture tree except the chain's.
 const DEEP: usize = 6;

@@ -52,6 +52,20 @@ impl MountPoints {
         self.paths.push(path);
     }
 
+    /// Holds `path` when another plan of this process holds it: bwrap has made
+    /// it by now, so it is found there, but it is still that plan's mount point
+    /// and goes with the last of them.
+    pub(super) fn hold_if_held(&mut self, path: &str) {
+        let path = PathBuf::from(path);
+        let held = HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&path);
+        if held {
+            self.hold(path);
+        }
+    }
+
     /// The empty directory a directory mount point is bound from, made on first
     /// use. It is private to this plan, and the plan pins it read-only inside
     /// the sandbox.

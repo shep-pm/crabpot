@@ -635,6 +635,25 @@ fn a_mount_point_outlives_the_first_of_two_sandboxes_to_drop() {
     assert!(!made.exists());
 }
 
+/// A plan built after bwrap made the first one's mount point finds the path
+/// there, and holds it all the same.
+#[test]
+fn a_mount_point_that_exists_is_held_by_the_next_sandbox() {
+    let tree = Tree::empty("fs-deny-write-existing");
+    tree.dir("work");
+    let (work, made) = (at(&tree, "work"), tree.root().join("work/made"));
+    let config = denying_writes(&[&work], &[&made.to_string_lossy()]);
+    let first = Plan::build(&config).expect("a plan");
+    std::fs::write(&made, "").expect("a mount point");
+    let second = Plan::build(&config).expect("a plan");
+
+    drop(first);
+    assert!(made.exists());
+    assert_eq!(second.mount_points(), std::slice::from_ref(&made));
+    drop(second);
+    assert!(!made.exists());
+}
+
 /// A deny bind over a directory shows what a read tmpfs hid beneath it, so the
 /// tmpfs is made again after it.
 #[test]

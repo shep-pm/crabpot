@@ -136,6 +136,7 @@ impl Plan<'_> {
                 self.mask_link(link);
                 continue;
             }
+            self.mount_points.hold_if_held(&path);
             if self.decided_over(&path).is_some() || !Path::new(&path).exists() {
                 self.placeholder(&path);
             } else if self.meets_write_root(&path) && !self.under_read_only_dir(&path) {

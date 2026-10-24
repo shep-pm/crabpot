@@ -20,8 +20,9 @@ use tokio::signal::unix::{SignalKind, signal};
 #[cfg(unix)]
 use tokio::task::JoinHandle;
 
-use crate::args::{self, Helper, HelperMode, Invocation};
+use crate::args::{self, Helper, HelperMode, Invocation, SRT_WIN_FLAG, Subcommand};
 use crate::sandbox::Sandbox;
+use crate::windows::install::{self, Machine};
 
 #[cfg(unix)]
 const SIGINT: i32 = 2;
@@ -42,9 +43,10 @@ const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 ///
 /// A first argument of `--crabpot-helper` is the sandbox calling the binary
 /// back, and is not for a person to type: on Linux, bwrap runs the host's
-/// binary inside the sandbox with it, to run the command (ADR-0014). A host
-/// that does not call this first thing in `main` runs its own `main` there in
-/// place of the command.
+/// binary inside the sandbox with it, to run the command (ADR-0014), and a
+/// sandboxed ssh runs it the same way for its `ProxyCommand`. A host that does
+/// not call this first thing in `main` runs its own `main` there in place of
+/// the command.
 pub fn run_from_args() {
     if let Some(helper) = args::parse_helper(env::args_os().skip(1)) {
         run_helper(helper);
@@ -68,7 +70,7 @@ enum Route {
 
 fn route(first: Option<&OsStr>) -> Option<Route> {
     match first {
-        Some(arg) if arg == "--srt-win" => Some(Route::SrtWin),
+        Some(arg) if arg == SRT_WIN_FLAG => Some(Route::SrtWin),
         Some(arg) if arg == "--crabpot" => Some(Route::Crabpot),
         _ => None,
     }
@@ -92,7 +94,8 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
             let (relay, command) = args::split_relay(&helper.args);
             helper_init(relay, command)
         }
-        HelperMode::Relay | HelperMode::Connect => fail(format!(
+        HelperMode::Connect => helper_connect(&helper.args),
+        HelperMode::Relay => fail(format!(
             "helper mode {} is not supported yet",
             helper.mode.word()
         )),
@@ -112,6 +115,22 @@ fn helper_init(_relay: Option<&Path>, _command: &[OsString]) -> ! {
     fail("the helper runs only on Linux")
 }
 
+/// Tunnels this process's stdin and stdout to the host and port `args` name,
+/// through the sandbox's relay, which is what a sandboxed ssh's `ProxyCommand`
+/// asks for (ADR-0014).
+#[cfg(target_os = "linux")]
+fn helper_connect(args: &[OsString]) -> ! {
+    match crabpot_linux::helper::connect(args) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => fail(e),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn helper_connect(_args: &[OsString]) -> ! {
+    fail("the helper runs only on Linux")
+}
+
 fn fail(reason: impl core::fmt::Display) -> ! {
     eprintln!("crabpot: {reason}");
     std::process::exit(1)
@@ -120,6 +139,10 @@ fn fail(reason: impl core::fmt::Display) -> ! {
 /// Runs the command `args` name inside a sandbox, then exits the process with
 /// its status. The arguments are the `crabpot` command line without the
 /// program's name: `-s/--settings`, `-c`, `-d` and `--`.
+///
+/// A first argument of `windows-install` or `windows-uninstall` sets the
+/// Windows sandbox up or takes it down instead, and exits 0 when that is done
+/// and 1 when it is refused or fails.
 ///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
 /// that is refused prints why to stderr and exits 1. A SIGINT, SIGTERM or
@@ -134,8 +157,34 @@ pub fn run_args(args: impl IntoIterator<Item = OsString>) -> ! {
 }
 
 fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
+    let args: Vec<OsString> = args.into_iter().collect();
+    match args::parse_subcommand(args.iter().cloned()) {
+        Some(Ok(subcommand)) => return run_subcommand(subcommand),
+        Some(Err(e)) => {
+            eprintln!("crabpot: {e}");
+            return 1;
+        }
+        None => {}
+    }
     match prepare(args) {
         Ok((_sandbox, command)) => execute(command),
+        Err(e) => {
+            eprintln!("crabpot: {e}");
+            1
+        }
+    }
+}
+
+/// Sets the Windows sandbox up or takes it down, and returns the status the
+/// wrapper exits with.
+fn run_subcommand(subcommand: Subcommand) -> i32 {
+    let mut machine = Machine;
+    let done = match subcommand {
+        Subcommand::WindowsInstall(options) => install::install(&mut machine, &options),
+        Subcommand::WindowsUninstall(options) => install::uninstall(&mut machine, &options),
+    };
+    match done {
+        Ok(()) => 0,
         Err(e) => {
             eprintln!("crabpot: {e}");
             1
@@ -364,6 +413,16 @@ mod tests {
         assert_eq!(run_status(args(&["--", "sh", "-c", "exit 4"])), 4);
         assert_eq!(run_status(args(&["-c", "exit 5"])), 5);
         assert_eq!(run_status(args(&["-d"])), 1, "no command is refused");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_windows_subcommands_are_refused_off_windows() {
+        let args = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+
+        assert_eq!(run_status(args(&["windows-install"])), 1);
+        assert_eq!(run_status(args(&["windows-uninstall"])), 1);
+        assert_eq!(run_status(args(&["windows-install", "--nope"])), 1);
     }
 
     fn route_of(args: &[&str]) -> Option<Route> {

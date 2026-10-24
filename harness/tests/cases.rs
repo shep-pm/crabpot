@@ -14,9 +14,9 @@
 //! `bubblewrap`, `socat` and `ripgrep`, and a kernel that lets bwrap take its
 //! namespaces: `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 //!
-//! Windows runs crabpot only on the cases `WINDOWS_READY` names, which is none
-//! yet, and every other case under upstream's `srt-win` path alone. That needs
-//! `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+//! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
+//! default settings and the settings crabpot refuses, and every other case under
+//! upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
 //! not the loopback mode the filters were installed with, so a case that opens
@@ -61,7 +61,7 @@ const LINUX_READY: &[&str] = &[
     "move_blocking_parent",
     "move_blocking_read",
     "move_blocking_read_glob",
-    "allowed_domains_example_com",
+    "allowed_domain_example_com",
     "socks_allowed_example_com",
     "weaker_isolation_true",
     "weaker_isolation_false",
@@ -80,11 +80,41 @@ const LINUX_READY: &[&str] = &[
     "kernel_vsock_socket_is_refused",
     "kernel_io_uring_setup_is_refused",
     "kernel_nested_user_namespace_is_refused",
+    "other_domain_example_org_is_refused",
+    "allowed_domain_untrimmed_matches_nothing",
+    "socks_other_domain_refused",
+    "mux_http_allowed",
+    "mux_socks_allowed",
+    "mux_other_domain_refused",
+    "denied_beats_allowed",
+    "denied_port_only",
+    "denied_star",
+    "strict_allowlist_false",
+    "mitm_matching_domain_reaches_the_socket",
+    "mitm_other_domain_goes_direct",
+    "mitm_bad_socket_path_is_502",
+    "resolved_address_loopback_name",
+    "resolved_address_listed_cidr",
+    "local_binding_other_host_still_refused",
 ];
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143
 /// appends the cases it makes pass.
-const WINDOWS_READY: &[&str] = &[];
+const WINDOWS_READY: &[&str] = &[
+    "default_settings",
+    "refused_invalid_json",
+    "refused_empty_file",
+    "refused_missing_settings",
+    "refused_deny_read_empty",
+    "refused_deny_read_unmarked_object",
+    "refused_deny_read_trailing_separator_glob",
+    "refused_allowed_domains_bad_entry",
+    "refused_deny_write_trailing_separator_glob",
+    "refused_allow_mach_lookup_mid_wildcard",
+    "refused_denied_domains_bad_entry",
+    "refused_mitm_empty_domains",
+    "refused_resolved_address_bad_cidr",
+];
 
 /// Whether crabpot runs `name` beside upstream on this platform.
 fn runs_crabpot(name: &str) -> bool {

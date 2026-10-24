@@ -27,6 +27,7 @@ use crabpot_macos::env::Facts;
 
 #[cfg(target_os = "linux")]
 use crate::args::{HELPER_FLAG, HelperMode, RELAY_FLAG};
+use crate::windows::ProfileState;
 
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
 /// with [`Sandbox::command`], and drop it when they have all ended, since the
@@ -50,6 +51,10 @@ pub struct Sandbox {
     /// long as the command may run, which is until the sandbox drops.
     #[cfg(target_os = "linux")]
     args_files: Mutex<Vec<OwnedFd>>,
+    /// The grants and the proxy of the Windows session, which its commands run
+    /// through srt-win under.
+    #[cfg(windows)]
+    session: crate::windows::Session,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     facts: Facts,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -61,8 +66,8 @@ impl Sandbox {
     ///
     /// # Errors
     ///
-    /// [`StartError::UnsupportedPlatform`] off macOS and Linux, where nothing
-    /// confines a command yet, [`StartError::UnresolvedPath`] when a path
+    /// [`StartError::UnsupportedPlatform`] off macOS, Linux and Windows, where
+    /// nothing confines a command yet, [`StartError::UnresolvedPath`] when a path
     /// in `config` cannot be made absolute, and [`StartError::Proxy`] when the
     /// proxy that carries its network cannot start. On Linux the bwrap checks
     /// run first: [`StartError::Missing`] when there is no executable `bwrap`
@@ -70,7 +75,14 @@ impl Sandbox {
     /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
     /// binary is unknown. A `bwrap` older than 0.5.0 is a warning on stderr.
     /// [`StartError::UnspellableDeny`] names a mandatory write deny the plan
-    /// cannot spell, which is a Linux answer too.
+    /// cannot spell, which is a Linux answer too. On Windows the status checks
+    /// of [`windows_preflight`](crate::windows_preflight) run first, then
+    /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
+    /// none nor current, [`StartError::GrantFailed`] when the session's grants
+    /// cannot be made, and [`StartError::LoopbackMismatch`],
+    /// [`StartError::FenceInactive`] or [`StartError::FenceUnverified`] when the
+    /// firewall fence is not shown to be active. The grants are held until the
+    /// sandbox drops, which revokes them.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "linux")]
         let bwrap = crabpot_linux::deps::check_here()?;
@@ -129,7 +141,11 @@ impl Sandbox {
                 })
             }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(windows)]
+        {
+            crate::windows::start_session(config).map(|session| Self { session })
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
             let _ = config;
             Err(StartError::UnsupportedPlatform)
@@ -149,17 +165,26 @@ impl Sandbox {
     /// streams, which a [`Command`] cannot be asked for, nor an
     /// [`env_clear`](Command::env_clear).
     ///
+    /// On Windows, this binary runs again as `srt-win exec` in front of the
+    /// command, which it launches as the sandbox user in two hops, with
+    /// `cmd.exe /d /s /c` running the words of `command` as one line, a word
+    /// `cmd.exe` would act on in quotes. A host
+    /// must call [`run_from_args`](crate::run_from_args) first thing in `main`
+    /// for that too.
+    ///
     /// On macOS it gains the sandbox's own environment: a name the sandbox owns
     /// is set over the caller's, a name the caller owns is left to it, and the
     /// variables that point its clients at the proxy are set over them. On
-    /// Linux it gains the sandbox's own `SANDBOX_RUNTIME` and `TMPDIR`, set
-    /// over the caller's.
+    /// Linux it gains the sandbox's own `SANDBOX_RUNTIME` and `TMPDIR`, and the
+    /// variables that point its clients at the relay and its ssh at the
+    /// `connect` mode, set over the caller's.
     ///
     /// # Errors
     ///
     /// [`WrapError::Missing`] when the machine has no `sandbox-exec`,
-    /// [`WrapError::Bwrap`] when the command cannot be put in a bwrap line, and
-    /// [`WrapError::UnsupportedPlatform`] off macOS and Linux.
+    /// [`WrapError::Bwrap`] when the command cannot be put in a bwrap line,
+    /// [`WrapError::Cmd`] when a word of it cannot be put on a `cmd.exe` line,
+    /// and [`WrapError::UnsupportedPlatform`] off macOS, Linux and Windows.
     pub fn command(&self, command: &Command) -> Result<Command, WrapError> {
         #[cfg(target_os = "macos")]
         {
@@ -217,15 +242,17 @@ impl Sandbox {
             // On the command's environment, not in bwrap's words: its argv is
             // readable from `/proc` by every process of the user, and the token
             // is the proxy's credential.
+            let username = username_for(&command_line(command));
             let host = HostPorts {
                 http: self.proxy.port(),
                 socks: self.proxy.socks_port(),
             };
-            for (name, value) in crabpot_linux::net::env::vars(
-                host,
-                &username_for(&command_line(command)),
-                self.proxy.token(),
-            ) {
+            let ssh = crabpot_linux::net::ssh::vars(&self.helper, &username, self.proxy.token());
+            for (name, value) in crabpot_linux::net::env::vars(host, &username, self.proxy.token())
+                .into_iter()
+                .map(|(name, value)| (name, OsString::from(value)))
+                .chain(ssh)
+            {
                 wrapped.env(name, value);
             }
             if let Some(args_file) = rendered.args_file {
@@ -236,7 +263,11 @@ impl Sandbox {
             }
             Ok(wrapped)
         }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(windows)]
+        {
+            self.session.command(command)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
             let _ = command;
             Err(WrapError::UnsupportedPlatform)
@@ -246,8 +277,7 @@ impl Sandbox {
 
 /// The words of `command` joined by spaces, which the proxy's username is made
 /// from.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn command_line(command: &Command) -> String {
+pub(crate) fn command_line(command: &Command) -> String {
     core::iter::once(command.get_program())
         .chain(command.get_args())
         .map(|word| word.to_string_lossy())
@@ -277,7 +307,7 @@ fn carry_over(command: &Command, wrapped: &mut Command) {
 // `Clone` and not `Copy`.
 #[non_exhaustive]
 pub enum StartError {
-    /// The platform has no sandbox yet: only macOS and Linux have one.
+    /// The platform has no sandbox yet: only macOS, Linux and Windows have one.
     UnsupportedPlatform,
     /// A path in the settings starts with `~` and `HOME` is not set, or is
     /// relative and there is no working directory. A rule written for it would
@@ -321,6 +351,37 @@ pub enum StartError {
         /// Its exit code, when it ran to one.
         code: Option<i32>,
     },
+    /// Windows: the recorded read grant on the user profile cannot be used, since
+    /// it is `state` and not none or current. Bringing it up to date, or
+    /// forgetting it, is the install's to do, and a session does neither.
+    ProfileGrantOutdated {
+        /// What `profile status` reports.
+        state: ProfileState,
+    },
+    /// Windows: the `acl grant` call that applies the session's grants and denies
+    /// exited with `code` (`None` when it did not run, or a signal ended it).
+    GrantFailed {
+        /// Its exit code, when it ran to one.
+        code: Option<i32>,
+    },
+    /// Windows: the installed firewall filters leave loopback open or closed
+    /// the other way from `network.allowLocalBinding`, and the install has to
+    /// be run again with this session's setting.
+    LoopbackMismatch,
+    /// Windows: a direct outbound connect the fence must refuse was not
+    /// refused, so the fence is not active and the install has to be run
+    /// again.
+    FenceInactive {
+        /// The attempts that got through, as `wfp verify` names them.
+        detail: String,
+    },
+    /// Windows: `wfp verify` ran, but its answer does not show the fence is
+    /// active: it failed, printed what cannot be read, or did not report the
+    /// plain attempt as blocked.
+    FenceUnverified {
+        /// What `wfp verify` exited with and printed.
+        detail: String,
+    },
     /// A write deny the sandbox must apply in its own working directory is a
     /// path its words cannot name, so there is no mount for it and no command
     /// runs. Linux only, where the mandatory denies come from a walk.
@@ -359,7 +420,9 @@ impl From<crabpot_linux::deps::DepsError> for StartError {
 impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedPlatform => write!(f, "only macOS and Linux have a sandbox yet"),
+            Self::UnsupportedPlatform => {
+                write!(f, "only macOS, Linux and Windows have a sandbox yet")
+            }
             Self::UnresolvedPath(error) => write!(f, "{error}"),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
             Self::Missing { tool } => write!(f, "{tool} is missing or not executable"),
@@ -401,6 +464,25 @@ impl fmt::Display for StartError {
                 f,
                 "`srt-win {command}` did not run, or printed what cannot be read"
             ),
+            Self::ProfileGrantOutdated { state } => write!(
+                f,
+                "the recorded read grant on the user profile cannot be used ({state:?}); bring it up to date with the install, or forget it"
+            ),
+            Self::GrantFailed { code: Some(code) } => {
+                write!(f, "`srt-win acl grant` exited {code}")
+            }
+            Self::GrantFailed { code: None } => write!(f, "`srt-win acl grant` did not run"),
+            Self::LoopbackMismatch => write!(
+                f,
+                "the installed firewall filters do not match network.allowLocalBinding; run the install again with this session's setting"
+            ),
+            Self::FenceInactive { detail } => write!(
+                f,
+                "the firewall fence is not active ({detail}); run the install again"
+            ),
+            Self::FenceUnverified { detail } => {
+                write!(f, "the firewall fence could not be verified: {detail}")
+            }
             Self::UnspellableDeny { path } => write!(
                 f,
                 "a mandatory write deny is a path the sandbox cannot name: {}",
@@ -424,7 +506,10 @@ pub enum WrapError {
     /// bytes, a word holds a NUL byte, or the file the flags move to when the
     /// line is long could not be opened.
     Bwrap(String),
-    /// The platform has no sandbox yet: only macOS and Linux have one.
+    /// Windows: a word of the command has a double quote, a percent sign or a
+    /// line break, which `cmd.exe` would act on instead of passing on.
+    Cmd(String),
+    /// The platform has no sandbox yet: only macOS, Linux and Windows have one.
     UnsupportedPlatform,
 }
 
@@ -433,7 +518,10 @@ impl fmt::Display for WrapError {
         match self {
             Self::Missing => write!(f, "/usr/bin/sandbox-exec is missing"),
             Self::Bwrap(reason) => write!(f, "cannot build the bwrap command: {reason}"),
-            Self::UnsupportedPlatform => write!(f, "only macOS and Linux have a sandbox yet"),
+            Self::Cmd(reason) => write!(f, "cannot build the cmd.exe line: {reason}"),
+            Self::UnsupportedPlatform => {
+                write!(f, "only macOS, Linux and Windows have a sandbox yet")
+            }
         }
     }
 }
@@ -442,6 +530,7 @@ impl core::error::Error for WrapError {}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     use super::*;
 
     #[cfg(target_os = "macos")]
@@ -617,6 +706,28 @@ mod tests {
             env("CLAUDE_CODE_HOST_HTTP_PROXY_PORT"),
             sandbox.proxy.port().to_string()
         );
+
+        let helper = std::env::current_exe().unwrap();
+        let ssh = env("GIT_SSH_COMMAND");
+        assert!(
+            ssh.contains("--crabpot-helper connect 3128") && ssh.contains("SRT_SSH_PROXY_BINARY"),
+            "git's ssh is told to ask this binary for the tunnel: {ssh}"
+        );
+        assert_eq!(
+            env(crabpot_linux::net::ssh::BINARY_VARIABLE),
+            helper.to_string_lossy().into_owned(),
+            "the binary the command expands, on the environment and not in a word \
+             git's shell reads"
+        );
+        assert!(
+            !ssh.contains(token),
+            "the credential is not in a command line: {ssh}"
+        );
+        assert!(
+            !env("SRT_SSH_PROXY_CREDENTIAL").is_empty(),
+            "the credential rides in a variable of its own"
+        );
+
         assert!(
             wrapped
                 .get_args()
@@ -625,9 +736,9 @@ mod tests {
         );
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     #[test]
-    fn a_sandbox_does_not_start_on_windows() {
+    fn a_sandbox_does_not_start_on_another_platform() {
         assert_eq!(
             Sandbox::start(&Config::default()).unwrap_err(),
             StartError::UnsupportedPlatform

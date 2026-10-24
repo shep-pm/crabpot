@@ -12,9 +12,9 @@
 //! say so.
 //!
 //! Off Windows the copied library is empty, the way upstream's own crate is: it
-//! is `#![cfg(windows)]`. [`fs_access`] is crabpot's own and compiles on every
-//! host, so a macOS or Linux host builds it and its tests alone, and the copied
-//! source is compiled by the cross-target
+//! is `#![cfg(windows)]`. [`env`](mod@env) and [`fs_access`] are crabpot's own
+//! and compile on every host, so a macOS or Linux host builds them and their
+//! tests alone, and the copied source is compiled by the cross-target
 //! clippy and `check` gates with the C compiler and archiver stubbed
 //! (`.github/stubs/`), which is the only gate that reads the clap-derive CLI
 //! structs off a Windows host.
@@ -22,6 +22,7 @@
 //! The facade depends on this crate on Windows, and ADR-0005 keeps it
 //! unpublished: what crabpot ships is its own name, never upstream's.
 
+pub mod env;
 pub mod fs_access;
 
 #[cfg(windows)]

@@ -81,6 +81,63 @@ fn matching_probe_outcomes_pass_the_case() {
     outcome.unwrap();
 }
 
+/// A case whose one probe records upstream as exiting 1.
+fn difference_case() -> Case {
+    Case {
+        probes: vec![Probe::BackslashArgument {
+            value: r"C:\work".to_owned(),
+            upstream: 1,
+        }],
+        ..case()
+    }
+}
+
+fn compare_difference(upstream: u8, crabpot: u8) -> Result<(), Error> {
+    let answer = |code: u8| -> fn(&Probe) -> u8 {
+        match code {
+            0 => |_| 0,
+            1 => |_| 1,
+            _ => |_| 2,
+        }
+    };
+    compare(
+        &difference_case(),
+        Path::new("/r/settings.json"),
+        &|| Ok(()),
+        &StandIn("upstream", answer(upstream)),
+        &StandIn("crabpot", answer(crabpot)),
+    )
+}
+
+#[test]
+fn a_recorded_difference_passes_when_upstream_gives_its_code_and_crabpot_another() {
+    compare_difference(1, 0).unwrap();
+}
+
+#[test]
+fn a_recorded_difference_fails_when_crabpot_gives_upstreams_code() {
+    assert!(matches!(
+        compare_difference(1, 1),
+        Err(Error::NotDifferent {
+            upstream: 1,
+            crabpot: 1,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_recorded_difference_fails_when_upstream_gives_another_code() {
+    assert!(matches!(
+        compare_difference(0, 0),
+        Err(Error::Changed {
+            recorded: 1,
+            upstream: 0,
+            ..
+        })
+    ));
+}
+
 /// A runner that fails the moment it is asked for anything.
 struct Never(&'static str);
 
@@ -536,4 +593,31 @@ fn a_windows_path_is_spelled_with_forward_slashes_for_upstream() {
     ] {
         assert_eq!(spell_for_upstream(path), spelled, "{path}");
     }
+}
+
+#[test]
+fn a_runner_alone_must_give_every_probe_the_expected_code() {
+    let expect_with = |answer: fn(&Probe) -> u8| {
+        expect(
+            &case(),
+            Path::new("/r/settings.json"),
+            &|| Ok(()),
+            &StandIn("crabpot", answer),
+            probe::ALLOWED,
+        )
+    };
+
+    expect_with(|_| probe::ALLOWED).unwrap();
+    assert!(matches!(
+        expect_with(|probe| match probe {
+            Probe::Bind => probe::REFUSED,
+            _ => probe::ALLOWED,
+        }),
+        Err(Error::Unexpected {
+            runner: "crabpot",
+            probe: Probe::Bind,
+            expected: probe::ALLOWED,
+            got: probe::REFUSED,
+        })
+    ));
 }

@@ -25,5 +25,10 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 libc = { version = "0.2", default-features = false }
 nix = { version = "0.31", default-features = false, features = ["sched", "socket"] }
 
+# The AF_UNIX listener a served case answers on, which std has no form of on
+# Windows. Tokio already pulls the crate into the lock.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Networking_WinSock"] }
+
 [lints]
 workspace = true

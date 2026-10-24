@@ -18,7 +18,7 @@ use serde::Deserialize;
 use super::command::{self, Params};
 use super::plan::Plan;
 use super::srt::{Call, Output, Srt};
-use super::status::{ProfileState, WindowsStatus};
+use super::status::{LoopbackMode, ProfileState, WindowsStatus};
 use crate::{StartError, WrapError};
 
 /// Which sandbox users the fence has been verified for in this process, and in
@@ -209,7 +209,9 @@ pub(crate) fn start_with(
 ///
 /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither none
 /// nor current, [`StartError::StatusFailed`] for a status with no sandbox user
-/// SID, [`StartError::ProfileConflicts`] for a grant that meets the profile read
+/// SID, [`StartError::LoopbackMismatch`] for a session whose
+/// `network.allowLocalBinding` is not the loopback mode the install made,
+/// [`StartError::ProfileConflicts`] for a grant that meets the profile read
 /// grant's exclusions, [`StartError::GrantBlocked`], [`StartError::ProfileBusy`]
 /// or [`StartError::GrantFailed`] when the grant call fails, and the errors of
 /// [`wfp::interpret`](super::wfp::interpret) when the fence is not verified. A
@@ -230,8 +232,15 @@ fn prepare(
         command: "user status",
         code: None,
     })?;
-    let plan = Plan::build(config, &status.profile_exclusions)?;
+    // The loopback mode is the install's, not the session's: a session that
+    // asks for the other is refused here, before anything is granted. `srt-win
+    // exec` refuses it too, as exit 19, and so does `wfp verify` for an install
+    // whose filters have drifted from what `wfp status` reported.
     let allow_loopback = config.network.allow_local_binding == Some(true);
+    if allow_loopback != (status.loopback == LoopbackMode::Open) {
+        return Err(StartError::LoopbackMismatch);
+    }
+    let plan = Plan::build(config, &status.profile_exclusions)?;
     // The range the install's filters name, which the fence probe must stay
     // outside of, and the range the proxy binds: the configured one first, as
     // upstream binds its proxies, then the installed one.
@@ -402,6 +411,14 @@ mod tests {
         )
     }
 
+    /// A status whose install was made with `--allow-loopback`.
+    fn open_install() -> WindowsStatus {
+        WindowsStatus {
+            loopback: LoopbackMode::Open,
+            ..status()
+        }
+    }
+
     fn verifies(calls: &Calls) -> Vec<Call> {
         calls.starting(&["wfp", "verify"])
     }
@@ -427,12 +444,98 @@ mod tests {
             assert!(verifies(&again).is_empty(), "a second start verified again");
         }
         let (srt, open) = Fake::passing();
-        drop(start(srt, &verified, &status(), &open_loopback()).unwrap());
+        drop(start(srt, &verified, &open_install(), &open_loopback()).unwrap());
 
         assert_eq!(verifies(&calls).len(), 1);
         let second = verifies(&open);
         assert_eq!(second.len(), 1);
         assert!(second[0].args.contains(&"--allow-loopback".to_owned()));
+    }
+
+    #[test]
+    fn local_binding_needs_a_loopback_install() {
+        let (srt, calls) = Fake::passing();
+
+        let error = start(srt, &Verified::new(), &status(), &open_loopback()).unwrap_err();
+
+        assert_eq!(error, StartError::LoopbackMismatch);
+        assert!(
+            calls.all().is_empty(),
+            "nothing is granted: {:?}",
+            calls.all()
+        );
+    }
+
+    #[test]
+    fn a_loopback_install_refuses_a_closed_session() {
+        let (srt, calls) = Fake::passing();
+
+        let error = start(srt, &Verified::new(), &open_install(), &Config::default()).unwrap_err();
+
+        assert_eq!(error, StartError::LoopbackMismatch);
+        assert!(
+            calls.all().is_empty(),
+            "nothing is granted: {:?}",
+            calls.all()
+        );
+    }
+
+    #[test]
+    fn exit_19_maps_to_the_loopback_mismatch_error() {
+        let (srt, calls) = Fake::answering(|call| {
+            if call
+                .args
+                .starts_with(&["wfp".to_owned(), "verify".to_owned()])
+            {
+                exit(
+                    19,
+                    r#"{"egress_probe":"not-run","allow_loopback_mismatch":true}"#,
+                )
+            } else {
+                exit(0, "[]")
+            }
+        });
+        let verified = Verified::new();
+
+        let error = start(srt, &verified, &status(), &Config::default()).unwrap_err();
+
+        assert_eq!(error, StartError::LoopbackMismatch);
+        assert_eq!(
+            verbs(&calls),
+            ["acl grant", "wfp verify", "acl revoke", "acl restore"]
+        );
+        assert!(
+            !verified.holds("S-1-5-21-7", false),
+            "a failure is not remembered"
+        );
+    }
+
+    /// The mode a session hands `command`, and so the `--allow-loopback` flag
+    /// `srt-win exec` is launched under: the one the session asked for and the
+    /// install has, which is the one `wfp verify` was verified under.
+    #[test]
+    fn a_session_carries_the_agreed_loopback_mode() {
+        let (srt, open_calls) = Fake::passing();
+        let open = start(srt, &Verified::new(), &open_install(), &open_loopback()).unwrap();
+        let (srt, closed_calls) = Fake::passing();
+        let closed = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
+
+        assert!(open.allow_loopback, "an open install and an open session");
+        assert!(
+            !closed.allow_loopback,
+            "a closed install and a closed session"
+        );
+        assert!(
+            verifies(&open_calls)[0]
+                .args
+                .contains(&"--allow-loopback".to_owned())
+        );
+        assert!(
+            !verifies(&closed_calls)[0]
+                .args
+                .contains(&"--allow-loopback".to_owned()),
+            "a closed session's verify carries no flag"
+        );
     }
 
     #[test]
@@ -459,18 +562,25 @@ mod tests {
     }
 
     #[test]
-    fn the_proxy_range_is_the_installed_one_or_the_default() {
+    fn the_proxy_range_comes_from_the_installed_range() {
         let (srt, _) = Fake::passing();
-        let installed = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
+
+        let prepared = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
+
+        assert_eq!(prepared.range, PortRange::new(40000, 40063).unwrap());
+    }
+
+    #[test]
+    fn the_proxy_range_is_the_default_when_the_install_reports_none() {
         let (srt, _) = Fake::passing();
         let unread = WindowsStatus {
             proxy_ports: None,
             ..status()
         };
-        let default = start(srt, &Verified::new(), &unread, &Config::default()).unwrap();
 
-        assert_eq!(installed.range, PortRange::new(40000, 40063).unwrap());
-        assert_eq!(default.range, PortRange::DEFAULT);
+        let prepared = start(srt, &Verified::new(), &unread, &Config::default()).unwrap();
+
+        assert_eq!(prepared.range, PortRange::DEFAULT);
     }
 
     #[test]

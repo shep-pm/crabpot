@@ -18,6 +18,7 @@ pub const REPORT: &str = "probe exited ";
 /// looks for from inside the sandbox.
 pub const HARNESS_PID: &str = "CRABPOT_HARNESS_PID";
 
+pub(crate) mod argument;
 #[cfg(target_os = "linux")]
 mod kernel;
 mod socks;
@@ -52,6 +53,9 @@ pub enum Error {
     BadSocksAnswer(Vec<u8>),
     /// [`HARNESS_PID`] is not set to a pid.
     BadHarnessPid(Option<String>),
+    /// A `backslash-argument` probe was told to expect text with no backslash,
+    /// which proves nothing about how a backslash travels.
+    NoBackslash(String),
     /// The action failed with an error that is not a refusal, such as a missing file.
     Io(std::io::Error),
 }
@@ -62,7 +66,7 @@ impl core::fmt::Display for Error {
             Self::Usage => f.write_str(
                 "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> \
                  <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path> | loopback \
-                 | signal-group | ps | ps-outside | socket <unix|vsock> | io-uring-setup | unshare-user",
+                 | signal-group | ps | ps-outside | backslash-argument <text> <hex of text> | socket <unix|vsock> | io-uring-setup | unshare-user",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadSocksProxy => {
@@ -74,6 +78,9 @@ impl core::fmt::Display for Error {
             }
             Self::BadHarnessPid(value) => {
                 write!(f, "{HARNESS_PID} is {value:?}, not a pid")
+            }
+            Self::NoBackslash(argument) => {
+                write!(f, "{argument:?} has no backslash for the probe to follow")
             }
             Self::Io(source) => write!(f, "{source}"),
         }
@@ -88,7 +95,8 @@ impl core::error::Error for Error {
             | Self::BadSocksProxy
             | Self::BadAnswer(_)
             | Self::BadSocksAnswer(_)
-            | Self::BadHarnessPid(_) => None,
+            | Self::BadHarnessPid(_)
+            | Self::NoBackslash(_) => None,
             Self::Io(source) => Some(source),
         }
     }
@@ -156,6 +164,7 @@ fn attempt(
         ["io-uring-setup"] => kernel::io_uring_setup(),
         #[cfg(target_os = "linux")]
         ["unshare-user"] => kernel::unshare_user(),
+        ["backslash-argument", argument, expected] => argument::backslash(argument, expected),
         _ => Err(Error::Usage),
     }
 }

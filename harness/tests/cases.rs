@@ -15,7 +15,8 @@
 //! namespaces: `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 //!
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
-//! default settings and the settings crabpot refuses, and every other case under
+//! default settings, the settings crabpot refuses and the keys upstream ignores
+//! there, and every other case under
 //! upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
@@ -114,6 +115,11 @@ const WINDOWS_READY: &[&str] = &[
     "refused_denied_domains_bad_entry",
     "refused_mitm_empty_domains",
     "refused_resolved_address_bad_cidr",
+    // The keys upstream ignores on Windows, which load and change nothing.
+    "weaker_isolation_true",
+    "weaker_isolation_false",
+    "allow_mach_lookup_loads",
+    "unix_sockets_key_is_accepted",
 ];
 
 /// Whether crabpot runs `name` beside upstream on this platform.
@@ -372,6 +378,14 @@ fn refused_deny_write_trailing_separator_glob() {
 #[test]
 fn allow_mach_lookup_loads() {
     run("allow_mach_lookup_loads", "allow-mach-lookup-services.json");
+}
+
+#[test]
+fn unix_sockets_key_is_accepted() {
+    run(
+        "unix_sockets_key_is_accepted",
+        "unix-sockets-key-is-accepted.json",
+    );
 }
 
 #[test]

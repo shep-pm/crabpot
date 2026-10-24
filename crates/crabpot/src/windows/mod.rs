@@ -22,7 +22,6 @@ use std::process::Command;
 #[cfg(windows)]
 use std::sync::Arc;
 
-#[cfg(windows)]
 use crabpot_core::config::Config;
 
 #[cfg(windows)]
@@ -35,7 +34,10 @@ use crate::StartError;
 
 /// Reads what the install says about the sandbox, by running this binary
 /// again as srt-win (`--srt-win`) for `user status`, `wfp status` and `profile
-/// status`. None of them needs elevation.
+/// status`, under the default WFP sublayer. None of them needs elevation.
+///
+/// [`windows_status_for`] reads the status of the install a
+/// [`Config`]'s `windows` settings name.
 ///
 /// A machine with no install is an `Ok` status whose
 /// [`user`](WindowsStatus::user) is [`UserState::NotProvisioned`]: the
@@ -51,7 +53,17 @@ use crate::StartError;
 /// query exits 15 or 18, and [`StartError::StatusFailed`] when a query does
 /// not run, fails otherwise, or prints what cannot be read.
 pub fn windows_status() -> Result<WindowsStatus, StartError> {
-    status::read(run_srt_win)
+    windows_status_for(&Config::default())
+}
+
+/// [`windows_status`] for the install `config`'s `windows.sublayerGuid` names,
+/// as upstream's status call reads it.
+///
+/// # Errors
+///
+/// Those of [`windows_status`].
+pub fn windows_status_for(config: &Config) -> Result<WindowsStatus, StartError> {
+    status::read(config.windows.sublayer_guid.as_deref(), run_srt_win)
 }
 
 /// Checks what [`windows_status`] reads, and the session this process runs in,
@@ -62,8 +74,18 @@ pub fn windows_status() -> Result<WindowsStatus, StartError> {
 /// Every error of [`windows_status`], then [`StartError::SessionZero`] for the
 /// services' session, and [`WindowsStatus::refusal`]'s.
 pub fn windows_preflight() -> Result<WindowsStatus, StartError> {
+    windows_preflight_for(&Config::default())
+}
+
+/// [`windows_preflight`] for the install `config`'s `windows.sublayerGuid`
+/// names.
+///
+/// # Errors
+///
+/// Those of [`windows_preflight`].
+pub fn windows_preflight_for(config: &Config) -> Result<WindowsStatus, StartError> {
     refuse_session_zero(current_session()?)?;
-    let status = windows_status()?;
+    let status = windows_status_for(config)?;
     match status.refusal() {
         Some(error) => Err(error),
         None => Ok(status),
@@ -124,7 +146,7 @@ static VERIFIED: start::Verified = start::Verified::new();
 /// [`StartError::CurrentExe`] when the path of this binary is unknown.
 #[cfg(windows)]
 pub(crate) fn start_session(config: &Config) -> Result<Session, StartError> {
-    let status = windows_preflight()?;
+    let status = windows_preflight_for(config)?;
     let exe = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
     start::start_with(
         start::Host {
@@ -140,12 +162,13 @@ pub(crate) fn start_session(config: &Config) -> Result<Session, StartError> {
 
 /// Runs this binary as `srt-win <command>` and returns what it printed.
 #[cfg(windows)]
-fn run_srt_win(command: &'static str) -> Result<String, StartError> {
+fn run_srt_win(command: &'static str, extra: &[&str]) -> Result<String, StartError> {
     let failed = |code| StartError::StatusFailed { command, code };
     let exe = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
     let output = Command::new(exe)
         .arg(crabpot_windows::SRT_WIN_DISPATCH_ARG1)
         .args(command.split(' '))
+        .args(extra)
         .output()
         .map_err(|_| failed(None))?;
     if output.status.success() {
@@ -156,8 +179,8 @@ fn run_srt_win(command: &'static str) -> Result<String, StartError> {
 }
 
 #[cfg(not(windows))]
-fn run_srt_win(command: &'static str) -> Result<String, StartError> {
-    let _ = command;
+fn run_srt_win(command: &'static str, extra: &[&str]) -> Result<String, StartError> {
+    let _ = (command, extra);
     Err(StartError::UnsupportedPlatform)
 }
 

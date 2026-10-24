@@ -3,7 +3,7 @@
 
 use std::env;
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
@@ -36,6 +36,10 @@ const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 /// status. Any other arguments leave it a no-op, so a host calls it first
 /// thing in `main` (ADR-0010).
 ///
+/// A first argument of `--srt-win` is srt-win running this binary again, and
+/// is not for a person to type: on Windows, the whole command line goes to
+/// srt-win, which exits with its code. Off Windows it is an ordinary argument.
+///
 /// A first argument of `--crabpot-helper` is the sandbox calling the binary
 /// back, and is not for a person to type: on Linux, bwrap runs the host's
 /// binary inside the sandbox with it, to run the command (ADR-0014). A host
@@ -46,10 +50,39 @@ pub fn run_from_args() {
         run_helper(helper);
     }
     let mut args = env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == "--crabpot") {
-        run_args(args);
+    match route(args.next().as_deref()) {
+        Some(Route::SrtWin) => srt_win_hop(),
+        Some(Route::Crabpot) => run_args(args),
+        None => {}
     }
 }
+
+/// What a first argument asks [`run_from_args`] to take over the process for.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// `--srt-win`: srt-win ran this binary again, and the Windows half answers.
+    SrtWin,
+    /// `--crabpot`: the wrapper.
+    Crabpot,
+}
+
+fn route(first: Option<&OsStr>) -> Option<Route> {
+    match first {
+        Some(arg) if arg == "--srt-win" => Some(Route::SrtWin),
+        Some(arg) if arg == "--crabpot" => Some(Route::Crabpot),
+        _ => None,
+    }
+}
+
+/// Hands the whole command line to srt-win and exits with its code.
+#[cfg(windows)]
+fn srt_win_hop() -> ! {
+    std::process::exit(crabpot_windows::run_from_args(env::args_os()))
+}
+
+/// Off Windows `--srt-win` is an ordinary argument.
+#[cfg(not(windows))]
+fn srt_win_hop() {}
 
 /// Becomes the helper `helper` names. It never returns.
 fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
@@ -328,6 +361,27 @@ mod tests {
         assert_eq!(run_status(args(&["--", "sh", "-c", "exit 4"])), 4);
         assert_eq!(run_status(args(&["-c", "exit 5"])), 5);
         assert_eq!(run_status(args(&["-d"])), 1, "no command is refused");
+    }
+
+    fn route_of(args: &[&str]) -> Option<Route> {
+        route(args.first().map(OsStr::new))
+    }
+
+    #[test]
+    fn srt_win_as_first_argument_selects_the_windows_hop() {
+        assert_eq!(route_of(&["--srt-win", "--help"]), Some(Route::SrtWin));
+    }
+
+    #[test]
+    fn srt_win_after_other_arguments_is_an_ordinary_argument() {
+        assert_eq!(route_of(&["ls", "--srt-win"]), None);
+        assert_eq!(route_of(&["--crabpot", "--srt-win"]), Some(Route::Crabpot));
+    }
+
+    #[test]
+    fn crabpot_as_first_argument_still_selects_the_wrapper() {
+        assert_eq!(route_of(&["--crabpot", "ls"]), Some(Route::Crabpot));
+        assert_eq!(route_of(&[]), None);
     }
 
     /// A folder of its own, removed on drop.

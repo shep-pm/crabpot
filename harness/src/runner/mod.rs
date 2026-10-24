@@ -342,7 +342,8 @@ fn code(runner: &dyn Runner, settings: &Path, probe: &Probe, strict: bool) -> Re
 /// Runs the case file's `text` under `upstream` and under `crabpot`.
 ///
 /// Reports whether the case ran: one that names platforms this machine is not
-/// one of runs nothing, and is not a failure. See [`Case::runs_on`].
+/// one of, or that sets a loopback mode other than the one Windows has installed,
+/// runs nothing, and is not a failure. See [`Case::runs_on`].
 ///
 /// # Errors
 ///
@@ -452,9 +453,10 @@ impl Prepared {
         }
     }
 
-    /// Whether the case means the platform this harness runs on.
+    /// Whether the case means the platform this harness runs on, and, on
+    /// Windows, the loopback mode the filters were installed with.
     fn means_here(&self) -> bool {
-        self.case.runs_on(Platform::current())
+        self.case.runs_on(Platform::current()) && fits_install(&self.case)
     }
 
     /// The closure that puts the fixture back as the case describes it.
@@ -510,6 +512,19 @@ impl Drop for Prepared {
     fn drop(&mut self) {
         self.served = None;
     }
+}
+
+/// Whether upstream accepts the case's loopback setting under the install it
+/// runs against, see [`windows::loopback_installed`].
+#[cfg(windows)]
+fn fits_install(case: &Case) -> bool {
+    case.allows_loopback() == windows::loopback_installed()
+}
+
+/// Every case fits: only the Windows filters are installed in a mode.
+#[cfg(not(windows))]
+fn fits_install(_: &Case) -> bool {
+    true
 }
 
 /// Where a case's root is made. On Windows the temp folder will not do, see

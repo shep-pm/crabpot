@@ -240,6 +240,13 @@ impl Case {
     pub fn runs_on(&self, platform: Platform) -> bool {
         self.platforms.is_empty() || self.platforms.contains(&platform)
     }
+
+    /// Whether the settings set `network.allowLocalBinding`, which on Windows is
+    /// a property of the installed filters and not of a session: upstream
+    /// refuses a session whose setting is not the one the install was made with.
+    pub fn allows_loopback(&self) -> bool {
+        self.settings["network"]["allowLocalBinding"] == Value::Bool(true)
+    }
 }
 
 /// `value` with `$ROOT` replaced in every string and key.
@@ -475,6 +482,28 @@ mod tests {
         assert!(case.platforms.is_empty());
         assert!(case.runs_on(Platform::MacOs));
         assert!(case.runs_on(Platform::Linux));
+    }
+
+    #[test]
+    fn a_case_allows_loopback_only_when_its_settings_say_true() {
+        let with = |network: &str| {
+            Case::parse(
+                &format!(
+                    r#"{{"files": {{}}, "settings": {{"network": {network}}}, "probes": []}}"#
+                ),
+                "/r",
+            )
+            .unwrap()
+        };
+
+        assert!(with(r#"{"allowLocalBinding": true}"#).allows_loopback());
+        assert!(!with(r#"{"allowLocalBinding": false}"#).allows_loopback());
+        assert!(!with("{}").allows_loopback());
+        let text = Case::parse(
+            r#"{"files": {}, "settings": "not json", "probes": []}"#,
+            "/r",
+        );
+        assert!(!text.unwrap().allows_loopback());
     }
 
     #[test]

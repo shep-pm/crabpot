@@ -38,12 +38,32 @@ pub(super) fn scratch() -> PathBuf {
     ))
 }
 
+/// The environment variable that says how `windows-install` was run: `open` when
+/// it was given `--allow-loopback`, and any other value, or none, when it was not.
+const LOOPBACK_VAR: &str = "CRABPOT_HARNESS_LOOPBACK";
+
+/// Whether the filters were installed with loopback open. Upstream refuses a
+/// session whose `network.allowLocalBinding` is not the installed mode, in either
+/// direction, so the harness runs only the cases that match, and CI installs
+/// twice.
+pub(super) fn loopback_installed() -> bool {
+    std::env::var(LOOPBACK_VAR).is_ok_and(|mode| mode == "open")
+}
+
 /// The smallest settings upstream accepts: it requires both `network` and
-/// `filesystem`, and refuses `{}` before it runs anything.
-const WARM_UP_SETTINGS: &str = r#"{
-  "network": {"allowedDomains": [], "deniedDomains": []},
-  "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
-}"#;
+/// `filesystem`, and refuses `{}` before it runs anything. They set the
+/// loopback mode the filters were installed with, which upstream checks.
+fn warm_up_settings() -> String {
+    serde_json::json!({
+        "network": {
+            "allowedDomains": [],
+            "deniedDomains": [],
+            "allowLocalBinding": loopback_installed(),
+        },
+        "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []},
+    })
+    .to_string()
+}
 
 /// `path` spelled for upstream.
 fn spelled(path: &Path) -> io::Result<PathBuf> {
@@ -81,7 +101,7 @@ impl Staged {
         let copy = dir.join("probe.exe");
         fs::copy(probe, &copy)?;
         let settings = dir.join("settings.json");
-        fs::write(&settings, WARM_UP_SETTINGS)?;
+        fs::write(&settings, warm_up_settings())?;
         Ok(Self {
             probe: spelled(&copy)?,
             settings: spelled(&settings)?,
@@ -149,9 +169,18 @@ mod tests {
 
     #[test]
     fn the_warm_up_settings_hold_the_sections_upstream_requires() {
-        let settings: Value = serde_json::from_str(WARM_UP_SETTINGS).unwrap();
+        let settings: Value = serde_json::from_str(&warm_up_settings()).unwrap();
         assert!(settings["network"].is_object());
         assert!(settings["filesystem"].is_object());
+    }
+
+    #[test]
+    fn the_warm_up_settings_name_the_installed_loopback_mode() {
+        let settings: Value = serde_json::from_str(&warm_up_settings()).unwrap();
+        assert_eq!(
+            settings["network"]["allowLocalBinding"],
+            Value::Bool(loopback_installed())
+        );
     }
 
     #[test]

@@ -18,7 +18,10 @@
 //! yet, and every other case under upstream's `srt-win` path alone. That needs
 //! `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
-//! skipped there.
+//! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
+//! not the loopback mode the filters were installed with, so a case that opens
+//! loopback runs only after `windows-install --allow-loopback --force` and with
+//! `CRABPOT_HARNESS_LOOPBACK=open`, and every other case runs only without them.
 
 use crabpot_harness::runner::{self, Crabpot, Upstream};
 
@@ -84,7 +87,9 @@ fn run(name: &str, file: &str) {
     };
     match outcome {
         Ok(true) => {}
-        Ok(false) => eprintln!("skipping {name}: the case names another platform"),
+        Ok(false) => {
+            eprintln!("skipping {name}: the case is not for this platform or this install")
+        }
         Err(error) => panic!("{name}: {error}"),
     }
 }

@@ -4,14 +4,18 @@
 //! `contribute` function, and registered by naming it in the `sections!` call.
 //! A section adds to the lists the one `acl grant --persistent` call reads from
 //! standard input. Each section ranks only the lists it owns, so the lists it
-//! does not read are empty: the read grants are not here yet.
+//! does not read are empty. The lists are then held against the profile read
+//! grant in [`profile`].
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 use crabpot_windows::fs_access::{Access, Disk, ExpandError, Host, Settings, access};
 
 use super::srt::{Call, Srt};
+use super::status::ProfileExclusions;
 use crate::StartError;
+
+mod profile;
 
 /// Declares each section's module and lists them in the order they run.
 macro_rules! sections {
@@ -29,13 +33,14 @@ macro_rules! sections {
     };
 }
 
-sections!(write, deny_read, deny_write);
+sections!(write, read, deny_read, deny_write);
 
-/// What srt-win exits with when something holds a grant off and nothing
-/// changed: 25 when a profile grant or forget holds the init lock, which is how
-/// `acl grant` meets it, and 24, which `profile grant` gives for a running
-/// session and the issue names for this call as well.
-const EXIT_GRANT_BLOCKED: [i32; 2] = [24, 25];
+/// What srt-win exits with when it holds the call off and nothing changed.
+const EXIT_GRANT_BLOCKED: i32 = 24;
+
+/// What srt-win exits with when a profile grant or forget holds the init lock
+/// and nothing changed.
+const EXIT_PROFILE_BUSY: i32 = 25;
 
 /// Settings that list nothing, for a section to fill in the lists it owns.
 const NO_PATHS: Settings<'static> = Settings {
@@ -74,20 +79,27 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    /// The plan `config` comes to on this host.
+    /// The plan `config` comes to on this host, beside the profile read grant
+    /// `profile` records.
     ///
     /// # Errors
     ///
     /// [`StartError::UnresolvedPath`] when a path needs a home or working
-    /// directory the host does not have.
-    pub(crate) fn build(config: &Config) -> Result<Self, StartError> {
-        Self::build_on(config, &Host::from_process())
+    /// directory the host does not have, and [`StartError::ProfileConflicts`]
+    /// when a grant meets what `profile` keeps out of reach.
+    pub(crate) fn build(config: &Config, profile: &ProfileExclusions) -> Result<Self, StartError> {
+        Self::build_on(config, &Host::from_process(), profile)
     }
 
     /// The plan `config` comes to on `host`.
-    fn build_on<D: Disk>(config: &Config, host: &Host<D>) -> Result<Self, StartError> {
+    fn build_on<D: Disk>(
+        config: &Config,
+        host: &Host<D>,
+        profile: &ProfileExclusions,
+    ) -> Result<Self, StartError> {
         let mut access = Access::default();
         contribute(config, host, &mut access)?;
+        profile::check(host, &access, profile)?;
         Ok(Self { access })
     }
 
@@ -117,20 +129,18 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// [`StartError::GrantBlocked`] when srt-win exits 24 or 25, and
+    /// [`StartError::GrantBlocked`] when srt-win exits 24,
+    /// [`StartError::ProfileBusy`] when it exits 25, and
     /// [`StartError::GrantFailed`] for any other exit, or a call that did not
     /// run.
     pub(crate) fn apply(&self, srt: &dyn Srt, sid: &str, holder: u32) -> Result<(), StartError> {
         match srt.run(&self.grant(sid, holder)) {
             Ok(output) if output.succeeded() => Ok(()),
-            Ok(output)
-                if output
-                    .code
-                    .is_some_and(|code| EXIT_GRANT_BLOCKED.contains(&code)) =>
-            {
-                Err(StartError::GrantBlocked)
-            }
-            Ok(output) => Err(StartError::GrantFailed { code: output.code }),
+            Ok(output) => Err(match output.code {
+                Some(EXIT_GRANT_BLOCKED) => StartError::GrantBlocked,
+                Some(EXIT_PROFILE_BUSY) => StartError::ProfileBusy,
+                code => StartError::GrantFailed { code },
+            }),
             Err(_) => Err(StartError::GrantFailed { code: None }),
         }
     }
@@ -147,6 +157,7 @@ mod tests {
     use super::super::command::{Params, wrap};
     use super::super::srt::fake::{Fake, exit};
     use super::*;
+    use crate::ProfileConflict;
 
     /// A volume where only the listed directories exist, spelled as given.
     struct Volume(&'static [&'static str]);
@@ -200,7 +211,7 @@ mod tests {
     fn plan_with(dirs: &'static [&'static str], set: impl FnOnce(&mut Filesystem)) -> Plan {
         let mut config = Config::default();
         set(&mut config.filesystem);
-        Plan::build_on(&config, &host(dirs)).unwrap()
+        Plan::build_on(&config, &host(dirs), &ProfileExclusions::default()).unwrap()
     }
 
     fn host(dirs: &'static [&'static str]) -> Host<Volume> {
@@ -215,7 +226,7 @@ mod tests {
 
     #[test]
     fn an_empty_plan_still_makes_one_grant_call() {
-        let plan = Plan::build(&Config::default()).unwrap();
+        let plan = Plan::build(&Config::default(), &ProfileExclusions::default()).unwrap();
 
         let call = plan.grant("S-1-5-21-7", 4242);
 
@@ -363,19 +374,103 @@ mod tests {
     }
 
     #[test]
-    fn exit_24_maps_to_the_grant_blocked_error() {
-        let (srt, _) = Fake::answering(|_| exit(24, ""));
-        let plan = Plan::build(&Config::default()).unwrap();
+    fn allow_read_reaches_the_grant_stdin() {
+        let plan = plan_with(DIRS, |filesystem| {
+            filesystem.allow_read = Some(entries(&[r"D:\scratch", r"E:\absent"]));
+        });
 
-        let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();
-
-        assert_eq!(error, StartError::GrantBlocked);
+        assert_eq!(
+            stdin(&plan),
+            r#"{"read":["D:\\scratch"],"write":[],"denyRead":[],"denyWrite":[]}"#
+        );
     }
 
     #[test]
-    fn exit_25_maps_to_the_grant_blocked_error() {
+    fn an_allow_read_beneath_a_deny_read_is_granted_once() {
+        let plan = deny_read_plan(&[r"C:\work"], &[r"C:\work\.ssh\config"], &[], SSH_DIRS);
+
+        let mut config = Config::default();
+        config.filesystem.deny_read = entries(&[r"C:\work"]);
+        config.filesystem.allow_read = Some(entries(&[r"C:\work\.ssh\config"]));
+        let both = Plan::build_on(&config, &host(SSH_DIRS), &ProfileExclusions::default()).unwrap();
+
+        assert_eq!(stdin(&both), stdin(&plan));
+    }
+
+    fn profile(exclusions: &[&str], ungranted_only: &[&str]) -> ProfileExclusions {
+        ProfileExclusions {
+            exclusions: exclusions.iter().map(|path| (*path).to_owned()).collect(),
+            ungranted_only: ungranted_only
+                .iter()
+                .map(|path| (*path).to_owned())
+                .collect(),
+        }
+    }
+
+    fn build_beside(
+        profile: &ProfileExclusions,
+        dirs: &'static [&'static str],
+        set: impl FnOnce(&mut Filesystem),
+    ) -> Result<Plan, StartError> {
+        let mut config = Config::default();
+        set(&mut config.filesystem);
+        Plan::build_on(&config, &host(dirs), profile)
+    }
+
+    const PROFILE_DIRS: &[&str] = &[r"C:\Users\me", r"C:\Users\me\.ssh", r"C:\work"];
+
+    #[test]
+    fn a_profile_conflict_is_a_typed_error() {
+        let recorded = profile(&[r"C:\Users\me\.ssh"], &[]);
+
+        let error = build_beside(&recorded, PROFILE_DIRS, |filesystem| {
+            filesystem.allow_read = Some(entries(&[r"C:\Users\me", r"C:\work"]));
+            filesystem.allow_write = entries(&[r"C:\Users\me\.ssh"]);
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            StartError::ProfileConflicts(vec![
+                ProfileConflict {
+                    path: r"C:\Users\me".to_owned(),
+                    exclusion: r"C:\Users\me\.ssh".to_owned(),
+                    write: false,
+                },
+                ProfileConflict {
+                    path: r"C:\Users\me\.ssh".to_owned(),
+                    exclusion: r"C:\Users\me\.ssh".to_owned(),
+                    write: true,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn grants_clear_of_the_profile_exclusions_are_no_conflict() {
+        let recorded = profile(&[r"C:\Users\me\.ssh"], &[]);
+
+        let plan = build_beside(&recorded, PROFILE_DIRS, |filesystem| {
+            filesystem.allow_read = Some(entries(&[r"C:\work"]));
+        });
+
+        assert!(plan.is_ok());
+    }
+
+    #[test]
+    fn exit_25_maps_to_the_profile_busy_error() {
         let (srt, _) = Fake::answering(|_| exit(25, ""));
-        let plan = Plan::build(&Config::default()).unwrap();
+        let plan = Plan::build(&Config::default(), &ProfileExclusions::default()).unwrap();
+
+        let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();
+
+        assert_eq!(error, StartError::ProfileBusy);
+    }
+
+    #[test]
+    fn exit_24_maps_to_the_grant_blocked_error() {
+        let (srt, _) = Fake::answering(|_| exit(24, ""));
+        let plan = Plan::build(&Config::default(), &ProfileExclusions::default()).unwrap();
 
         let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();
 

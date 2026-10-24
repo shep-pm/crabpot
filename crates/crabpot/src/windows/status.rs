@@ -26,6 +26,8 @@ pub struct WindowsStatus {
     pub proxy_ports: Option<RangeInclusive<u16>>,
     /// Whether a profile read grant is in place.
     pub profile: ProfileState,
+    /// What the profile read grant keeps unreadable, empty when there is none.
+    pub profile_exclusions: ProfileExclusions,
     /// Whether the Secondary Logon service can launch the sandbox user. False
     /// when it is disabled or missing, and true when it could not be read,
     /// which is not proof of a problem.
@@ -64,6 +66,20 @@ pub enum LoopbackMode {
     Open,
     /// Only the proxy's ports are open.
     Closed,
+}
+
+/// The paths a profile read grant keeps out of a session's grants, as
+/// `profile status` records them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ProfileExclusions {
+    /// Every protected path the grant keeps unreadable, wildcards as written. A
+    /// session may not grant one, a path inside one, or a path above one.
+    #[serde(default)]
+    pub exclusions: Vec<String>,
+    /// Directories the grant leaves ungranted without denying them. A session
+    /// may not grant one, or a path above one.
+    #[serde(default)]
+    pub ungranted_only: Vec<String>,
 }
 
 /// Whether the profile read grant is in place, as `profile status` reports it.
@@ -123,6 +139,8 @@ struct WfpJson {
 #[derive(Deserialize)]
 struct ProfileJson {
     state: String,
+    #[serde(flatten)]
+    exclusions: ProfileExclusions,
 }
 
 /// Reads the status through `run`, which runs one srt-win query with the
@@ -166,6 +184,7 @@ pub(crate) fn read(
             "in_progress" => ProfileState::InProgress,
             _ => ProfileState::Unknown,
         },
+        profile_exclusions: profile.exclusions,
         seclogon_runs: !matches!(user.seclogon.as_str(), "disabled" | "missing"),
         // A session without an owner is session 0, which is refused by name
         // before the status is read.
@@ -265,6 +284,27 @@ mod tests {
         assert_eq!(status.proxy_ports, None);
         assert_eq!(status.loopback, LoopbackMode::Open);
         assert!(!status.seclogon_runs);
+    }
+
+    #[test]
+    fn the_profile_exclusions_come_from_profile_status() {
+        let profile = r#"{"state":"current","exclusions":["C:\\Users\\me\\.ssh"],
+            "ungranted_only":["C:\\Users\\me\\AppData\\Local\\Temp"]}"#;
+
+        let status = read(None, |command, _| match command {
+            "user status" => Ok(PROVISIONED.to_owned()),
+            "wfp status" => Ok(WFP.to_owned()),
+            _ => Ok(profile.to_owned()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            status.profile_exclusions,
+            ProfileExclusions {
+                exclusions: vec![r"C:\Users\me\.ssh".to_owned()],
+                ungranted_only: vec![r"C:\Users\me\AppData\Local\Temp".to_owned()],
+            }
+        );
     }
 
     #[test]

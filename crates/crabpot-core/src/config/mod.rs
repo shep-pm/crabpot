@@ -4,7 +4,8 @@
 //! upstream knows and crabpot does not yet apply is refused when it asks for
 //! something, so a rule is never dropped without an error (ADR-0013). A key
 //! upstream accepts and ignores on macOS is accepted and ignored there, and on
-//! Linux the keys that tune bwrap and seccomp are refused instead.
+//! Linux the keys that tune bwrap and seccomp are refused instead. On Windows
+//! the keys only macOS reads are ignored, and the `windows` group is read.
 
 mod error;
 mod keys;
@@ -23,6 +24,7 @@ use serde_json::Value;
 
 pub use self::error::ConfigError;
 pub use self::keys::mitm_proxy::MitmProxy;
+pub use self::keys::windows::Windows;
 pub use crate::address::AddressRange;
 pub use crate::domain::{DomainEntry, DomainParseError, DomainPattern};
 pub use crate::path_entries::PathEntry;
@@ -52,6 +54,10 @@ pub struct Config {
         deserialize_with = "enable_weaker_network_isolation::deserialize"
     )]
     pub enable_weaker_network_isolation: Option<bool>,
+    /// `windows`: the install a Windows session runs against, which no other
+    /// platform reads.
+    #[serde(default)]
+    pub windows: Windows,
 }
 
 /// `network`: what a command may reach.
@@ -165,7 +171,7 @@ impl Config {
 /// The groups of keys, which serde would otherwise read from a list, field by
 /// field in order.
 fn require_objects(settings: &Value) -> Result<(), ConfigError> {
-    for key in ["", "network", "filesystem", mitm_proxy::PATH] {
+    for key in ["", "network", "filesystem", mitm_proxy::PATH, "windows"] {
         let value = key
             .split('.')
             .filter(|part| !part.is_empty())

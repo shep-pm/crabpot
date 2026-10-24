@@ -49,6 +49,18 @@ _Avoid_: launcher, shim, the srt process
 The unnamed file a bwrap policy too long for one `exec` line moves its flags to, which `bwrap` reads back with `--args`. It is opened `O_TMPFILE`, and the line reaches it through `/proc/<pid>/fd/<n>`.
 _Avoid_: profile file, args profile, response file
 
+### Filesystem
+
+**Mandatory denies**:
+The protection a sandbox applies whatever the settings say. The write half is in
+and below its own working directory: shell and tool settings files and each git
+repository's hooks and config, and the directories holding them, found by a walk
+down to the search depth. The read half is Linux's `/etc/ssh/ssh_config.d`, hidden
+from every read policy because ssh refuses a config file whose owner or mode looks
+wrong. Neither is in any list of the settings, and on Linux the write half goes
+through the same deny loop as `denyWrite`.
+_Avoid_: built-in denies, implicit denies, system denies
+
 ### Consumers
 
 **Proving ground**:

@@ -68,6 +68,9 @@ const LINUX_READY: &[&str] = &[
     "local_binding_connect_to_loopback",
     "kelpie_loopback_bind",
     "kelpie_bind_allowed",
+    "mandatory_git_hooks",
+    "mandatory_nested_git_config",
+    "mandatory_shell_rc",
 ];
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143

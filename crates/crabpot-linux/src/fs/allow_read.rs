@@ -9,7 +9,9 @@
 //! back after it, as macOS's `late_denies` does: a denied name as it was, and
 //! the matches of a pattern that does not cover the reopening, which keep
 //! their whole mask like a leaf glob. A pattern covering the reopening gives
-//! way to it, carved out as macOS carves its region globs.
+//! way to it, carved out as macOS carves its region globs. The paths the plan
+//! denies whatever the settings say are in this too, and no `allowRead` entry
+//! is asked for them: see `remasked`.
 //!
 //! Two things the ordering and the flag settle:
 //!
@@ -27,20 +29,24 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crabpot_core::paths::PathBase;
 use crabpot_core::PathError;
 use crabpot_core::ResolvedPath;
 use crabpot_core::config::Config;
+use crabpot_core::paths::PathBase;
 
 use super::allow_write;
-use super::deny_read::{Mount, collapse, locate, located};
+use super::deny_read::{self, Mount, collapse, locate, located};
 use super::glob_walk;
-use super::Draft;
+use super::{Draft, PlanError};
 
-pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
+pub(super) fn words(
+    config: &Config,
+    base: &PathBase,
+    draft: &mut Draft,
+) -> Result<Vec<OsString>, PlanError> {
     let denies = config.filesystem.read_denies()?;
     let hidden = located(config)?;
-    let writable = allow_write::bind_paths(&PathBase::from_env(), config)?;
+    let writable = allow_write::bind_paths(base, config)?;
     let mut reopened = BTreeMap::new();
     for entry in config.filesystem.read_allows()? {
         for path in glob_walk::matches(&entry) {
@@ -55,7 +61,9 @@ pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>,
         }
     }
     let open: BTreeSet<PathBuf> = reopened.keys().cloned().collect();
-    let late = collapse(late_denies(&denies, &open)?);
+    let mut late = late_denies(&denies, &open)?;
+    late.extend(remasked(&hidden, &open));
+    let late = collapse(late);
     let mut mounts: Vec<(usize, Vec<OsString>, Mount)> = reopened
         .into_iter()
         .map(|(path, is_dir)| {
@@ -118,6 +126,32 @@ fn bind(flag: &str, path: &Path) -> Vec<OsString> {
 /// spelling.
 fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|kind| kind.is_symlink())
+}
+
+/// The paths the plan denies whatever the settings say that a reopening has
+/// brought back into view, to mount after the reopening that exposed them.
+///
+/// A reopening of a directory above one of them is a restore inside the mask
+/// the plan made for that directory, which is where the denial was hidden: the
+/// host's own path is bound back over it, and the denial is mounted again over
+/// that. The exception is a reopening at the denial itself where the plan made
+/// its mount on its own, with no denied directory above it: that reopening is
+/// the restore inside the denial's own mount, which is what an allow naming a
+/// denial outright comes to wherever the denial came from.
+fn remasked(
+    hidden: &BTreeMap<PathBuf, bool>,
+    reopened: &BTreeSet<PathBuf>,
+) -> BTreeMap<PathBuf, bool> {
+    deny_read::mandatory()
+        .into_iter()
+        .filter(|(path, _)| reopened.iter().any(|open| path.starts_with(open)))
+        .filter(|(path, _)| {
+            !reopened.contains(path)
+                || hidden
+                    .iter()
+                    .any(|(dir, is_dir)| *is_dir && *dir != *path && path.starts_with(dir))
+        })
+        .collect()
 }
 
 /// The denials a reopened directory would otherwise expose, to mount after

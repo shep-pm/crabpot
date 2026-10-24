@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "harness"]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.2.0"
 edition = "2024"
 # shep's MSRV. A dog or client that needs a newer compiler than the shepherd
 # it works with is a bad example.
@@ -20,11 +20,11 @@ keywords = ["sandbox", "security", "agents", "bubblewrap", "seatbelt"]
 # bump the old `^0.1.0` matched no candidate and the release PR failed to resolve
 # the workspace (issue #195). A path dependency inside the workspace needs no
 # requirement to resolve, so these two carry none.
-crabpot-core = { path = "crates/crabpot-core", version = "0.1.7" }
+crabpot-core = { path = "crates/crabpot-core", version = "0.2.0" }
 # ADR-0012: the Linux release slice (#124) publishes this crate, and adds its
 # version back here, where release-plz keeps it from then on.
 crabpot-linux = { path = "crates/crabpot-linux" }
-crabpot-macos = { path = "crates/crabpot-macos", version = "0.1.7" }
+crabpot-macos = { path = "crates/crabpot-macos", version = "0.2.0" }
 # ADR-0005 never publishes this crate, so no slice adds a version back here.
 crabpot-windows = { path = "crates/crabpot-windows" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }

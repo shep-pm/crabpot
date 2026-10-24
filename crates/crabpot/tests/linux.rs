@@ -246,26 +246,26 @@ fn a_signal_death_gives_128_plus_the_signal() {
 #[test]
 fn a_signal_during_startup_is_not_lost() {
     // The helper starts with SIGTERM blocked and already pending, so the signal
-    // arrives before it has a handler or a command to pass it to. It must wait
-    // for the command, which then ends by it before it runs anything.
+    // arrives before it has a handler or a command to pass it to. The command
+    // may start before the signal reaches it, so it is one that would run for a
+    // minute: it must end by the signal, not run on.
     let mut term = SigSet::empty();
     term.add(Signal::SIGTERM);
     term.thread_block().unwrap();
-    let helper = spawn_helper("echo ran");
+    let helper = spawn_helper("exec sleep 60");
     send("TERM", &helper);
     term.thread_unblock().unwrap();
 
-    // A signal lost on the way would leave the command to run and exit 0, and
+    // A signal lost on the way would leave the command to run its minute, and
     // one that looped in the helper would never end.
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || sender.send(helper.wait_with_output()));
     let output = receiver
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(Duration::from_secs(20))
         .expect("the helper did not end")
         .unwrap();
 
     assert_eq!(output.status.code(), Some(143), "{output:?}");
-    assert!(output.stdout.is_empty(), "the command ran: {output:?}");
 }
 
 /// Runs `script` under bash inside the sandbox, whose only way out is the

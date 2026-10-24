@@ -65,7 +65,10 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
 
 #[cfg(target_os = "linux")]
 fn helper_init(command: &[OsString]) -> ! {
-    fail(crabpot_linux::helper::exec(command))
+    match crabpot_linux::helper::init(command) {
+        Ok(status) => std::process::exit(status),
+        Err(e) => fail(e),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -14,7 +14,8 @@
 //! whose `/proc` will not take the open fails the wrap, where the caller is
 //! told, rather than a redirection that runs no command.
 //!
-//! This is the crate's one module of FFI (IR-22).
+//! This is one of the crate's two modules of FFI (IR-22); the other is the
+//! helper's `sys`.
 
 #![allow(unsafe_code)]
 

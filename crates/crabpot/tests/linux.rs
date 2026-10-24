@@ -3,8 +3,10 @@
 
 #![cfg(target_os = "linux")]
 
-use std::io::{BufRead, BufReader, Read};
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -329,4 +331,100 @@ fn a_relay_that_cannot_bind_makes_the_helper_exit_1() {
         String::from_utf8_lossy(&output.stderr).contains("3128"),
         "{output:?}"
     );
+}
+
+/// A settings file that allows exactly `allowed` and nothing else, written where
+/// the wrapper can read it.
+fn settings_allowing(case: &str, allowed: &[&str]) -> PathBuf {
+    let list: Vec<String> = allowed.iter().map(|host| format!("\"{host}\"")).collect();
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("connect-{case}.json"));
+    fs::write(
+        &path,
+        format!(
+            r#"{{"network": {{"allowedDomains": [{}], "deniedDomains": []}}, "filesystem": {{"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}}}}"#,
+            list.join(", ")
+        ),
+    )
+    .unwrap();
+    path
+}
+
+/// Runs `script` as the command of a sandbox whose only allowed host is
+/// `allowed`, with this binary passed to it as `$0`.
+fn in_sandbox_allowing(case: &str, allowed: &[&str], script: &str) -> Output {
+    let settings = settings_allowing(case, allowed);
+    crabpot(&[
+        "-s",
+        settings.to_str().unwrap(),
+        "--",
+        "sh",
+        "-c",
+        script,
+        CRABPOT,
+    ])
+}
+
+#[test]
+fn the_command_sees_the_ssh_proxy_command_and_its_credential() {
+    let output = crabpot(&[
+        "--",
+        "sh",
+        "-c",
+        r#"printf '%s\n' "$GIT_SSH_COMMAND" "$SRT_SSH_PROXY_BINARY" "$SRT_SSH_PROXY_CREDENTIAL""#,
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{output:?}");
+    assert!(
+        lines[0].contains("--crabpot-helper connect 3128")
+            && lines[0].contains("SRT_SSH_PROXY_BINARY"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(
+        lines[1], CRABPOT,
+        "the binary the command expands, on the environment and not in its text"
+    );
+    assert!(!lines[2].is_empty(), "the credential is set to read");
+}
+
+#[test]
+fn connect_mode_tunnels_to_an_allowed_host() {
+    // An IP literal in `allowedDomains` is what lets the proxy dial loopback, so
+    // this listener on the host is the host the tunnel reaches.
+    let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    let answered = thread::spawn(move || {
+        let (mut client, _) = held.accept().unwrap();
+        let mut asked = String::new();
+        BufReader::new(&mut client).read_line(&mut asked).unwrap();
+        client.write_all(format!("got:{asked}").as_bytes()).unwrap();
+    });
+
+    let script =
+        format!(r#"printf 'ping\n' | "$0" --crabpot-helper connect 3128 127.0.0.1 {port}"#);
+    let output = in_sandbox_allowing("allowed", &["127.0.0.1"], &script);
+    let seen = format!(
+        "stdout: {}stderr: {}",
+        stdout(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(output.status.success(), "{seen}");
+    assert_eq!(stdout(&output), "got:ping\n", "{seen}");
+    answered.join().unwrap();
+}
+
+#[test]
+fn connect_mode_reports_a_refused_host() {
+    let script = r#""$0" --crabpot-helper connect 3128 not-allowed.example 80"#;
+    let output = in_sandbox_allowing("refused", &["127.0.0.1"], script);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(text.contains("not-allowed.example:80"), "{text}");
+    assert!(text.contains("host is not on the allow list"), "{text}");
 }

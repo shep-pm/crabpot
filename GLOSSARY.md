@@ -53,6 +53,10 @@ _Avoid_: profile file, args profile, response file
 On Linux, the helper's child that listens on TCP ports 3128 and 1080 inside the sandbox's network namespace and forwards each connection to the proxy's Unix socket. It replaces upstream's `socat`. Recorded in ADR-0014.
 _Avoid_: socat, bridge, tunnel
 
+**Connect mode**:
+On Linux, the helper job a sandboxed ssh starts for itself as `GIT_SSH_COMMAND`'s `ProxyCommand`: crabpot's binary asks the relay for a `CONNECT` tunnel to the host and port ssh named, and carries the connection's bytes on its own standard input and output. Its credential comes from the environment, never from its arguments. It replaces upstream's `socat` hop.
+_Avoid_: ssh proxy, tunnel helper, socat
+
 ### Filesystem
 
 **Mandatory denies**:

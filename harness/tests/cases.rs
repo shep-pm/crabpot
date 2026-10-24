@@ -61,6 +61,8 @@ const LINUX_READY: &[&str] = &[
     "move_blocking_parent",
     "move_blocking_read",
     "move_blocking_read_glob",
+    "allowed_domains_example_com",
+    "socks_allowed_example_com",
     "weaker_isolation_true",
     "weaker_isolation_false",
     "local_binding_bind_refused_by_default",

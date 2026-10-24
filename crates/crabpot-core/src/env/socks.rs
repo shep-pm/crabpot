@@ -3,8 +3,8 @@
 //! SOCKS proxy: the clients that speak SOCKS5 and the ones that only take a
 //! proxy's address.
 //!
-//! ssh is not among them. Its `ProxyCommand` is the `ssh` part's, which reaches
-//! the one port by HTTP `CONNECT` when one port serves both protocols.
+//! ssh is not among them. Its `ProxyCommand` is the platform's own, since the
+//! route to the proxy differs: the port on macOS, a relay on Linux.
 
 /// The variables for a SOCKS5 proxy on `127.0.0.1:port` that wants `username`
 /// and `token` from a client, as name and value pairs.

@@ -49,6 +49,10 @@ _Avoid_: launcher, shim, the srt process
 The unnamed file a bwrap policy too long for one `exec` line moves its flags to, which `bwrap` reads back with `--args`. It is opened `O_TMPFILE`, and the line reaches it through `/proc/<pid>/fd/<n>`.
 _Avoid_: profile file, args profile, response file
 
+**Relay**:
+On Linux, the helper's child that listens on TCP ports 3128 and 1080 inside the sandbox's network namespace and forwards each connection to the proxy's Unix socket. It replaces upstream's `socat`. Recorded in ADR-0014.
+_Avoid_: socat, bridge, tunnel
+
 ### Filesystem
 
 **Mandatory denies**:

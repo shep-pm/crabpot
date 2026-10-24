@@ -3,7 +3,7 @@
 //!
 //! The crate is the landing place for the Linux slices of the Linux map, and
 //! holds only the ones that have landed: [`argv`], [`deps`], [`fs`],
-//! [`helper`], [`mandatory`], `seccomp` and [`wrap`]. It builds on every platform so a
+//! [`helper`], [`mandatory`], [`net`], `seccomp` and [`wrap`]. It builds on every platform so a
 //! Linux slice fails on the macOS runner too, as `crabpot-macos` does in
 //! reverse; Linux-only code sits behind
 //! `cfg(target_os = "linux")`. The facade depends on it as a target-specific
@@ -30,6 +30,9 @@
 //! - The helper crabpot's own binary becomes when bwrap re-enters it
 //!   (ADR-0010): [`helper`]. Reading the `--crabpot-helper` argument is the
 //!   facade's.
+//! - The way out of the network namespace: the proxy's Unix socket is bound
+//!   into the sandbox, the helper's relay forwards TCP ports 3128 and 1080 to
+//!   it, and the command's proxy variables name those ports ([`net`]).
 
 /// The bwrap argv is unix's: its words are `exec` arguments, and the args file
 /// is a descriptor. `argv` sits behind `cfg(unix)`, and the args file it opens
@@ -43,6 +46,7 @@ pub mod fs;
 pub mod helper;
 #[cfg(unix)]
 pub mod mandatory;
+pub mod net;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 pub mod wrap;

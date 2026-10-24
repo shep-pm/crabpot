@@ -5,3 +5,5 @@
 //! platform has.
 
 pub mod base;
+pub mod http;
+pub mod socks;

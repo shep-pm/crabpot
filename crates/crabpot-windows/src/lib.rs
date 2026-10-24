@@ -19,7 +19,7 @@
 //! (`.github/stubs/`), which is the only gate that reads the clap-derive CLI
 //! structs off a Windows host.
 //!
-//! The crate is not a dependency of the facade yet, and ADR-0005 keeps it
+//! The facade depends on this crate on Windows, and ADR-0005 keeps it
 //! unpublished: what crabpot ships is its own name, never upstream's.
 
 pub mod fs_access;

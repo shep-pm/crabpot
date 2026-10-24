@@ -163,6 +163,7 @@ dependencies = [
  "crabpot-core",
  "crabpot-linux",
  "crabpot-macos",
+ "crabpot-windows",
  "tokio",
 ]
 

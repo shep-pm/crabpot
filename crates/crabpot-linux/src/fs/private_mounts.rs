@@ -17,7 +17,9 @@ use std::ffi::OsString;
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
-pub(super) fn words(_config: &Config) -> Result<Vec<OsString>, PathError> {
+use super::Draft;
+
+pub(super) fn words(_config: &Config, _draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
     Ok([
         "--dev",
         "/dev",

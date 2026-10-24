@@ -141,6 +141,16 @@ const WRITE_REFUSED: &[std::io::ErrorKind] = &[
     std::io::ErrorKind::ReadOnlyFilesystem,
 ];
 
+/// A rename is also refused with EBUSY, which is what the kernel answers for a
+/// path that is a mount point or holds one, and with EXDEV for one that crosses
+/// mounts: how Linux's sandbox blocks a move of a protected path.
+const RENAME_REFUSED: &[std::io::ErrorKind] = &[
+    std::io::ErrorKind::PermissionDenied,
+    std::io::ErrorKind::ReadOnlyFilesystem,
+    std::io::ErrorKind::ResourceBusy,
+    std::io::ErrorKind::CrossesDevices,
+];
+
 /// EPERM and ECONNREFUSED refuse a bind or a direct connect. ENETUNREACH is how a
 /// network namespace with no interfaces refuses a connect.
 const NETWORK_REFUSED: &[std::io::ErrorKind] = &[
@@ -163,7 +173,7 @@ fn write(path: &str) -> Outcome {
 }
 
 fn rename(from: &str, to: &str) -> Outcome {
-    judge(std::fs::rename(from, to), WRITE_REFUSED)
+    judge(std::fs::rename(from, to), RENAME_REFUSED)
 }
 
 /// Dials `host:port` directly, or asks the proxy at `http_proxy` for a tunnel to it.
@@ -644,6 +654,33 @@ mod tests {
         let to = fixture.path().join("to");
         assert_eq!(
             probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            1
+        );
+    }
+
+    /// A bind mount cannot be renamed, which is how Linux's sandbox blocks a move
+    /// of a protected path. The kernel answers EBUSY, as it does for `.`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rename_of_a_busy_path_exits_1() {
+        let fixture = Fixture::new("rename-busy");
+        let from = fixture.path().join(".");
+        let to = fixture.path().join("to");
+        assert_eq!(
+            probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            1
+        );
+    }
+
+    /// A rename across mounts is EXDEV, and the kernel answers it before it looks
+    /// for the source: a protected path under a tmpfs mask cannot be moved out of it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rename_across_mounts_exits_1() {
+        let fixture = Fixture::new("rename-exdev");
+        let to = fixture.path().join("to");
+        assert_eq!(
+            probe(&["rename", "/proc/self/absent", to.to_str().unwrap()]),
             1
         );
     }

@@ -3,6 +3,7 @@ use std::path::Path;
 use crabpot_core::config::{Config, PathEntry};
 use crabpot_core::paths::{PathBase, contains_glob_chars, normalize_path_for_sandbox};
 
+use super::Draft;
 use super::Plan;
 use super::allow_read;
 use super::allow_write::words_with;
@@ -91,7 +92,7 @@ fn allowed_words(deny: &[&str], allow: &[&str]) -> Vec<String> {
 
 /// The mounts `allowRead` adds, with `allowWrite` set to `write`.
 fn allowed_words_with(deny: &[&str], allow: &[&str], write: &[&str]) -> Vec<String> {
-    allow_read::words(&reading_with(deny, allow, write))
+    allow_read::words(&reading_with(deny, allow, write), &mut Draft::default())
         .expect("a config")
         .iter()
         .map(|word| word.to_string_lossy().into_owned())
@@ -119,8 +120,10 @@ fn plan(config: &Config) -> Vec<String> {
 
 /// The mounts `denyRead` adds to what a config denying nothing adds.
 fn denied_words(entries: &[&str]) -> Vec<String> {
-    let nothing = deny_read::words(&denying(&[])).expect("a config").len();
-    deny_read::words(&denying(entries))
+    let nothing = deny_read::words(&denying(&[]), &mut Draft::default())
+        .expect("a config")
+        .len();
+    deny_read::words(&denying(entries), &mut Draft::default())
         .expect("a config")
         .iter()
         .skip(nothing)
@@ -408,6 +411,399 @@ fn a_path_in_the_kernels_proc_keeps_its_spelling() {
         denied_words(&["/proc/self/environ"]),
         ["--ro-bind", "/dev/null", "/proc/self/environ"]
     );
+}
+
+/// A config that allows `allow` and denies `deny`, in the order a settings
+/// file spells them.
+fn denying_writes(allow: &[&str], deny: &[&str]) -> Config {
+    let quoted = |entries: &[&str]| {
+        entries
+            .iter()
+            .map(|entry| format!("\"{entry}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    Config::from_json(&format!(
+        r#"{{
+            "network": {{"allowedDomains": [], "deniedDomains": []}},
+            "filesystem": {{
+                "denyRead": [],
+                "allowWrite": [{}],
+                "denyWrite": [{}]
+            }}
+        }}"#,
+        quoted(allow),
+        quoted(deny)
+    ))
+    .expect("a config")
+}
+
+/// The last place a write bind is made in `words`.
+fn last_write_bind(words: &[String]) -> usize {
+    words
+        .windows(3)
+        .rposition(|triple| triple[0] == "--bind" && triple[1] == triple[2])
+        .expect("a write bind")
+}
+
+/// A denied file is bound over itself read-only, and a later write bind does
+/// not undo it: the bind comes after every write bind in the plan.
+#[test]
+fn deny_write_words_come_after_every_write_bind() {
+    let tree = Tree::empty("fs-deny-write-order");
+    tree.file("work/.env", "x");
+    tree.dir("other");
+    let (work, env, other) = (
+        at(&tree, "work"),
+        at(&tree, "work/.env"),
+        at(&tree, "other"),
+    );
+
+    let words = plan(&denying_writes(&[&work, &other], &[&env]));
+
+    let deny = mount_at(&words, "--ro-bind", &env);
+    assert!(last_write_bind(&words) < deny, "{words:#?}");
+    assert!(
+        deny < mount_at(&words, "--dev", "/dev"),
+        "the sandbox's own mounts stay last: {words:#?}"
+    );
+}
+
+#[test]
+fn a_denied_file_is_bound_read_only() {
+    let tree = Tree::empty("fs-deny-write-file");
+    tree.file("work/.env", "x");
+    let (work, env) = (at(&tree, "work"), at(&tree, "work/.env"));
+
+    let words = plan(&denying_writes(&[&work], &[&env]));
+
+    let at = words
+        .windows(3)
+        .position(|triple| triple == ["--ro-bind", &env, &env]);
+    assert!(at.is_some(), "{words:#?}");
+}
+
+/// A denied path outside every write root is read-only already, so it adds no
+/// bind.
+#[test]
+fn a_deny_outside_the_write_roots_adds_nothing() {
+    let tree = Tree::empty("fs-deny-write-outside");
+    tree.file("work/seed", "x");
+    tree.file("elsewhere/.env", "x");
+    let (work, env) = (at(&tree, "work"), at(&tree, "elsewhere/.env"));
+
+    let words = plan(&denying_writes(&[&work], &[&env]));
+
+    assert!(
+        !words
+            .windows(3)
+            .any(|triple| triple == ["--ro-bind", &env, &env]),
+        "{words:#?}"
+    );
+}
+
+/// A write glob is dropped, as it is for `allowWrite`: upstream binds paths on
+/// Linux and a pattern is none.
+#[test]
+fn a_deny_glob_is_dropped() {
+    let tree = Tree::empty("fs-deny-write-glob");
+    tree.file("work/top.key", "x");
+    let (work, pattern) = (at(&tree, "work"), at(&tree, "work/**/*.key"));
+    let key = at(&tree, "work/top.key");
+
+    let words = plan(&denying_writes(&[&work], &[&pattern]));
+
+    assert!(
+        !words
+            .windows(3)
+            .any(|triple| triple == ["--ro-bind", &key, &key]),
+        "{words:#?}"
+    );
+}
+
+/// The directories between a protected path and the write root are bound over
+/// themselves, so the kernel refuses to rename them. The write root is its own
+/// mount, and gets no pin. The pins sit beneath the write binds, shallowest
+/// first, so one on top of a write root cannot make it read-only.
+#[test]
+fn an_ancestor_of_a_protected_path_is_pinned() {
+    let tree = Tree::empty("fs-deny-write-pins");
+    tree.file("work/a/b/.env", "x");
+    tree.file("work/a/sibling/seed", "x");
+    let (work, a, b) = (
+        at(&tree, "work"),
+        at(&tree, "work/a"),
+        at(&tree, "work/a/b"),
+    );
+    let env = at(&tree, "work/a/b/.env");
+
+    let words = plan(&denying_writes(&[&work], &[&env]));
+
+    let pin_a = mount_at(&words, "--ro-bind", &a);
+    let pin_b = mount_at(&words, "--ro-bind", &b);
+    assert!(pin_a < pin_b, "shallowest first: {words:#?}");
+    assert!(
+        pin_b < bind_at(&words, &work),
+        "beneath the write binds: {words:#?}"
+    );
+    assert!(
+        !words
+            .windows(3)
+            .any(|triple| triple == ["--ro-bind", &work, &work]),
+        "a write root is a mount already: {words:#?}"
+    );
+    assert!(
+        !words.iter().any(|word| word.ends_with("/sibling")),
+        "a sibling is nobody's ancestor: {words:#?}"
+    );
+}
+
+/// A read mask is protected in the same way: renaming the directory that holds
+/// it would leave the file readable under its new name.
+#[test]
+fn an_ancestor_of_a_read_mask_is_pinned() {
+    let tree = Tree::empty("fs-deny-read-pins");
+    tree.file("secrets/key", "x");
+    let (root, secrets, key) = (
+        at(&tree, ""),
+        at(&tree, "secrets"),
+        at(&tree, "secrets/key"),
+    );
+    let mut config = denying(&[&key]);
+    config.filesystem.allow_write = vec![PathEntry::Spelled(root.trim_end_matches('/').to_owned())];
+
+    let words = plan(&config);
+
+    mount_at(&words, "--ro-bind", &secrets);
+}
+
+/// Under a write root of `/` the pins would be buried by its bind, so they
+/// follow it, and the top-level directory they stop below is bound writable
+/// over them.
+#[test]
+fn a_root_write_bind_gets_its_pins_after_it_and_a_cover() {
+    let tree = Tree::empty("fs-deny-write-root");
+    tree.file("work/a/.env", "x");
+    let env = at(&tree, "work/a/.env");
+    let top = format!("/{}", env.split('/').nth(1).expect("an absolute path"));
+    let words = plan(&denying_writes(&["/"], &[&env]));
+
+    let root = bind_at(&words, "/");
+    let pin = mount_at(&words, "--ro-bind", &at(&tree, "work/a"));
+    let cover = bind_at(&words, &top);
+    assert!(root < pin && pin < cover, "{words:#?}");
+}
+
+/// A path that is not there is bound at its first missing component, and that
+/// component is made on the host by bwrap, so the plan is to remove it.
+#[test]
+fn an_absent_path_gets_a_host_mount_point() {
+    let tree = Tree::empty("fs-deny-write-absent");
+    tree.dir("work/.git");
+    let (work, hooks) = (at(&tree, "work"), at(&tree, "work/.git/hooks"));
+    let mount_point = tree.root().join("work/.git/hooks");
+
+    let plan = Plan::build(&denying_writes(&[&work], &[&hooks])).expect("the config resolves");
+
+    let words: Vec<_> = plan.words().iter().map(|w| w.to_string_lossy()).collect();
+    let at = words
+        .windows(3)
+        .position(|triple| triple == ["--ro-bind", "/dev/null", &*mount_point.to_string_lossy()]);
+    assert!(at.is_some(), "{words:#?}");
+    assert_eq!(plan.mount_points(), [mount_point]);
+}
+
+/// A component with a deny beneath it is an empty directory, which stays
+/// traversable, and a deny of the component itself shares the mount point.
+#[test]
+fn a_component_with_a_deny_beneath_it_is_an_empty_directory() {
+    let tree = Tree::empty("fs-deny-write-component");
+    tree.dir("work");
+    let (work, claude, commands) = (
+        at(&tree, "work"),
+        at(&tree, "work/.claude"),
+        at(&tree, "work/.claude/commands"),
+    );
+
+    let plan = Plan::build(&denying_writes(&[&work], &[&claude, &commands])).expect("a plan");
+
+    let words: Vec<_> = plan.words().iter().map(|w| w.to_string_lossy()).collect();
+    let at = words
+        .windows(3)
+        .position(|triple| triple[0] == "--ro-bind" && triple[2] == claude)
+        .expect("a bind at the first missing component");
+    assert_ne!(words[at + 1], "/dev/null", "{words:#?}");
+    assert_eq!(
+        words.iter().filter(|word| **word == claude).count(),
+        // The bind's dest and the empty directory's own read-only bind are not
+        // this path; the pin of the source is under the temp directory.
+        1,
+        "{words:#?}"
+    );
+    assert_eq!(plan.mount_points(), [std::path::PathBuf::from(&claude)]);
+}
+
+/// bwrap leaves its mount points behind, so a plan removes the ones it is
+/// still holding when it drops. Anything that has been written to is not the
+/// empty file bwrap made, and stays.
+#[test]
+fn mount_points_are_removed_when_the_sandbox_drops() {
+    let tree = Tree::empty("fs-deny-write-drop");
+    tree.dir("work");
+    let (work, made, written) = (
+        at(&tree, "work"),
+        tree.root().join("work/made"),
+        tree.root().join("work/written"),
+    );
+    let plan = Plan::build(&denying_writes(
+        &[&work],
+        &[&made.to_string_lossy(), &written.to_string_lossy()],
+    ))
+    .expect("a plan");
+    // What bwrap does when it runs.
+    std::fs::write(&made, "").expect("a mount point");
+    std::fs::write(&written, "kept").expect("a file");
+
+    drop(plan);
+
+    assert!(!made.exists());
+    assert!(written.exists());
+}
+
+/// A mount point goes when the last plan holding it drops: removing it under a
+/// bwrap that is still running detaches that one's bind.
+#[test]
+fn a_mount_point_outlives_the_first_of_two_sandboxes_to_drop() {
+    let tree = Tree::empty("fs-deny-write-shared");
+    tree.dir("work");
+    let (work, made) = (at(&tree, "work"), tree.root().join("work/made"));
+    let config = denying_writes(&[&work], &[&made.to_string_lossy()]);
+    let first = Plan::build(&config).expect("a plan");
+    let second = Plan::build(&config).expect("a plan");
+    std::fs::write(&made, "").expect("a mount point");
+
+    drop(first);
+    assert!(made.exists());
+    drop(second);
+    assert!(!made.exists());
+}
+
+/// A plan built after bwrap made the first one's mount point finds the path
+/// there, and holds it all the same.
+#[test]
+fn a_mount_point_that_exists_is_held_by_the_next_sandbox() {
+    let tree = Tree::empty("fs-deny-write-existing");
+    tree.dir("work");
+    let (work, made) = (at(&tree, "work"), tree.root().join("work/made"));
+    let config = denying_writes(&[&work], &[&made.to_string_lossy()]);
+    let first = Plan::build(&config).expect("a plan");
+    std::fs::write(&made, "").expect("a mount point");
+    let second = Plan::build(&config).expect("a plan");
+
+    drop(first);
+    assert!(made.exists());
+    assert_eq!(second.mount_points(), std::slice::from_ref(&made));
+    drop(second);
+    assert!(!made.exists());
+}
+
+/// A deny bind over a directory shows what a read tmpfs hid beneath it, so the
+/// tmpfs is made again after it.
+#[test]
+fn a_read_mount_beneath_a_denied_directory_is_made_again() {
+    let tree = Tree::empty("fs-deny-write-reapply");
+    tree.file("work/dir/secret/key", "x");
+    let (work, dir, secret) = (
+        at(&tree, "work"),
+        at(&tree, "work/dir"),
+        at(&tree, "work/dir/secret"),
+    );
+    let mut config = denying_writes(&[&work], &[&dir]);
+    config.filesystem.deny_read = vec![PathEntry::Spelled(secret.clone())];
+
+    let words = plan(&config);
+
+    let deny = mount_at(&words, "--ro-bind", &dir);
+    let again = words
+        .windows(2)
+        .rposition(|pair| pair == ["--tmpfs", &secret]);
+    assert!(again.is_some_and(|at| deny < at), "{words:#?}");
+}
+
+/// A deny bind over a directory shows the host's contents again, so a path
+/// `allowRead` opened in a tmpfs beneath it is hidden and opened again.
+#[test]
+fn a_reopened_path_beneath_a_denied_directory_is_made_again() {
+    let tree = Tree::empty("fs-deny-write-reopen");
+    tree.file("work/dir/secret/public/key", "x");
+    let (work, dir, secret, public) = (
+        at(&tree, "work"),
+        at(&tree, "work/dir"),
+        at(&tree, "work/dir/secret"),
+        at(&tree, "work/dir/secret/public"),
+    );
+    let mut config = denying_writes(&[&work], &[&dir]);
+    config.filesystem.deny_read = vec![PathEntry::Spelled(secret.clone())];
+    config.filesystem.allow_read = Some(vec![PathEntry::Spelled(public.clone())]);
+
+    let words = plan(&config);
+
+    let deny = mount_at(&words, "--ro-bind", &dir);
+    let hidden = words
+        .windows(2)
+        .rposition(|pair| pair == ["--tmpfs", &secret])
+        .expect("the tmpfs is made again");
+    let reopened = words
+        .windows(3)
+        .rposition(|triple| triple == ["--ro-bind", &public, &public])
+        .expect("the path is opened again");
+    assert!(deny < hidden && hidden < reopened, "{words:#?}");
+}
+
+/// A deny of a directory under a read tmpfs makes no bind of its own, but a
+/// path `allowRead` opened inside it came back writable, so it is bound
+/// read-only after.
+#[test]
+fn a_reopened_path_under_a_hidden_deny_is_bound_read_only() {
+    let tree = Tree::empty("fs-deny-write-hidden");
+    tree.file("work/secret/pub/key", "x");
+    let (work, secret, public) = (
+        at(&tree, "work"),
+        at(&tree, "work/secret"),
+        at(&tree, "work/secret/pub"),
+    );
+    let mut config = denying_writes(&[&work], &[&secret]);
+    config.filesystem.deny_read = vec![PathEntry::Spelled(secret.clone())];
+    config.filesystem.allow_read = Some(vec![PathEntry::Spelled(public.clone())]);
+
+    let words = plan(&config);
+
+    let writable = bind_at(&words, &public);
+    let read_only = words
+        .windows(3)
+        .rposition(|triple| triple == ["--ro-bind", &public, &public])
+        .expect("the path is bound read-only");
+    assert!(writable < read_only, "{words:#?}");
+}
+
+/// A mount point another sandbox holds as a directory above this one's is held
+/// as well, or it is left behind with the second's inside it.
+#[test]
+fn a_mount_point_above_the_next_sandboxs_is_held_by_it() {
+    let tree = Tree::empty("fs-deny-write-above");
+    tree.dir("work");
+    let (work, commands) = (at(&tree, "work"), at(&tree, "work/.claude/commands"));
+    let claude = tree.root().join("work/.claude");
+    let config = denying_writes(&[&work], &[&commands]);
+    let first = Plan::build(&config).expect("a plan");
+    std::fs::create_dir(&claude).expect("a mount point");
+    let second = Plan::build(&config).expect("a plan");
+    std::fs::create_dir(claude.join("commands")).expect("a mount point");
+
+    drop(first);
+    assert!(claude.exists());
+    drop(second);
+    assert!(!claude.exists());
 }
 
 #[test]

@@ -16,8 +16,9 @@
 //!
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
 //! default settings, the settings crabpot refuses, the keys upstream ignores
-//! there, the `allowWrite` cases and the `denyRead` and `denyWrite` cases but
-//! the two `literal` ones, and every other case under upstream's `srt-win` path
+//! there, the `allowRead` and `allowWrite` cases and the `denyRead` and
+//! `denyWrite` cases but the two `literal` ones, and every other case under
+//! upstream's `srt-win` path
 //! alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
@@ -126,6 +127,10 @@ const WINDOWS_READY: &[&str] = &[
     "refused_denied_domains_bad_entry",
     "refused_mitm_empty_domains",
     "refused_resolved_address_bad_cidr",
+    "allow_read_file",
+    "allow_read_folder",
+    "allow_read_glob",
+    "allow_read_folder_alone_glob",
     "allow_write_folder",
     "allow_write_outside_is_refused",
     "allow_write_glob",

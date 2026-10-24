@@ -209,8 +209,9 @@ pub(crate) fn start_with(
 ///
 /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither none
 /// nor current, [`StartError::StatusFailed`] for a status with no sandbox user
-/// SID, [`StartError::GrantBlocked`] or [`StartError::GrantFailed`] when the
-/// grant call fails, and the errors of
+/// SID, [`StartError::ProfileConflicts`] for a grant that meets the profile read
+/// grant's exclusions, [`StartError::GrantBlocked`], [`StartError::ProfileBusy`]
+/// or [`StartError::GrantFailed`] when the grant call fails, and the errors of
 /// [`wfp::interpret`](super::wfp::interpret) when the fence is not verified. A
 /// failure after the grant releases it.
 fn prepare(
@@ -229,7 +230,7 @@ fn prepare(
         command: "user status",
         code: None,
     })?;
-    let plan = Plan::build(config)?;
+    let plan = Plan::build(config, &status.profile_exclusions)?;
     let allow_loopback = config.network.allow_local_binding == Some(true);
     // The range the install's filters name, which the fence probe must stay
     // outside of, and the range the proxy binds: the configured one first, as
@@ -348,7 +349,7 @@ fn listener_outside(range: PortRange) -> io::Result<Probe> {
 mod tests {
     use super::*;
     use crate::windows::srt::fake::{BLOCKED, Calls, Fake, exit};
-    use crate::windows::status::{LoopbackMode, SetupVersion, UserState};
+    use crate::windows::status::{LoopbackMode, ProfileExclusions, SetupVersion, UserState};
 
     fn status() -> WindowsStatus {
         WindowsStatus {
@@ -362,6 +363,7 @@ mod tests {
             // A range of this suite's own, wide enough for every test at once.
             proxy_ports: Some(40000..=40063),
             profile: ProfileState::Current,
+            profile_exclusions: ProfileExclusions::default(),
             seclogon_runs: true,
             in_desktop_session: true,
         }

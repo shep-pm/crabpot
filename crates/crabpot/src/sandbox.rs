@@ -78,7 +78,9 @@ impl Sandbox {
     /// cannot spell, which is a Linux answer too. On Windows the status checks
     /// of [`windows_preflight_for`](crate::windows_preflight_for) run first, then
     /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
-    /// none nor current, [`StartError::GrantBlocked`] or
+    /// none nor current, [`StartError::ProfileConflicts`] when a grant
+    /// meets what the profile read grant keeps out of reach,
+    /// [`StartError::GrantBlocked`], [`StartError::ProfileBusy`] or
     /// [`StartError::GrantFailed`] when the session's grants and denies cannot
     /// be made, and [`StartError::LoopbackMismatch`],
     /// [`StartError::FenceInactive`] or [`StartError::FenceUnverified`] when the
@@ -301,6 +303,25 @@ fn carry_over(command: &Command, wrapped: &mut Command) {
     }
 }
 
+/// A path a Windows session asks to grant, and the exclusion of the profile
+/// read grant it meets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileConflict {
+    /// The path, as the settings resolved it.
+    pub path: String,
+    /// The exclusion, as the profile grant recorded it.
+    pub exclusion: String,
+    /// Whether the session asked to write the path, and not only read it.
+    pub write: bool,
+}
+
+impl fmt::Display for ProfileConflict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let access = if self.write { "write" } else { "read" };
+        write!(f, "{} ({access}) meets {}", self.path, self.exclusion)
+    }
+}
+
 /// Why a sandbox did not start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // A platform or a proxy that fails to start adds a variant without breaking a
@@ -365,11 +386,18 @@ pub enum StartError {
         /// Its exit code, when it ran to one.
         code: Option<i32>,
     },
-    /// Windows: srt-win exited 25 for the `acl grant` call (or 24), because a
-    /// `profile grant` or `profile forget` holds the lock the call needs. Nothing
-    /// was granted or denied, and the call can be made again once that
-    /// operation is done.
+    /// Windows: srt-win exited 24 for the `acl grant` call, which holds it off.
+    /// Nothing was granted or denied, and the call can be made again.
     GrantBlocked,
+    /// Windows: srt-win exited 25 for the `acl grant` call, because a
+    /// `profile grant` or `profile forget` holds the lock the call needs.
+    /// Nothing was granted or denied, and the call can be made again once that
+    /// operation is done.
+    ProfileBusy,
+    /// Windows: the session asks to grant paths that the profile read grant
+    /// keeps out of reach, each named with the exclusion it meets. Nothing was
+    /// granted or denied.
+    ProfileConflicts(Vec<ProfileConflict>),
     /// Windows: the installed firewall filters leave loopback open or closed
     /// the other way from `network.allowLocalBinding`, and the install has to
     /// be run again with this session's setting.
@@ -480,8 +508,22 @@ impl fmt::Display for StartError {
             Self::GrantFailed { code: None } => write!(f, "`srt-win acl grant` did not run"),
             Self::GrantBlocked => write!(
                 f,
+                "`srt-win acl grant` was held off (exit 24), and changed nothing"
+            ),
+            Self::ProfileBusy => write!(
+                f,
                 "`srt-win acl grant` was held off by a profile grant or forget in progress, and changed nothing"
             ),
+            Self::ProfileConflicts(conflicts) => {
+                write!(
+                    f,
+                    "the profile read grant keeps these out of a session's grants:"
+                )?;
+                for conflict in conflicts {
+                    write!(f, " {conflict};")?;
+                }
+                Ok(())
+            }
             Self::LoopbackMismatch => write!(
                 f,
                 "the installed firewall filters do not match network.allowLocalBinding; run the install again with this session's setting"

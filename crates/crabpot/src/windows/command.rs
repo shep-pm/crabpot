@@ -132,12 +132,18 @@ fn line_of(command: &Command) -> Result<String, WrapError> {
 /// acts on, whitespace, or no characters is in quotes, with the backslashes
 /// before the closing quote doubled for the program's own parse.
 ///
+/// A word that is not valid Unicode is refused, since the line is text.
+///
 /// A double quote, a percent sign and a line break cannot be made literal:
 /// `cmd.exe` expands `%name%` and ends a quote at `"` whatever escapes the
 /// program would read, so a word with one is refused.
 fn quote(word: &OsStr) -> Result<Cow<'_, str>, WrapError> {
     const SPECIAL: &str = "&|<>^()!,;=";
-    let text = word.to_string_lossy();
+    let Some(text) = word.to_str() else {
+        return Err(WrapError::Cmd(format!(
+            "{word:?} is not valid Unicode, which a cmd.exe line cannot carry as it is"
+        )));
+    };
     if let Some(bad) = text
         .chars()
         .find(|c| matches!(c, '"' | '%' | '\r' | '\n' | '\0'))
@@ -147,7 +153,7 @@ fn quote(word: &OsStr) -> Result<Cow<'_, str>, WrapError> {
         )));
     }
     if !text.is_empty() && !text.contains(|c: char| c.is_whitespace() || SPECIAL.contains(c)) {
-        return Ok(text);
+        return Ok(Cow::Borrowed(text));
     }
     let trailing = text.len() - text.trim_end_matches('\\').len();
     Ok(Cow::Owned(format!("\"{text}{}\"", "\\".repeat(trailing))))
@@ -308,6 +314,18 @@ mod tests {
             assert!(matches!(error, WrapError::Cmd(_)), "{word:?}: {error:?}");
         }
         assert!(line(&["to%ol.exe"]).is_err());
+    }
+
+    #[test]
+    fn a_word_that_is_not_unicode_is_refused() {
+        #[cfg(windows)]
+        let word = std::os::windows::ffi::OsStringExt::from_wide(&[0xD800]);
+        #[cfg(unix)]
+        let word = std::os::unix::ffi::OsStringExt::from_vec(vec![0xff]);
+        let mut command = echo();
+        command.arg::<std::ffi::OsString>(word);
+
+        assert!(matches!(line_of(&command), Err(WrapError::Cmd(_))));
     }
 
     #[test]

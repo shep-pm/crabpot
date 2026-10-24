@@ -137,7 +137,8 @@ impl Outcome {
     /// Whether the grant is released. A status this build does not know is not.
     fn released(&self) -> bool {
         match self.status.as_str() {
-            "revoked" | "stillHeld" | "downgraded" | "relocated" | "noRow" | "gone" => true,
+            "revoked" | "stillHeld" | "downgraded" | "relocated" | "mismatch" | "noRow"
+            | "gone" => true,
             // An older srt-win says it of a path it could not open too, so it
             // counts only when the path is gone.
             "missing" => matches!(
@@ -615,6 +616,20 @@ mod tests {
         drop(session);
 
         assert!(calls.starting(&["acl", "restore"]).is_empty());
+    }
+
+    #[test]
+    fn a_revoke_that_found_a_substituted_path_is_finished() {
+        let (srt, calls) = Fake::answering(|call| match call.args[1].as_str() {
+            "revoke" => exit(0, r#"[{"path":"C:\\work","status":"mismatch"}]"#),
+            "verify" => exit(0, BLOCKED),
+            _ => exit(0, "[]"),
+        });
+        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
+
+        drop(session);
+
+        assert_eq!(calls.starting(&["acl", "restore"]).len(), 1);
     }
 
     #[test]

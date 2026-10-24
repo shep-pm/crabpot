@@ -15,8 +15,8 @@
 //! them beside [`vars`], for they need the proxies' ports and credential, which
 //! the wrapper holds and this module does not.
 
-pub mod http;
-pub mod socks;
+pub use crabpot_core::env::{http, socks};
+
 pub mod ssh;
 
 use std::ffi::OsString;

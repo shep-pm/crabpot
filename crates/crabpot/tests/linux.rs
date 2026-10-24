@@ -5,7 +5,12 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use nix::sys::signal::{SigSet, Signal};
 
 const CRABPOT: &str = env!("CARGO_BIN_EXE_crabpot");
 
@@ -172,33 +177,95 @@ fn ambient_capabilities_are_cleared() {
     assert_eq!(stdout(&output), "CapAmb:\t0000000000000000\n");
 }
 
-#[test]
-fn a_sigterm_to_the_helper_reaches_the_command() {
-    // `wait` returns as soon as a trapped signal arrives, where a foreground
-    // `sleep` would not.
-    let script = r#"trap 'echo trapped; exit 3' TERM; echo ready; sleep 30 & wait"#;
-    let mut helper = Command::new(CRABPOT)
+/// Starts the helper on `script` with its standard output piped, so a test can
+/// signal it and read what the command wrote.
+fn spawn_helper(script: &str) -> Child {
+    Command::new(CRABPOT)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--crabpot-helper", "init", "sh", "-c", script])
         .stdout(Stdio::piped())
         .spawn()
+        .unwrap()
+}
+
+fn send(signal: &str, helper: &Child) {
+    let sent = Command::new("kill")
+        .args([format!("-{signal}"), helper.id().to_string()])
+        .status()
         .unwrap();
+    assert!(sent.success());
+}
+
+/// Sends `signal` to the helper once the command says it is ready, and returns
+/// what the command wrote after that with the helper's exit status.
+fn signal_a_ready_command(signal: &str) -> (String, ExitStatus) {
+    // `wait` returns as soon as a trapped signal arrives, where a foreground
+    // `sleep` would not.
+    let script = format!("trap 'echo trapped; exit 3' {signal}; echo ready; sleep 30 & wait");
+    let mut helper = spawn_helper(&script);
     let mut stdout = BufReader::new(helper.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     assert_eq!(line, "ready\n");
 
-    let sent = Command::new("kill")
-        .args(["-TERM", &helper.id().to_string()])
-        .status()
-        .unwrap();
+    send(signal, &helper);
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();
-    let status = helper.wait().unwrap();
+    (rest, helper.wait().unwrap())
+}
 
-    assert!(sent.success());
+#[test]
+fn sigterm_reaches_the_command() {
+    let (rest, status) = signal_a_ready_command("TERM");
+
     assert_eq!(rest, "trapped\n");
     assert_eq!(status.code(), Some(3));
+}
+
+#[test]
+fn sigint_reaches_the_command() {
+    let (rest, status) = signal_a_ready_command("INT");
+
+    assert_eq!(rest, "trapped\n");
+    assert_eq!(status.code(), Some(3));
+}
+
+#[test]
+fn a_signal_death_gives_128_plus_the_signal() {
+    // SIGKILL is not one the helper forwards, so the status is the mapping and
+    // nothing else.
+    let script = "kill -KILL $$";
+
+    let direct = crabpot(&["--crabpot-helper", "init", "sh", "-c", script]);
+    let sandboxed = crabpot(&["--", "sh", "-c", script]);
+
+    assert_eq!(direct.status.code(), Some(137), "{direct:?}");
+    assert_eq!(sandboxed.status.code(), Some(137), "{sandboxed:?}");
+}
+
+#[test]
+fn a_signal_during_startup_is_not_lost() {
+    // The helper starts with SIGTERM blocked and already pending, so the signal
+    // arrives before it has a handler or a command to pass it to. It must wait
+    // for the command, which then ends by it before it runs anything.
+    let mut term = SigSet::empty();
+    term.add(Signal::SIGTERM);
+    term.thread_block().unwrap();
+    let helper = spawn_helper("echo ran");
+    send("TERM", &helper);
+    term.thread_unblock().unwrap();
+
+    // A signal lost on the way would leave the command to run and exit 0, and
+    // one that looped in the helper would never end.
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || sender.send(helper.wait_with_output()));
+    let output = receiver
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the helper did not end")
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(143), "{output:?}");
+    assert!(output.stdout.is_empty(), "the command ran: {output:?}");
 }
 
 /// Runs `script` under bash inside the sandbox, whose only way out is the

@@ -137,7 +137,11 @@ fn namespace_init(argv: &[OsString], own_user_namespace: bool) -> Result<i32, In
     match fork_forwarding()? {
         ForkResult::Parent { child } => Ok(reap_until(child)),
         ForkResult::Child => {
-            // The mask would outlive the `exec`.
+            // The handlers the fork copied would pass a signal to a target this
+            // process never had, and the mask would outlive the `exec`. A signal
+            // pending now ends the command by its default action.
+            sys::restore_default_signals(&FORWARDED)
+                .map_err(|reason| InitError::step(Step::Signals, reason))?;
             unblock_forwarded()?;
             Err(InitError::Exec(exec(argv)))
         }
@@ -153,7 +157,8 @@ fn namespace_init(argv: &[OsString], own_user_namespace: bool) -> Result<i32, In
 /// child keeps them blocked, pending rather than dropped, until it has handlers
 /// of its own or is about to run the command, and then calls
 /// [`unblock_forwarded`]: a namespace's init drops a signal from outside it
-/// that it has no handler for.
+/// that it has no handler for. The command's process puts the default action
+/// back first.
 fn fork_forwarding() -> Result<ForkResult, InitError> {
     let signals = |reason| InitError::step(Step::Signals, reason);
     forwarded_set().thread_block().map_err(signals)?;

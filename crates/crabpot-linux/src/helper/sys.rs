@@ -66,3 +66,15 @@ pub(super) fn forward_signals(child: Pid, signals: &[Signal]) -> Result<(), Errn
     }
     Ok(())
 }
+
+/// Puts each of `signals` back to its default action, for a process that
+/// inherited [`forward_signals`]'s handler and has no target to pass to.
+pub(super) fn restore_default_signals(signals: &[Signal]) -> Result<(), Errno> {
+    let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+    for &signal in signals {
+        // SAFETY: `SigDfl` installs no handler, so no code runs in a signal
+        // context.
+        unsafe { sigaction(signal, &action) }?;
+    }
+    Ok(())
+}

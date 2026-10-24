@@ -179,6 +179,15 @@ fn ambient_capabilities_are_cleared() {
     assert_eq!(stdout(&output), "CapAmb:\t0000000000000000\n");
 }
 
+#[test]
+fn the_command_runs_under_the_seccomp_filters_with_no_new_privs() {
+    // Mode 2 is a filter installed, and the bit is what let an unprivileged
+    // process install it.
+    let output = in_helper("grep -E '^(NoNewPrivs|Seccomp):' /proc/self/status");
+
+    assert_eq!(stdout(&output), "NoNewPrivs:\t1\nSeccomp:\t2\n");
+}
+
 /// Starts the helper on `script` with its standard output piped, so a test can
 /// signal it and read what the command wrote.
 fn spawn_helper(script: &str) -> Child {

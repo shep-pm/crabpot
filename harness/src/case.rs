@@ -41,6 +41,31 @@ pub enum Probe {
     SignalGroup,
     /// Ask `ps` whether a process runs.
     Ps,
+    /// Make a stream socket of the family. Linux only.
+    Socket(Family),
+    /// Call `io_uring_setup`. Linux only.
+    IoUringSetup,
+    /// Make a user namespace with `unshare`. Linux only.
+    UnshareUser,
+}
+
+/// The address family of a `socket` probe: the two a Linux sandbox refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// `AF_UNIX`.
+    Unix,
+    /// `AF_VSOCK`.
+    Vsock,
+}
+
+impl Family {
+    /// The word the `probe` binary and a case's `family` spell it with.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Unix => "unix",
+            Self::Vsock => "vsock",
+        }
+    }
 }
 
 /// A proxy other than the HTTP one that a `connect` probe goes through.
@@ -286,6 +311,9 @@ impl Probe {
             Self::Loopback => vec!["loopback".to_owned()],
             Self::SignalGroup => vec!["signal-group".to_owned()],
             Self::Ps => vec!["ps".to_owned()],
+            Self::Socket(family) => vec!["socket".to_owned(), family.word().to_owned()],
+            Self::IoUringSetup => vec!["io-uring-setup".to_owned()],
+            Self::UnshareUser => vec!["unshare-user".to_owned()],
         }
     }
 
@@ -329,6 +357,15 @@ impl Probe {
             "loopback" => Ok(Self::Loopback),
             "signal-group" => Ok(Self::SignalGroup),
             "ps" => Ok(Self::Ps),
+            "socket" => match text("family")?.as_str() {
+                "unix" => Ok(Self::Socket(Family::Unix)),
+                "vsock" => Ok(Self::Socket(Family::Vsock)),
+                _ => Err(Error::Shape(
+                    "a probe with a `family` that is not \"unix\" or \"vsock\"".to_owned(),
+                )),
+            },
+            "io-uring-setup" => Ok(Self::IoUringSetup),
+            "unshare-user" => Ok(Self::UnshareUser),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -401,6 +438,54 @@ mod tests {
                 Probe::Ps,
             ]
         );
+    }
+
+    #[test]
+    fn the_kernel_probes_parse_and_spell_their_words() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "probes": [
+                {"kind": "socket", "family": "unix"},
+                {"kind": "socket", "family": "vsock"},
+                {"kind": "io-uring-setup"},
+                {"kind": "unshare-user"}
+            ]
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+        assert_eq!(
+            case.probes,
+            [
+                Probe::Socket(Family::Unix),
+                Probe::Socket(Family::Vsock),
+                Probe::IoUringSetup,
+                Probe::UnshareUser,
+            ]
+        );
+        let words: Vec<Vec<String>> = case.probes.iter().map(Probe::args).collect();
+        assert_eq!(
+            words,
+            [
+                ["socket", "unix"].as_slice(),
+                ["socket", "vsock"].as_slice(),
+                ["io-uring-setup"].as_slice(),
+                ["unshare-user"].as_slice(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_socket_probe_needs_a_family_the_probe_knows() {
+        for probe in [
+            r#"{"kind": "socket"}"#,
+            r#"{"kind": "socket", "family": "inet"}"#,
+        ] {
+            let text = format!(r#"{{"files": {{}}, "settings": {{}}, "probes": [{probe}]}}"#);
+            assert!(
+                matches!(Case::parse(&text, "/r"), Err(Error::Shape(_))),
+                "{probe}"
+            );
+        }
     }
 
     /// A socket probe may name its socket against the case root instead, which
@@ -632,6 +717,7 @@ mod tests {
                     }
                     Probe::Read(_) | Probe::Connect { .. } | Probe::Bind | Probe::Loopback => {}
                     Probe::SignalGroup | Probe::Ps => {}
+                    Probe::Socket(_) | Probe::IoUringSetup | Probe::UnshareUser => {}
                 }
             }
         }

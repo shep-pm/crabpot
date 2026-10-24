@@ -49,6 +49,12 @@ _Avoid_: launcher, shim, the srt process
 The unnamed file a bwrap policy too long for one `exec` line moves its flags to, which `bwrap` reads back with `--args`. It is opened `O_TMPFILE`, and the line reaches it through `/proc/<pid>/fd/<n>`.
 _Avoid_: profile file, args profile, response file
 
+### Filesystem
+
+**Mandatory denies**:
+The write protection a sandbox applies in and below its own working directory whatever the settings say: shell and tool settings files and each git repository's hooks and config, and the directories holding them, found by a walk down to the search depth. They are in no list of the settings, and on Linux they go through the same deny loop as `denyWrite`.
+_Avoid_: built-in denies, implicit denies, system denies
+
 ### Consumers
 
 **Proving ground**:

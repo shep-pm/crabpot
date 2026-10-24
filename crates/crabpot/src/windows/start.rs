@@ -211,7 +211,8 @@ pub(crate) fn start_with(
 /// nor current, [`StartError::StatusFailed`] for a status with no sandbox user
 /// SID, [`StartError::LoopbackMismatch`] for a session whose
 /// `network.allowLocalBinding` is not the loopback mode the install made,
-/// [`StartError::GrantFailed`] when the grant call fails, and the errors of
+/// [`StartError::GrantBlocked`] or [`StartError::GrantFailed`] when the grant
+/// call fails, and the errors of
 /// [`wfp::interpret`](super::wfp::interpret) when the fence is not verified. A
 /// failure after the grant releases it.
 fn prepare(
@@ -260,11 +261,7 @@ fn prepare(
         sid,
         holder: host.holder,
     };
-    match held.srt.run(&plan.grant(&held.sid, held.holder)) {
-        Ok(output) if output.succeeded() => {}
-        Ok(output) => return Err(StartError::GrantFailed { code: output.code }),
-        Err(_) => return Err(StartError::GrantFailed { code: None }),
-    }
+    plan.apply(&*held.srt, &held.sid, held.holder)?;
     if !verified.holds(&held.sid, allow_loopback) {
         verify(&*held.srt, &plan, allow_loopback, listen(installed))?;
         verified.record(&held.sid, allow_loopback);

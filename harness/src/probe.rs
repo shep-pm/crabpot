@@ -52,6 +52,9 @@ pub enum Error {
     BadSocksAnswer(Vec<u8>),
     /// [`HARNESS_PID`] is not set to a pid.
     BadHarnessPid(Option<String>),
+    /// A `backslash-argument` probe was given an argument with no backslash,
+    /// which proves nothing about how a backslash travels.
+    NoBackslash(String),
     /// The action failed with an error that is not a refusal, such as a missing file.
     Io(std::io::Error),
 }
@@ -62,7 +65,7 @@ impl core::fmt::Display for Error {
             Self::Usage => f.write_str(
                 "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> \
                  <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path> | loopback \
-                 | signal-group | ps | ps-outside | socket <unix|vsock> | io-uring-setup | unshare-user",
+                 | signal-group | ps | ps-outside | backslash-argument <text> | socket <unix|vsock> | io-uring-setup | unshare-user",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadSocksProxy => {
@@ -74,6 +77,9 @@ impl core::fmt::Display for Error {
             }
             Self::BadHarnessPid(value) => {
                 write!(f, "{HARNESS_PID} is {value:?}, not a pid")
+            }
+            Self::NoBackslash(argument) => {
+                write!(f, "{argument:?} has no backslash for the probe to follow")
             }
             Self::Io(source) => write!(f, "{source}"),
         }
@@ -88,7 +94,8 @@ impl core::error::Error for Error {
             | Self::BadSocksProxy
             | Self::BadAnswer(_)
             | Self::BadSocksAnswer(_)
-            | Self::BadHarnessPid(_) => None,
+            | Self::BadHarnessPid(_)
+            | Self::NoBackslash(_) => None,
             Self::Io(source) => Some(source),
         }
     }
@@ -156,6 +163,7 @@ fn attempt(
         ["io-uring-setup"] => kernel::io_uring_setup(),
         #[cfg(target_os = "linux")]
         ["unshare-user"] => kernel::unshare_user(),
+        ["backslash-argument", argument] => backslash_argument(argument),
         _ => Err(Error::Usage),
     }
 }
@@ -546,6 +554,18 @@ fn ps() -> Outcome {
     asked
 }
 
+/// Whether an argument that holds a backslash arrived without a pair of single
+/// quotes round it, which is how upstream's Windows runner passes one on.
+///
+/// Allowed when it arrived as it was written, refused when it is wrapped.
+fn backslash_argument(argument: &str) -> Outcome {
+    if !argument.contains('\\') {
+        return Err(Error::NoBackslash(argument.to_owned()));
+    }
+    let wrapped = argument.len() > 1 && argument.starts_with('\'') && argument.ends_with('\'');
+    Ok(!wrapped)
+}
+
 /// Asks `ps` whether the harness's own process runs, which it does not from
 /// inside a pid namespace of the sandbox's own: `ps` lists the sandbox's pids
 /// and no others.
@@ -772,6 +792,23 @@ mod tests {
     fn signal_group_and_ps_exit_0_unsandboxed() {
         assert_eq!(probe(&["signal-group"]), 0);
         assert_eq!(probe(&["ps"]), 0);
+    }
+
+    #[test]
+    fn a_backslash_argument_that_arrives_whole_exits_0() {
+        assert_eq!(probe(&["backslash-argument", r"C:\work\out.txt"]), 0);
+        assert_eq!(probe(&["backslash-argument", r"\\host\share"]), 0);
+    }
+
+    #[test]
+    fn a_backslash_argument_wrapped_in_single_quotes_exits_1() {
+        assert_eq!(probe(&["backslash-argument", r"'C:\work\out.txt'"]), 1);
+    }
+
+    #[test]
+    fn an_argument_with_no_backslash_exits_2() {
+        assert_eq!(probe(&["backslash-argument", "C:/work/out.txt"]), 2);
+        assert_eq!(probe(&["backslash-argument", "'C:/work'"]), 2);
     }
 
     /// Unsandboxed the pid namespace is the harness's own, so `ps` names it.

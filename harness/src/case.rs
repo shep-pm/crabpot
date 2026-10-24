@@ -50,6 +50,26 @@ pub enum Probe {
     /// Ask `ps` for the harness's own process, which a sandbox with a pid
     /// namespace of its own does not hold.
     PsOutside,
+    /// Pass the program an argument that holds a backslash, and report whether
+    /// it arrived as written. Upstream's Windows runner wraps such an argument
+    /// in single quotes, so `upstream` is the code it is known to give, which
+    /// crabpot must not.
+    BackslashArgument {
+        /// The argument, which holds a backslash.
+        value: String,
+        /// The code upstream's runner gives, recorded as the difference.
+        upstream: u8,
+    },
+}
+
+impl Probe {
+    /// The code upstream is known to give where crabpot differs on purpose.
+    pub fn upstream_exit(&self) -> Option<u8> {
+        match self {
+            Self::BackslashArgument { upstream, .. } => Some(*upstream),
+            _ => None,
+        }
+    }
 }
 
 /// The address family of a `socket` probe: the two a Linux sandbox refuses.
@@ -318,6 +338,9 @@ impl Probe {
             Self::IoUringSetup => vec!["io-uring-setup".to_owned()],
             Self::UnshareUser => vec!["unshare-user".to_owned()],
             Self::PsOutside => vec!["ps-outside".to_owned()],
+            Self::BackslashArgument { value, .. } => {
+                vec!["backslash-argument".to_owned(), value.clone()]
+            }
         }
     }
 
@@ -371,6 +394,15 @@ impl Probe {
             "io-uring-setup" => Ok(Self::IoUringSetup),
             "unshare-user" => Ok(Self::UnshareUser),
             "ps-outside" => Ok(Self::PsOutside),
+            "backslash-argument" => Ok(Self::BackslashArgument {
+                value: text("value")?,
+                upstream: field("upstream")
+                    .and_then(Value::as_u64)
+                    .and_then(|code| u8::try_from(code).ok())
+                    .ok_or_else(|| {
+                        Error::Shape("a probe without an `upstream` that fits 8 bits".to_owned())
+                    })?,
+            }),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -516,6 +548,47 @@ mod tests {
                 Probe::ConnectUnix("socks/live.sock".to_owned()),
             ]
         );
+    }
+
+    /// A backslash-argument probe records the code upstream gives, which is
+    /// the difference the case pins.
+    #[test]
+    fn a_backslash_argument_probe_records_the_code_upstream_gives() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "probes": [{"kind": "backslash-argument", "value": "C:\\work", "upstream": 1}]
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+        let [probe] = case.probes.as_slice() else {
+            panic!("one probe: {:?}", case.probes);
+        };
+
+        assert_eq!(
+            *probe,
+            Probe::BackslashArgument {
+                value: r"C:\work".to_owned(),
+                upstream: 1,
+            }
+        );
+        assert_eq!(probe.args(), ["backslash-argument", r"C:\work"]);
+        assert_eq!(probe.upstream_exit(), Some(1));
+        assert_eq!(Probe::Bind.upstream_exit(), None);
+    }
+
+    #[test]
+    fn a_backslash_argument_probe_needs_a_value_and_a_code_upstream_gives() {
+        for probe in [
+            r#"{"kind": "backslash-argument", "upstream": 1}"#,
+            r#"{"kind": "backslash-argument", "value": "C:\\work"}"#,
+            r#"{"kind": "backslash-argument", "value": "C:\\work", "upstream": 256}"#,
+        ] {
+            let text = format!(r#"{{"files": {{}}, "settings": {{}}, "probes": [{probe}]}}"#);
+            assert!(
+                matches!(Case::parse(&text, "/r"), Err(Error::Shape(_))),
+                "{probe}"
+            );
+        }
     }
 
     #[test]
@@ -728,7 +801,8 @@ mod tests {
                     Probe::Socket(_)
                     | Probe::IoUringSetup
                     | Probe::UnshareUser
-                    | Probe::PsOutside => {}
+                    | Probe::PsOutside
+                    | Probe::BackslashArgument { .. } => {}
                 }
             }
         }

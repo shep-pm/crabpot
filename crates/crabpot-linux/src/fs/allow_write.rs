@@ -23,6 +23,8 @@
 //! back over them.
 //!
 //! `denyWrite` comes after this section, and the mandatory write denies with it.
+//! The ancestor pins go in before it, or after it under a grant of the whole
+//! root (see [`pins`](super::pins)).
 
 use std::ffi::OsString;
 
@@ -34,17 +36,34 @@ use crabpot_core::paths::{
 };
 use crabpot_core::PathError;
 
-pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
-    words_with(config, &PathBase::from_env())
+use super::Draft;
+
+pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
+    let base = PathBase::from_env();
+    let binds = bind_paths(&base, config)?;
+    let words = bind_words(&binds);
+    // A bind of the whole root buries the pins spliced in beneath it, so they
+    // follow the binds then.
+    draft.pin_at = if binds.iter().any(|path| path == "/") {
+        draft.offset + words.len()
+    } else {
+        draft.offset
+    };
+    draft.write_roots = binds;
+    Ok(words)
 }
 
 /// The binds for `config`'s writable paths, read against `base`.
+#[cfg(test)]
 pub(super) fn words_with(config: &Config, base: &PathBase) -> Result<Vec<OsString>, PathError> {
-    let mut words = Vec::new();
-    for path in bind_paths(base, config)? {
-        words.extend([OsString::from("--bind"), OsString::from(&path), OsString::from(&path)]);
-    }
-    Ok(words)
+    Ok(bind_words(&bind_paths(base, config)?))
+}
+
+fn bind_words(binds: &[String]) -> Vec<OsString> {
+    binds
+        .iter()
+        .flat_map(|path| ["--bind", path, path].map(OsString::from))
+        .collect()
 }
 
 /// Every path a bwrap invocation binds writable: the default write roots, then
@@ -52,7 +71,7 @@ pub(super) fn words_with(config: &Config, base: &PathBase) -> Result<Vec<OsStrin
 fn bind_paths(base: &PathBase, config: &Config) -> Result<Vec<String>, PathError> {
     let split = split_path_entries(&config.filesystem.allow_write);
     let mut paths = default_write_paths(base, config)?;
-    paths.extend(strip_write_globs(base, &split.spelled)?);
+    paths.extend(strip_write_globs(base, &split.spelled, ListKind::Allow)?);
     paths.extend(split.marked.iter().map(|path| (*path).to_owned()));
     let mut binds = Vec::new();
     for path in paths {
@@ -63,17 +82,21 @@ fn bind_paths(base: &PathBase, config: &Config) -> Result<Vec<String>, PathError
     Ok(binds)
 }
 
-/// `allowWrite`'s spellings as paths.
+/// A write list's spellings as paths.
 ///
 /// A trailing `/**` says "the directory and all under it", which a bind of the
 /// directory already does. What is still a pattern binds nothing: bwrap binds
 /// paths, and a pattern is not one. A spelling that is also the name of a path
 /// is kept as that name.
-fn strip_write_globs(base: &PathBase, spellings: &[&str]) -> Result<Vec<String>, PathError> {
+pub(super) fn strip_write_globs(
+    base: &PathBase,
+    spellings: &[&str],
+    kind: ListKind,
+) -> Result<Vec<String>, PathError> {
     let mut paths = Vec::new();
     for spelling in spellings {
         let stripped = remove_trailing_glob_suffix(spelling);
-        if contains_glob_chars(&stripped) && !has_name_reading(base, &stripped)? {
+        if contains_glob_chars(&stripped) && !has_name_reading(base, &stripped, kind)? {
             continue;
         }
         paths.push(stripped);
@@ -83,8 +106,8 @@ fn strip_write_globs(base: &PathBase, spellings: &[&str]) -> Result<Vec<String>,
 
 /// Whether `spelling` is also the name of a directory or file, which is what a
 /// bind needs.
-fn has_name_reading(base: &PathBase, spelling: &str) -> Result<bool, PathError> {
-    Ok(literal_readings(base, spelling, ListKind::Allow)?
+fn has_name_reading(base: &PathBase, spelling: &str, kind: ListKind) -> Result<bool, PathError> {
+    Ok(literal_readings(base, spelling, kind)?
         .iter()
         .any(|reading| matches!(reading, PathReading::Name { .. })))
 }

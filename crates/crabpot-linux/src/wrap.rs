@@ -6,7 +6,17 @@ use std::path::Path;
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
-use crate::fs::Plan;
+use crate::fs::{MountPoints, Plan};
+
+/// A bwrap invocation's words, and what must outlast them.
+#[derive(Debug)]
+pub struct Wrapped {
+    /// The words, `bwrap` itself first.
+    pub words: Vec<OsString>,
+    /// The host paths bwrap makes for the denies in `words`. They are removed
+    /// when this drops, so keep it for as long as a command may run.
+    pub mount_points: MountPoints,
+}
 
 /// The words that make a bwrap invocation, `bwrap` itself first, for a command
 /// under `config`.
@@ -19,15 +29,15 @@ use crate::fs::Plan;
 ///
 /// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
 /// or is relative and there is no working directory.
-pub fn words(
-    bwrap: &Path,
-    config: &Config,
-    root_with_setfcap: bool,
-) -> Result<Vec<OsString>, PathError> {
+pub fn words(bwrap: &Path, config: &Config, root_with_setfcap: bool) -> Result<Wrapped, PathError> {
+    let (plan_words, mount_points) = Plan::build(config)?.into_parts();
     let mut words = vec![bwrap.as_os_str().to_owned()];
-    words.extend_from_slice(Plan::build(config)?.words());
+    words.extend(plan_words);
     words.extend(capability_words(root_with_setfcap));
-    Ok(words)
+    Ok(Wrapped {
+        words,
+        mount_points,
+    })
 }
 
 /// Upstream's `capabilityArgs`: every capability dropped, and `CAP_SETFCAP`
@@ -56,6 +66,7 @@ mod tests {
     fn words_at(config: &Config, root_with_setfcap: bool) -> Vec<String> {
         words(Path::new(BWRAP), config, root_with_setfcap)
             .expect("the config resolves")
+            .words
             .iter()
             .map(|word| word.to_string_lossy().into_owned())
             .collect()

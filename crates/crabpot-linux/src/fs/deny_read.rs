@@ -14,9 +14,43 @@ use std::path::PathBuf;
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
+use super::Draft;
 use super::glob_walk::{self, KERNEL_MOUNTS};
 
-pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
+/// One mount over a denied path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Mount {
+    /// Where it lands.
+    pub(super) path: PathBuf,
+    /// A tmpfs over a directory, else `/dev/null` over a file.
+    pub(super) is_dir: bool,
+}
+
+impl Mount {
+    /// The words that make the mount.
+    pub(super) fn words(&self) -> Vec<OsString> {
+        let path = self.path.clone().into_os_string();
+        if self.is_dir {
+            vec!["--tmpfs".into(), path]
+        } else {
+            vec!["--ro-bind".into(), "/dev/null".into(), path]
+        }
+    }
+}
+
+pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
+    let mounts = mounts(config)?;
+    let words = mounts.iter().flat_map(Mount::words).collect();
+    draft.protected.extend(
+        mounts
+            .iter()
+            .filter_map(|mount| mount.path.to_str().map(str::to_owned)),
+    );
+    draft.read_mounts = mounts;
+    Ok(words)
+}
+
+fn mounts(config: &Config) -> Result<Vec<Mount>, PathError> {
     let mut found = BTreeMap::new();
     for entry in config.filesystem.read_denies()? {
         for path in glob_walk::matches(&entry) {
@@ -27,7 +61,7 @@ pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
     }
     Ok(collapse(found)
         .into_iter()
-        .flat_map(|(path, is_dir)| mount(path, is_dir))
+        .map(|(path, is_dir)| Mount { path, is_dir })
         .collect())
 }
 
@@ -59,12 +93,4 @@ fn collapse(found: BTreeMap<PathBuf, bool>) -> Vec<(PathBuf, bool)> {
         }
     }
     kept
-}
-
-fn mount(path: PathBuf, is_dir: bool) -> Vec<OsString> {
-    if is_dir {
-        vec!["--tmpfs".into(), path.into_os_string()]
-    } else {
-        vec!["--ro-bind".into(), "/dev/null".into(), path.into_os_string()]
-    }
 }

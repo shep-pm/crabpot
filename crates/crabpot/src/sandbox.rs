@@ -30,6 +30,11 @@ pub struct Sandbox {
     /// The bwrap words, `bwrap` first, that each command's own words follow.
     #[cfg(target_os = "linux")]
     words: Vec<OsString>,
+    /// The host paths bwrap makes for the words' denies, which go when the
+    /// sandbox drops.
+    #[cfg(target_os = "linux")]
+    #[expect(dead_code, reason = "held to be removed on drop")]
+    mount_points: crabpot_linux::fs::MountPoints,
     /// The args files of the commands wrapped so far, each held open for as
     /// long as the command may run, which is until the sandbox drops.
     #[cfg(target_os = "linux")]
@@ -93,16 +98,20 @@ impl Sandbox {
                 })
             }
             #[cfg(target_os = "linux")]
-            Ok(Self {
-                words: crabpot_linux::wrap::words(
+            {
+                let wrapped = crabpot_linux::wrap::words(
                     &bwrap,
                     config,
                     crabpot_linux::deps::is_root_with_setfcap_here(),
                 )
-                .map_err(StartError::UnresolvedPath)?,
-                args_files: Mutex::new(Vec::new()),
-                proxy,
-            })
+                .map_err(StartError::UnresolvedPath)?;
+                Ok(Self {
+                    words: wrapped.words,
+                    mount_points: wrapped.mount_points,
+                    args_files: Mutex::new(Vec::new()),
+                    proxy,
+                })
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {

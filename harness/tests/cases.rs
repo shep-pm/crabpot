@@ -41,6 +41,13 @@ const LINUX_READY: &[&str] = &[
     "allow_write_glob",
     "default_write_dev_null",
     "default_write_tmp_claude",
+    "deny_write_file",
+    "deny_write_glob",
+    "deny_write_literal",
+    "move_blocking_file",
+    "move_blocking_parent",
+    "move_blocking_read",
+    "move_blocking_read_glob",
 ];
 
 /// Runs the case file `harness/cases/<file>`.

@@ -16,8 +16,8 @@
 //!
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
 //! default settings, the settings crabpot refuses, the keys upstream ignores
-//! there and the `allowWrite` cases, and every other case under upstream's
-//! `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+//! there, the `allowWrite` cases and the loopback cases, and every other case
+//! under upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
 //! not the loopback mode the filters were installed with, so a case that opens
@@ -127,6 +127,16 @@ const WINDOWS_READY: &[&str] = &[
     "weaker_isolation_false",
     "allow_mach_lookup_loads",
     "unix_sockets_key_is_accepted",
+    // The loopback cases, each run under the install that matches it: the first
+    // and `kelpie_loopback_bind` under a closed install, the rest under one made
+    // with `--allow-loopback`. A case of the other mode is skipped, and a
+    // session of the other mode is refused as `StartError::LoopbackMismatch`.
+    "local_binding_bind_refused_by_default",
+    "local_binding_bind_allowed",
+    "local_binding_connect_to_loopback",
+    "local_binding_other_host_still_refused",
+    "kelpie_loopback_bind",
+    "kelpie_bind_allowed",
 ];
 
 /// Whether crabpot runs `name` beside upstream on this platform.

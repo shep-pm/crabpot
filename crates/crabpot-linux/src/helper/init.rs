@@ -18,6 +18,7 @@ use nix::errno::Errno;
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, unshare};
 use nix::sys::prctl;
+use nix::sys::signal::{SigSet, Signal};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, getgid, getuid};
 
@@ -26,6 +27,15 @@ use super::sys;
 
 /// Where the sandbox's `max_user_namespaces` limit is written.
 const MAX_USER_NAMESPACES: &str = "/proc/sys/user/max_user_namespaces";
+
+/// The signals a helper passes on to what it runs: the ones a host ends a
+/// command with.
+const FORWARDED: [Signal; 4] = [
+    Signal::SIGINT,
+    Signal::SIGTERM,
+    Signal::SIGHUP,
+    Signal::SIGQUIT,
+];
 
 /// Runs the command `argv` names as a child of a new PID 1.
 ///
@@ -42,23 +52,23 @@ pub fn init(argv: &[OsString]) -> Result<i32, InitError> {
     if argv.is_empty() {
         return Err(InitError::NoCommand);
     }
-    enter_namespaces()?;
+    let own_user_namespace = enter_namespaces()?;
     // No other process of the user's may read or trace the helper before its
     // children take over, whatever the namespaces hold.
     set_dumpable()?;
-    match sys::fork().map_err(|reason| InitError::step(Step::Fork, reason))? {
+    match fork_forwarding()? {
         ForkResult::Parent { child } => Ok(reap_until(child)),
-        ForkResult::Child => namespace_init(argv),
+        ForkResult::Child => namespace_init(argv, own_user_namespace),
     }
 }
 
 /// Unshares the PID and mount namespaces. A process without `CAP_SYS_ADMIN` is
 /// refused, so it makes a user namespace first, where it has the capability,
-/// and maps its own ids to themselves.
-fn enter_namespaces() -> Result<(), InitError> {
+/// and maps its own ids to themselves. It returns whether it made one.
+fn enter_namespaces() -> Result<bool, InitError> {
     let flags = CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
     if unshare(flags).is_ok() {
-        return Ok(());
+        return Ok(false);
     }
     // The ids are read before the unshare: in the new namespace they are
     // unmapped until the maps below are written.
@@ -68,7 +78,8 @@ fn enter_namespaces() -> Result<(), InitError> {
     // `gid_map` is refused to a process that may still call `setgroups`.
     write_proc("/proc/self/setgroups", "deny")?;
     write_proc("/proc/self/uid_map", &format!("{uid} {uid} 1"))?;
-    write_proc("/proc/self/gid_map", &format!("{gid} {gid} 1"))
+    write_proc("/proc/self/gid_map", &format!("{gid} {gid} 1"))?;
+    Ok(true)
 }
 
 fn write_proc(path: &'static str, contents: &str) -> Result<(), InitError> {
@@ -83,7 +94,9 @@ fn set_dumpable() -> Result<(), InitError> {
 }
 
 /// PID 1 of the namespace: makes it the command's, then runs the command.
-fn namespace_init(argv: &[OsString]) -> Result<i32, InitError> {
+/// `own_user_namespace` is whether the namespace's user namespace is one this
+/// helper made.
+fn namespace_init(argv: &[OsString], own_user_namespace: bool) -> Result<i32, InitError> {
     set_dumpable()?;
     // Mounts made here must not reach the namespace this one was copied from.
     mount(
@@ -105,14 +118,37 @@ fn namespace_init(argv: &[OsString]) -> Result<i32, InitError> {
     )
     .map_err(|reason| InitError::step(Step::Proc, reason))?;
     // Best effort: the command cannot make a user namespace to regain
-    // capabilities in. A kernel without the sysctl has nothing to limit.
-    let _ = fs::write(MAX_USER_NAMESPACES, "0");
+    // capabilities in. The limit belongs to the user namespace it is written
+    // in, so it is written only in one this helper made, and never in the
+    // host's. A kernel without the sysctl has nothing to limit.
+    if own_user_namespace {
+        let _ = fs::write(MAX_USER_NAMESPACES, "0");
+    }
     sys::clear_ambient_capabilities()
         .map_err(|reason| InitError::step(Step::AmbientCapabilities, reason))?;
-    match sys::fork().map_err(|reason| InitError::step(Step::Fork, reason))? {
+    match fork_forwarding()? {
         ForkResult::Parent { child } => Ok(reap_until(child)),
         ForkResult::Child => Err(InitError::Exec(exec(argv))),
     }
+}
+
+/// Forks, and has the parent pass the signals in [`FORWARDED`] on to the
+/// child, so the command answers a SIGINT or SIGTERM sent to the helper
+/// itself. The signals are blocked across the fork so none arrives before the
+/// parent forwards it, and unblocked in both processes after.
+fn fork_forwarding() -> Result<ForkResult, InitError> {
+    let mut forwarded = SigSet::empty();
+    for signal in FORWARDED {
+        forwarded.add(signal);
+    }
+    let signals = |reason| InitError::step(Step::Signals, reason);
+    forwarded.thread_block().map_err(signals)?;
+    let forked = sys::fork().map_err(|reason| InitError::step(Step::Fork, reason))?;
+    if let ForkResult::Parent { child } = forked {
+        sys::forward_signals(child, &FORWARDED).map_err(signals)?;
+    }
+    forwarded.thread_unblock().map_err(signals)?;
+    Ok(forked)
 }
 
 /// Waits for every child, whichever it is, until `target` has ended, and
@@ -147,6 +183,8 @@ pub enum Step {
     Proc,
     /// Clearing the ambient capabilities.
     AmbientCapabilities,
+    /// Blocking or forwarding the signals that end the command.
+    Signals,
 }
 
 impl fmt::Display for Step {
@@ -158,6 +196,7 @@ impl fmt::Display for Step {
             Self::PrivateMounts => "make the mounts private",
             Self::Proc => "mount /proc",
             Self::AmbientCapabilities => "clear the ambient capabilities",
+            Self::Signals => "forward signals",
         })
     }
 }

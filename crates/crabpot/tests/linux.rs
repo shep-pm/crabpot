@@ -3,7 +3,8 @@
 
 #![cfg(target_os = "linux")]
 
-use std::process::{Command, Output};
+use std::io::{BufRead, BufReader, Read};
+use std::process::{Command, Output, Stdio};
 
 const CRABPOT: &str = env!("CARGO_BIN_EXE_crabpot");
 
@@ -145,4 +146,33 @@ fn ambient_capabilities_are_cleared() {
     let output = in_helper("grep CapAmb /proc/self/status");
 
     assert_eq!(stdout(&output), "CapAmb:\t0000000000000000\n");
+}
+
+#[test]
+fn a_sigterm_to_the_helper_reaches_the_command() {
+    // `wait` returns as soon as a trapped signal arrives, where a foreground
+    // `sleep` would not.
+    let script = r#"trap 'echo trapped; exit 3' TERM; echo ready; sleep 30 & wait"#;
+    let mut helper = Command::new(CRABPOT)
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["--crabpot-helper", "init", "sh", "-c", script])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(helper.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(line, "ready\n");
+
+    let sent = Command::new("kill")
+        .args(["-TERM", &helper.id().to_string()])
+        .status()
+        .unwrap();
+    let mut rest = String::new();
+    stdout.read_to_string(&mut rest).unwrap();
+    let status = helper.wait().unwrap();
+
+    assert!(sent.success());
+    assert_eq!(rest, "trapped\n");
+    assert_eq!(status.code(), Some(3));
 }

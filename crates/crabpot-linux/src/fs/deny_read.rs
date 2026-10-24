@@ -84,7 +84,7 @@ pub(super) fn words(
 }
 
 /// The located paths `denyRead` hides, each with whether it is a directory, as
-/// [`locate`] finds them on disk: `config`'s entries, and [`ALWAYS_DENIED`].
+/// [`locate`] finds them on disk: `config`'s entries, and [`mandatory`].
 pub(super) fn located(config: &Config) -> Result<BTreeMap<PathBuf, bool>, PathError> {
     let mut found = BTreeMap::new();
     for entry in config.filesystem.read_denies()? {
@@ -94,12 +94,22 @@ pub(super) fn located(config: &Config) -> Result<BTreeMap<PathBuf, bool>, PathEr
             }
         }
     }
-    for path in ALWAYS_DENIED {
-        if let Some((located, is_dir)) = locate(PathBuf::from(path)) {
-            found.insert(located, is_dir);
-        }
-    }
+    found.extend(mandatory());
     Ok(found)
+}
+
+/// Where each [`ALWAYS_DENIED`] path is on this host, as [`locate`] finds it.
+///
+/// These are denies as much as a settings file's own are, and they are mounted
+/// the same way. What differs is that no settings file asked for one, so no
+/// `allowRead` entry names it either, and a reopening lifts one as little as it
+/// lifts the deny of the directory it sits in: see `allow_read`'s `remasked`.
+pub(super) fn mandatory() -> BTreeMap<PathBuf, bool> {
+    ALWAYS_DENIED
+        .iter()
+        .map(PathBuf::from)
+        .filter_map(locate)
+        .collect()
 }
 
 /// Where `path` is mounted over, and whether it is a directory; `None` when it

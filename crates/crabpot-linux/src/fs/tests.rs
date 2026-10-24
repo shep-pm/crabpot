@@ -329,6 +329,65 @@ fn ssh_config_d_is_always_hidden() {
     }
 }
 
+/// The always-hidden directory stays hidden when `allowRead` re-opens a
+/// directory above it, or re-opens it outright under a denied ancestor: the
+/// reopening is a restore inside the mask the plan made for the directory above
+/// the denial, and the denial is mounted again over it. A reopening at the
+/// denial itself, where the plan made that denial's mount on its own, is the
+/// exception, and the host's own directory comes back.
+#[test]
+fn ssh_config_d_stays_hidden_under_a_reopening() {
+    const SSH: &str = "/etc/ssh/ssh_config.d";
+    const SSH_PARENT: &str = "/etc/ssh";
+    let Some((denial, true)) = crate::fs::deny_read::locate(PathBuf::from(SSH)) else {
+        return; // This host has no such directory, so it has nothing to hide.
+    };
+    let denial = denial.to_string_lossy().into_owned();
+    let reopened = crate::fs::deny_read::locate(PathBuf::from(SSH_PARENT))
+        .map(|(path, _)| path.to_string_lossy().into_owned())
+        .expect("/etc/ssh is there wherever /etc/ssh/ssh_config.d is");
+
+    let tree = Tree::empty("fs-ssh-config-d-reopening");
+    tree.dir("work");
+    let work = at(&tree, "work");
+    let plan_of = |deny: &[&str], allow: &[&str]| plan(&tree, &reading_with(deny, allow, &[&work]));
+    let masked_last = |words: &[String]| {
+        words
+            .windows(2)
+            .rposition(|pair| pair == ["--tmpfs", denial.as_str()])
+            .unwrap_or_else(|| panic!("no --tmpfs {denial} in the plan: {words:#?}"))
+    };
+
+    // A reopening of the directory above it: the mask follows the bind that
+    // brought the host's directory back.
+    let words = plan_of(&["/etc"], &[SSH_PARENT]);
+    let reopened_at = bound_back_at(&words, &reopened);
+    let masked = masked_last(&words);
+    assert!(
+        reopened_at < masked,
+        "a reopening of {SSH_PARENT} left {SSH} the host's own: {words:#?}"
+    );
+
+    // The same reopening, naming the denial outright under a denied ancestor.
+    let words = plan_of(&["/etc"], &[SSH]);
+    let reopened_at = bound_back_at(&words, &denial);
+    let masked = masked_last(&words);
+    assert!(
+        reopened_at < masked,
+        "an allow of {SSH} under a denied {SSH_PARENT} dropped the denial: {words:#?}"
+    );
+
+    // Nothing above it denied: the reopening is the restore inside the denial's
+    // own mount, and the host's directory comes back read-only.
+    let words = plan_of(&[], &[SSH]);
+    let reopened_at = bound_back_at(&words, &denial);
+    let masked = masked_last(&words);
+    assert!(
+        masked < reopened_at,
+        "{SSH} was masked after the allow that names it: {words:#?}"
+    );
+}
+
 /// A deny the plan cannot spell is a deny it cannot mount, and a walk with no
 /// directory to walk gives the plan no deny at all. Both are an error: the words
 /// are what `exec` takes, and a plan that dropped a deny, or never went looking

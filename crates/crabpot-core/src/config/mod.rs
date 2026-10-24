@@ -3,7 +3,8 @@
 //! A key upstream does not know is dropped, as upstream drops it. A key
 //! upstream knows and crabpot does not yet apply is refused when it asks for
 //! something, so a rule is never dropped without an error (ADR-0013). A key
-//! upstream accepts and ignores on macOS is accepted and ignored.
+//! upstream accepts and ignores on macOS is accepted and ignored there, and on
+//! Linux the keys that tune bwrap and seccomp are refused instead.
 
 mod error;
 mod keys;

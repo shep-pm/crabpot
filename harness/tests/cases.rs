@@ -63,6 +63,13 @@ const LINUX_READY: &[&str] = &[
     "move_blocking_read_glob",
     "allowed_domains_example_com",
     "socks_allowed_example_com",
+    "weaker_isolation_true",
+    "weaker_isolation_false",
+    "local_binding_bind_refused_by_default",
+    "local_binding_bind_allowed",
+    "local_binding_connect_to_loopback",
+    "kelpie_loopback_bind",
+    "kelpie_bind_allowed",
 ];
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143

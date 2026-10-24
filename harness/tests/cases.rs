@@ -18,14 +18,22 @@
 //! default settings, the settings crabpot refuses, the keys upstream ignores
 //! there, the `allowRead` and `allowWrite` cases, the `denyRead` and
 //! `denyWrite` cases but the two `literal` ones, the loopback cases, the
-//! backslash argument, and the network cases but
-//! `mitm_matching_domain_reaches_the_socket`. Every other case runs under
-//! upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+//! backslash argument, the network cases but
+//! `mitm_matching_domain_reaches_the_socket`, and kelpie's whole policy as
+//! `kelpie_full_policy_windows`. Every other case runs under upstream's
+//! `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
 //! not the loopback mode the filters were installed with, so a case that opens
 //! loopback runs only after `windows-install --allow-loopback --force` and with
 //! `CRABPOT_HARNESS_LOOPBACK=open`, and every other case runs only without them.
+//!
+//! kelpie's other cases hold a probe the probe binary has no form of on Windows:
+//! `signal-group` and `ps` are Unix calls, and `bind-unix` is a Unix socket,
+//! while `allowUnixSockets` is accepted and ignored there. Each names `macos`
+//! and `linux` and is skipped on Windows, where nothing would compare.
+//! `a_kelpie_case_is_ready_for_windows_only_where_it_means_windows` holds the
+//! kelpie names and `WINDOWS_READY` together.
 
 use crabpot_harness::probe;
 use crabpot_harness::runner::{self, Crabpot, Upstream};
@@ -183,11 +191,36 @@ const WINDOWS_READY: &[&str] = &[
     "resolved_address_loopback_name",
     "resolved_address_listed_cidr",
     "windows_backslash_argument",
+    // kelpie's whole settings shape, with a probe for each part of it that
+    // means something there. The mitm leg stays with
+    // `mitm_matching_domain_reaches_the_socket`, which crabpot is held to on its
+    // own, and the case holds no `bind-unix` probe, because `allowUnixSockets`
+    // is accepted and ignored on Windows. Its `denyRead` entries name the
+    // runner's profile, which is what `~` is for both runners there. The
+    // settings set `allowLocalBinding`, so it runs under the open install.
+    "kelpie_full_policy_windows",
 ];
 
 /// The Windows cases that run under crabpot on its own, because upstream cannot
 /// give the answer to compare with. Each probe must be allowed.
 const WINDOWS_CRABPOT_ALONE: &[&str] = &["mitm_matching_domain_reaches_the_socket"];
+
+/// Each kelpie case, as the name its test runs it under and its case file.
+const KELPIE_CASES: &[(&str, &str)] = &[
+    ("kelpie_loopback_bind", "kelpie-loopback-bind-refused.json"),
+    ("kelpie_bind_allowed", "kelpie-loopback-bind-allowed.json"),
+    ("kelpie_group_signal", "kelpie-group-signal.json"),
+    ("kelpie_ps", "kelpie-ps.json"),
+    (
+        "kelpie_socket_path_104_bytes",
+        "kelpie-socket-path-104-bytes.json",
+    ),
+    ("kelpie_full_policy", "kelpie-full-policy.json"),
+    (
+        "kelpie_full_policy_windows",
+        "kelpie-full-policy-windows.json",
+    ),
+];
 
 /// Whether crabpot runs `name` beside upstream on this platform.
 fn runs_crabpot(name: &str) -> bool {
@@ -666,6 +699,38 @@ fn kelpie_socket_path_104_bytes() {
 #[test]
 fn kelpie_full_policy() {
     run("kelpie_full_policy", "kelpie-full-policy.json");
+}
+
+/// The same settings as the `kelpie_full_policy` case, on the probes that mean
+/// something on Windows. It leaves out the mitm `connect`, which upstream
+/// cannot dial there, and the `bind-unix` probe, which the probe binary has no
+/// form of there.
+#[test]
+fn kelpie_full_policy_windows() {
+    run(
+        "kelpie_full_policy_windows",
+        "kelpie-full-policy-windows.json",
+    );
+}
+
+/// A kelpie case is in `WINDOWS_READY` exactly when it means Windows. One left
+/// in the list while its file names other platforms alone is skipped there
+/// without saying so, and one that means Windows and is left out runs under
+/// upstream alone.
+#[test]
+fn a_kelpie_case_is_ready_for_windows_only_where_it_means_windows() {
+    for (name, file) in KELPIE_CASES {
+        let path = format!("{}/cases/{file}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let case = crabpot_harness::case::Case::parse(&text, "/r").unwrap();
+
+        assert_eq!(
+            WINDOWS_READY.contains(name),
+            case.runs_on(crabpot_harness::case::Platform::Windows),
+            "{name}: {}",
+            path
+        );
+    }
 }
 
 /// The sandbox's pid namespace holds the sandbox's processes alone, so the

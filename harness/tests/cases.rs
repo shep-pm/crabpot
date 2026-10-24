@@ -15,8 +15,8 @@
 //! namespaces: `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 //!
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
-//! default settings, the settings crabpot refuses and the `allowWrite` cases,
-//! and every other case under upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+//! default settings, the settings crabpot refuses, the `allowWrite` cases and
+//! the `denyRead` and `denyWrite` cases, and every other case under upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
 //! not the loopback mode the filters were installed with, so a case that opens
@@ -121,6 +121,13 @@ const WINDOWS_READY: &[&str] = &[
     "allow_write_folder",
     "allow_write_outside_is_refused",
     "allow_write_glob",
+    "deny_read_folder",
+    "deny_read_glob",
+    "deny_read_literal",
+    "deny_read_tilde",
+    "deny_write_file",
+    "deny_write_glob",
+    "deny_write_literal",
 ];
 
 /// Whether crabpot runs `name` beside upstream on this platform.

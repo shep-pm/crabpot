@@ -78,8 +78,9 @@ impl Sandbox {
     /// cannot spell, which is a Linux answer too. On Windows the status checks
     /// of [`windows_preflight`](crate::windows_preflight) run first, then
     /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
-    /// none nor current, [`StartError::GrantFailed`] when the session's grants
-    /// cannot be made, and [`StartError::LoopbackMismatch`],
+    /// none nor current, [`StartError::GrantBlocked`] or
+    /// [`StartError::GrantFailed`] when the session's grants and denies cannot
+    /// be made, and [`StartError::LoopbackMismatch`],
     /// [`StartError::FenceInactive`] or [`StartError::FenceUnverified`] when the
     /// firewall fence is not shown to be active. The grants are held until the
     /// sandbox drops, which revokes them.
@@ -364,6 +365,10 @@ pub enum StartError {
         /// Its exit code, when it ran to one.
         code: Option<i32>,
     },
+    /// Windows: srt-win exited 24 for the `acl grant` call, which a sandbox
+    /// session or command that is running blocks. Nothing was granted or
+    /// denied, and the call can be made again once that session has ended.
+    GrantBlocked,
     /// Windows: the installed firewall filters leave loopback open or closed
     /// the other way from `network.allowLocalBinding`, and the install has to
     /// be run again with this session's setting.
@@ -472,6 +477,10 @@ impl fmt::Display for StartError {
                 write!(f, "`srt-win acl grant` exited {code}")
             }
             Self::GrantFailed { code: None } => write!(f, "`srt-win acl grant` did not run"),
+            Self::GrantBlocked => write!(
+                f,
+                "`srt-win acl grant` was blocked by a running sandbox session or command, and changed nothing"
+            ),
             Self::LoopbackMismatch => write!(
                 f,
                 "the installed firewall filters do not match network.allowLocalBinding; run the install again with this session's setting"

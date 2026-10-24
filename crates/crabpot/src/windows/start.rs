@@ -209,7 +209,8 @@ pub(crate) fn start_with(
 ///
 /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither none
 /// nor current, [`StartError::StatusFailed`] for a status with no sandbox user
-/// SID, [`StartError::GrantFailed`] when the grant call fails, and the errors of
+/// SID, [`StartError::GrantBlocked`] or [`StartError::GrantFailed`] when the
+/// grant call fails, and the errors of
 /// [`wfp::interpret`](super::wfp::interpret) when the fence is not verified. A
 /// failure after the grant releases it.
 fn prepare(
@@ -242,11 +243,7 @@ fn prepare(
         sid,
         holder: host.holder,
     };
-    match held.srt.run(&plan.grant(&held.sid, held.holder)) {
-        Ok(output) if output.succeeded() => {}
-        Ok(output) => return Err(StartError::GrantFailed { code: output.code }),
-        Err(_) => return Err(StartError::GrantFailed { code: None }),
-    }
+    plan.apply(&*held.srt, &held.sid, held.holder)?;
     if !verified.holds(&held.sid, allow_loopback) {
         verify(&*held.srt, &plan, allow_loopback, listen(range))?;
         verified.record(&held.sid, allow_loopback);

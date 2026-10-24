@@ -3,12 +3,14 @@
 //! A plan is built by sections, each a file in the `plan` folder with a
 //! `contribute` function, and registered by naming it in the `sections!` call.
 //! A section adds to the lists the one `acl grant --persistent` call reads from
-//! standard input. Only `write` exists so far, so the other lists are empty.
+//! standard input. Each section ranks only the lists it owns, so the lists it
+//! does not read are empty: the read grants are not here yet.
 
+use crabpot_core::PathError;
 use crabpot_core::config::Config;
-use crabpot_windows::fs_access::{Access, Disk, Host};
+use crabpot_windows::fs_access::{Access, Disk, ExpandError, Host, Settings, access};
 
-use super::srt::Call;
+use super::srt::{Call, Srt};
 use crate::StartError;
 
 /// Declares each section's module and lists them in the order they run.
@@ -27,7 +29,40 @@ macro_rules! sections {
     };
 }
 
-sections!(write);
+sections!(write, deny_read, deny_write);
+
+/// What srt-win exits with when a running session or command blocks a grant.
+const EXIT_GRANT_BLOCKED: i32 = 24;
+
+/// Settings that list nothing, for a section to fill in the lists it owns.
+const NO_PATHS: Settings<'static> = Settings {
+    allow_read: &[],
+    allow_write: &[],
+    deny_read: &[],
+    deny_write: &[],
+    credential_deny: &[],
+    masked_files: &[],
+};
+
+/// `settings` expanded and ranked on `host`.
+fn ranked<D: Disk>(host: &Host<D>, settings: &Settings<'_>) -> Result<Access, StartError> {
+    access(host, settings).map_err(|error| {
+        StartError::UnresolvedPath(match error {
+            ExpandError::NoHomeDirectory => PathError::NoHomeDirectory,
+            ExpandError::NoWorkingDirectory => PathError::NoWorkingDirectory,
+        })
+    })
+}
+
+/// Adds the paths of `items` that `list` does not hold, so two sections that
+/// reach the same path leave it once.
+fn add_new(list: &mut Vec<String>, items: Vec<String>) {
+    for item in items {
+        if !list.contains(&item) {
+            list.push(item);
+        }
+    }
+}
 
 /// The grants and denies one sandbox applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +109,22 @@ impl Plan {
         call.stdin = Some(serde_json::to_string(&self.access).expect("lists of strings serialize"));
         call
     }
+
+    /// Makes the [`grant`](Self::grant) call through `srt`.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::GrantBlocked`] when srt-win exits 24, and
+    /// [`StartError::GrantFailed`] for any other exit, or a call that did not
+    /// run.
+    pub(crate) fn apply(&self, srt: &dyn Srt, sid: &str, holder: u32) -> Result<(), StartError> {
+        match srt.run(&self.grant(sid, holder)) {
+            Ok(output) if output.succeeded() => Ok(()),
+            Ok(output) if output.code == Some(EXIT_GRANT_BLOCKED) => Err(StartError::GrantBlocked),
+            Ok(output) => Err(StartError::GrantFailed { code: output.code }),
+            Err(_) => Err(StartError::GrantFailed { code: None }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -81,10 +132,11 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use crabpot_core::config::PathEntry;
+    use crabpot_core::config::{Filesystem, PathEntry};
     use crabpot_windows::fs_access::{DiskError, Entry, Kind};
 
     use super::super::command::{Params, wrap};
+    use super::super::srt::fake::{Fake, exit};
     use super::*;
 
     /// A volume where only the listed directories exist, spelled as given.
@@ -113,7 +165,9 @@ mod tests {
     }
 
     fn plan_for(allow_write: &[&str], dirs: &'static [&'static str]) -> Plan {
-        plan_denying(allow_write, &[], dirs)
+        plan_with(dirs, |filesystem| {
+            filesystem.allow_write = entries(allow_write);
+        })
     }
 
     fn plan_denying(
@@ -121,17 +175,31 @@ mod tests {
         deny_write: &[&str],
         dirs: &'static [&'static str],
     ) -> Plan {
-        let entries = |paths: &[&str]| -> Vec<PathEntry> {
-            paths
-                .iter()
-                .map(|path| PathEntry::Spelled((*path).to_owned()))
-                .collect()
-        };
+        plan_with(dirs, |filesystem| {
+            filesystem.allow_write = entries(allow_write);
+            filesystem.deny_write = entries(deny_write);
+        })
+    }
+
+    fn entries(paths: &[&str]) -> Vec<PathEntry> {
+        paths
+            .iter()
+            .map(|path| PathEntry::Spelled((*path).to_owned()))
+            .collect()
+    }
+
+    fn plan_with(dirs: &'static [&'static str], set: impl FnOnce(&mut Filesystem)) -> Plan {
         let mut config = Config::default();
-        config.filesystem.allow_write = entries(allow_write);
-        config.filesystem.deny_write = entries(deny_write);
-        let host = Host::new(Some(r"C:\Users\me"), Some(r"C:\work"), Volume(dirs));
-        Plan::build_on(&config, &host).unwrap()
+        set(&mut config.filesystem);
+        Plan::build_on(&config, &host(dirs)).unwrap()
+    }
+
+    fn host(dirs: &'static [&'static str]) -> Host<Volume> {
+        Host::new(Some(r"C:\Users\me"), Some(r"C:\work"), Volume(dirs))
+    }
+
+    fn stdin(plan: &Plan) -> String {
+        plan.grant("S-1-5-21-7", 4242).stdin.unwrap()
     }
 
     const DIRS: &[&str] = &[r"C:\work", r"D:\scratch"];
@@ -209,5 +277,89 @@ mod tests {
         );
 
         assert_eq!(plan.write_roots(), [r"D:\scratch"]);
+    }
+
+    #[test]
+    fn deny_read_reaches_the_grant_stdin() {
+        let plan = plan_with(DIRS, |filesystem| {
+            filesystem.deny_read = entries(&[r"C:\work\secrets", r"~\.ssh"]);
+        });
+
+        assert_eq!(
+            stdin(&plan),
+            r#"{"read":[],"write":[],"denyRead":["C:\\work\\secrets","C:\\Users\\me\\.ssh"],"denyWrite":[]}"#
+        );
+    }
+
+    #[test]
+    fn deny_write_downgrades_an_allow_write_to_read() {
+        let plan = plan_denying(
+            &[r"C:\work", r"D:\scratch"],
+            &[r"D:\scratch"],
+            &[r"C:\work", r"D:\scratch"],
+        );
+
+        assert_eq!(
+            stdin(&plan),
+            r#"{"read":["D:\\scratch"],"write":["C:\\work"],"denyRead":[],"denyWrite":["D:\\scratch"]}"#
+        );
+        assert_eq!(plan.write_roots(), [r"C:\work"]);
+    }
+
+    const SSH_DIRS: &[&str] = &[r"C:\work", r"C:\work\.ssh\config"];
+
+    fn deny_read_plan(
+        deny_read: &[&str],
+        allow_read: &[&str],
+        credential_deny: &[&str],
+        dirs: &'static [&'static str],
+    ) -> Plan {
+        let mut config = Config::default();
+        config.filesystem.deny_read = entries(deny_read);
+        config.filesystem.allow_read = Some(entries(allow_read));
+        let mut access = Access::default();
+        deny_read::contribute_with_credentials(
+            &config,
+            &host(dirs),
+            &entries(credential_deny),
+            &mut access,
+        )
+        .unwrap();
+        Plan { access }
+    }
+
+    #[test]
+    fn an_allow_read_beneath_a_deny_read_is_granted_again() {
+        let plan = deny_read_plan(&[r"C:\work"], &[r"C:\work\.ssh\config"], &[], SSH_DIRS);
+
+        assert_eq!(
+            stdin(&plan),
+            r#"{"read":["C:\\work\\.ssh\\config"],"write":[],"denyRead":["C:\\work"],"denyWrite":[]}"#
+        );
+    }
+
+    #[test]
+    fn a_credential_deny_drops_the_grants_beneath_it() {
+        let plan = deny_read_plan(
+            &[r"C:\work"],
+            &[r"C:\work\.ssh\config"],
+            &[r"C:\work\.ssh"],
+            SSH_DIRS,
+        );
+
+        assert_eq!(
+            stdin(&plan),
+            r#"{"read":[],"write":[],"denyRead":["C:\\work","C:\\work\\.ssh"],"denyWrite":[]}"#
+        );
+    }
+
+    #[test]
+    fn exit_24_maps_to_the_grant_blocked_error() {
+        let (srt, _) = Fake::answering(|_| exit(24, ""));
+        let plan = Plan::build(&Config::default()).unwrap();
+
+        let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();
+
+        assert_eq!(error, StartError::GrantBlocked);
     }
 }

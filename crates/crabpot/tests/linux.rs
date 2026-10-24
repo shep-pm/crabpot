@@ -9,8 +9,9 @@ const CRABPOT: &str = env!("CARGO_BIN_EXE_crabpot");
 
 fn crabpot(args: &[&str]) -> Output {
     Command::new(CRABPOT)
-        // The default settings file is looked up under `HOME`.
-        .env_remove("HOME")
+        // The default write roots start with `~`, so the sandbox needs a `HOME`,
+        // and one with no settings file in it keeps the default config.
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(args)
         .output()
         .unwrap()

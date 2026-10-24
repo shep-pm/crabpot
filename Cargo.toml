@@ -13,10 +13,20 @@ license = "MIT OR Apache-2.0"
 keywords = ["sandbox", "security", "agents", "bubblewrap", "seatbelt"]
 
 [workspace.dependencies]
+# A requirement here is a second copy of the version, and release-plz keeps it
+# only for a crate it releases. `release-plz.toml` holds `crabpot-linux` and
+# `crabpot-windows` at `release = false`, so nothing rewrites their
+# requirements, and a pinned one goes stale on every bump: at the 0.2.0 workspace
+# bump the old `^0.1.0` matched no candidate and the release PR failed to resolve
+# the workspace (issue #195). A path dependency inside the workspace needs no
+# requirement to resolve, so these two carry none.
 crabpot-core = { path = "crates/crabpot-core", version = "0.1.7" }
-crabpot-linux = { path = "crates/crabpot-linux", version = "0.1.0" }
+# ADR-0012: the Linux release slice (#124) publishes this crate, and adds its
+# version back here, where release-plz keeps it from then on.
+crabpot-linux = { path = "crates/crabpot-linux" }
 crabpot-macos = { path = "crates/crabpot-macos", version = "0.1.7" }
-crabpot-windows = { path = "crates/crabpot-windows", version = "0.1.3" }
+# ADR-0005 never publishes this crate, so no slice adds a version back here.
+crabpot-windows = { path = "crates/crabpot-windows" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 serde_path_to_error = { version = "0.1", default-features = false }

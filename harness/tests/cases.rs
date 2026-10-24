@@ -16,14 +16,9 @@
 //!
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
 //! default settings, the settings crabpot refuses, the keys upstream ignores
-<<<<<<< HEAD
-//! there, the `allowWrite` cases and the backslash argument, and every other
-//! case under upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
-=======
 //! there, the `allowWrite` cases, the `denyRead` and `denyWrite` cases but the
-//! two `literal` ones, and the loopback cases. Every other case runs under
-//! upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
->>>>>>> origin/main
+//! two `literal` ones, the loopback cases and the backslash argument. Every
+//! other case runs under upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
 //! not the loopback mode the filters were installed with, so a case that opens
@@ -144,9 +139,6 @@ const WINDOWS_READY: &[&str] = &[
     "weaker_isolation_false",
     "allow_mach_lookup_loads",
     "unix_sockets_key_is_accepted",
-<<<<<<< HEAD
-    "windows_backslash_argument",
-=======
     // The loopback cases, each run under the install that matches it: the first
     // and `kelpie_loopback_bind` under a closed install, the rest under one made
     // with `--allow-loopback`. A case of the other mode is skipped, and a
@@ -157,7 +149,7 @@ const WINDOWS_READY: &[&str] = &[
     "local_binding_other_host_still_refused",
     "kelpie_loopback_bind",
     "kelpie_bind_allowed",
->>>>>>> origin/main
+    "windows_backslash_argument",
 ];
 
 /// Whether crabpot runs `name` beside upstream on this platform.

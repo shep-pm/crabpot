@@ -46,6 +46,10 @@ crabpot-macos.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 crabpot-linux.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The signal test blocks a signal in its own thread before it starts the helper.
+nix = { version = "0.31", default-features = false, features = ["signal"] }
+
 [target.'cfg(windows)'.dependencies]
 crabpot-windows.workspace = true
 # `ProcessIdToSessionId` and a file's DACL, the Windows calls the facade makes

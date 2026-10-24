@@ -89,7 +89,10 @@ fn srt_win_hop() {}
 fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
     let helper = helper.unwrap_or_else(|e| fail(e));
     match helper.mode {
-        HelperMode::Init => helper_init(&helper.args),
+        HelperMode::Init => {
+            let (relay, command) = args::split_relay(&helper.args);
+            helper_init(relay, command)
+        }
         HelperMode::Relay | HelperMode::Connect => fail(format!(
             "helper mode {} is not supported yet",
             helper.mode.word()
@@ -98,15 +101,15 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
 }
 
 #[cfg(target_os = "linux")]
-fn helper_init(command: &[OsString]) -> ! {
-    match crabpot_linux::helper::init(command) {
+fn helper_init(relay: Option<&Path>, command: &[OsString]) -> ! {
+    match crabpot_linux::helper::init(relay, command) {
         Ok(status) => std::process::exit(status),
         Err(e) => fail(e),
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn helper_init(_command: &[OsString]) -> ! {
+fn helper_init(_relay: Option<&Path>, _command: &[OsString]) -> ! {
     fail("the helper runs only on Linux")
 }
 

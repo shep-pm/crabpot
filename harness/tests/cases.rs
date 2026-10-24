@@ -73,6 +73,13 @@ const LINUX_READY: &[&str] = &[
     "mandatory_git_hooks",
     "mandatory_nested_git_config",
     "mandatory_shell_rc",
+    "unix_socket_listed_folder",
+    "unix_socket_unlisted_is_refused",
+    "unix_socket_empty_string_grants_cwd",
+    "kelpie_socket_path_104_bytes",
+    "kernel_vsock_socket_is_refused",
+    "kernel_io_uring_setup_is_refused",
+    "kernel_nested_user_namespace_is_refused",
 ];
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143
@@ -543,4 +550,30 @@ fn kelpie_socket_path_104_bytes() {
 #[test]
 fn kelpie_full_policy() {
     run("kelpie_full_policy", "kelpie-full-policy.json");
+}
+
+/// Linux's seccomp filters refuse what no other platform's sandbox has a name
+/// for, so each of these cases names its platform.
+#[test]
+fn kernel_vsock_socket_is_refused() {
+    run(
+        "kernel_vsock_socket_is_refused",
+        "kernel-vsock-socket-is-refused.json",
+    );
+}
+
+#[test]
+fn kernel_io_uring_setup_is_refused() {
+    run(
+        "kernel_io_uring_setup_is_refused",
+        "kernel-io-uring-setup-is-refused.json",
+    );
+}
+
+#[test]
+fn kernel_nested_user_namespace_is_refused() {
+    run(
+        "kernel_nested_user_namespace_is_refused",
+        "kernel-nested-user-namespace-is-refused.json",
+    );
 }

@@ -9,7 +9,9 @@
 //! [`exec`] runs the command and does nothing else. On Linux, `init` puts the
 //! command in a PID and mount namespace of its own first, as PID 1's child. When
 //! it is given the proxy's socket, it forks the relay for the network namespace
-//! before that, and waits for the relay to listen.
+//! before that, and waits for the relay to listen. The command is started with
+//! both seccomp filters installed, and a filter that cannot be installed ends
+//! the helper with status 1 before the command runs.
 
 mod exec;
 #[cfg(target_os = "linux")]

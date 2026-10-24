@@ -1,6 +1,6 @@
 //! `probe read <path> | write <path> | rename <from> <to> | connect <host> <port> [--via socks5]
-//! | bind | bind-unix <path> | connect-unix <path> | loopback | signal-group | ps`: see
-//! [`crabpot_harness::probe`].
+//! | bind | bind-unix <path> | connect-unix <path> | loopback | signal-group | ps
+//! | socket <unix|vsock> | io-uring-setup | unshare-user`: see [`crabpot_harness::probe`].
 //!
 //! `probe --crabpot ...` is crabpot's wrapper (ADR-0010), which lets a case run
 //! crabpot through this same binary.

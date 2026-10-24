@@ -191,6 +191,7 @@ name = "crabpot-harness"
 version = "0.1.7"
 dependencies = [
  "crabpot",
+ "libc",
  "nix",
  "serde_json",
 ]

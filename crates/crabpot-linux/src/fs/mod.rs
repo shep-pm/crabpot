@@ -23,7 +23,7 @@ macro_rules! sections {
     };
 }
 
-sections!(base, allow_write, deny_read, private_mounts);
+sections!(base, allow_write, deny_read, allow_read, private_mounts);
 
 /// The fixture tree the cases build their paths on needs `symlink`, so the
 /// cases sit with the unix tests.

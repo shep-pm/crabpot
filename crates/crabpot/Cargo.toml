@@ -22,8 +22,17 @@ cli = []
 name = "crabpot"
 required-features = ["cli"]
 
+# Runs this binary again as srt-win, so it has to call `run_from_args` first
+# thing in `main`, which the libtest harness does not.
+[[test]]
+name = "windows_status"
+harness = false
+
 [dependencies]
 crabpot-core.workspace = true
+# The three srt-win queries a Windows status reads print JSON.
+serde.workspace = true
+serde_json.workspace = true
 # The wrapper waits on its child and on SIGINT and SIGTERM, and no more.
 tokio = { version = "1", default-features = false, features = ["rt", "process", "signal"] }
 
@@ -35,6 +44,9 @@ crabpot-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crabpot-windows.workspace = true
+# `ProcessIdToSessionId`, the one Windows call the facade makes itself. Tokio
+# already pulls the crate into the lock.
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_System_RemoteDesktop"] }
 
 [lints]
 workspace = true

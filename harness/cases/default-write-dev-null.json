@@ -4,6 +4,7 @@
     "network": {"allowedDomains": [], "deniedDomains": []},
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "write", "path": "/dev/null"},
     {"kind": "write", "path": "$ROOT/created"}

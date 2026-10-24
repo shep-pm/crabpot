@@ -4,11 +4,14 @@
 //! exit code is the wrapper's exit status.
 //!
 //! `upstream` and `crabpot` build the two wrapper commands, and `wrapper` reads
-//! what running one of them reported. They are separate files because the
+//! what running one of them reported. `windows` holds what upstream's Windows
+//! runner needs set up first. They are separate files because the
 //! comparison and both wrappers together passed 1000 lines (IR-48).
 
 mod crabpot;
 mod upstream;
+#[cfg(windows)]
+mod windows;
 mod wrapper;
 
 #[cfg(test)]
@@ -18,13 +21,16 @@ pub use self::crabpot::Crabpot;
 pub use self::upstream::Upstream;
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::case::{self, Case, Platform, Probe};
-use crate::{probe, serve};
+use crate::probe;
+#[cfg(unix)]
+use crate::serve;
 
 /// Something that runs one probe in a sandbox and reports the probe's exit code.
 pub trait Runner {
@@ -90,7 +96,7 @@ pub enum Error {
         probe: Probe,
     },
     /// Upstream cannot be run, for want of Node, of `npm ci` in `harness/`, or,
-    /// on Linux, of `bwrap`.
+    /// on Linux, of `bwrap`, or, on Windows, of `windows-install`.
     NoUpstream(String),
 }
 
@@ -192,10 +198,11 @@ fn run_probes(
         let mut codes = Vec::with_capacity(runners.len());
         for runner in runners {
             restore()?;
-            let served = serve(probe, settings)?;
             let strict = compare && !hidden_by_a_deny(case, probe);
-            let outcome = code(*runner, settings, probe, strict)?;
-            drop(served);
+            let outcome = {
+                let _served = serve(probe, settings)?;
+                code(*runner, settings, probe, strict)?
+            };
             if outcome == probe::ERROR {
                 eprintln!(
                     "report: {probe:?} could not tell under {}: it exited {}",
@@ -227,6 +234,7 @@ fn run_probes(
 ///
 /// It is served where the probe runs, which is the case root for a path named
 /// against it, and not where the harness happens to be.
+#[cfg(unix)]
 fn serve(probe: &Probe, settings: &Path) -> Result<Option<UnixListener>, Error> {
     let Probe::ConnectUnix(path) = probe else {
         return Ok(None);
@@ -238,8 +246,22 @@ fn serve(probe: &Probe, settings: &Path) -> Result<Option<UnixListener>, Error> 
     UnixListener::bind(&path).map(Some).map_err(Error::Io)
 }
 
+/// Windows has no socket for the harness to serve, so a `connect-unix` probe is
+/// an error there and a case that holds one names the platforms it means.
+#[cfg(not(unix))]
+fn serve(probe: &Probe, _settings: &Path) -> Result<Option<()>, Error> {
+    match probe {
+        Probe::ConnectUnix(_) => Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the harness serves no Unix socket on this platform",
+        ))),
+        _ => Ok(None),
+    }
+}
+
 /// Where a probe's socket is, with a path named against the case root read
 /// from that root, as each wrapper's working directory reads it.
+#[cfg(unix)]
 fn socket_path(settings: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
@@ -320,7 +342,8 @@ fn code(runner: &dyn Runner, settings: &Path, probe: &Probe, strict: bool) -> Re
 /// Runs the case file's `text` under `upstream` and under `crabpot`.
 ///
 /// Reports whether the case ran: one that names platforms this machine is not
-/// one of runs nothing, and is not a failure. See [`Case::runs_on`].
+/// one of, or that sets a loopback mode other than the one Windows has installed,
+/// runs nothing, and is not a failure. See [`Case::runs_on`].
 ///
 /// # Errors
 ///
@@ -359,10 +382,11 @@ pub fn run_upstream_only(text: &str, name: &str, upstream: &dyn Runner) -> Resul
 /// runner in `runners`, which is the whole comparison for two of them and one
 /// runner's own run for one.
 fn run_case_under(text: &str, name: &str, runners: &[&dyn Runner]) -> Result<bool, Error> {
-    let prepared = Prepared::new(text, name)?;
+    let mut prepared = Prepared::new(text, name)?;
     if !prepared.means_here() {
         return Ok(false);
     }
+    prepared.start_serving()?;
     prepared.run(runners).map(|()| true)
 }
 
@@ -374,38 +398,65 @@ struct Prepared {
     settings: PathBuf,
     /// Served for the run, and stopped by [`Prepared`]'s `Drop` before the root
     /// is removed, on every way out of the run.
+    #[cfg(unix)]
     served: Option<serve::Served>,
 }
 
 impl Prepared {
-    /// Reads `text` into a root named after `name`, and starts whatever socket
-    /// the case asks the harness to serve.
+    /// Reads `text` into a root named after `name`.
     ///
     /// # Errors
     ///
-    /// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root or
-    /// a served socket cannot be created.
+    /// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root
+    /// cannot be created.
     fn new(text: &str, name: &str) -> Result<Self, Error> {
         let root = Root::new(name).map_err(Error::Io)?;
         let case = Case::parse(text, &root.0).map_err(Error::Case)?;
         let settings = Path::new(&root.0).join("settings.json");
-        let served = case
+        Ok(Self {
+            root,
+            case,
+            settings,
+            #[cfg(unix)]
+            served: None,
+        })
+    }
+
+    /// Starts whatever socket the case asks the harness to serve, which only a
+    /// case that means this platform needs.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the socket cannot be served, or, off Unix, when the
+    /// case asks for one.
+    #[cfg(unix)]
+    fn start_serving(&mut self) -> Result<(), Error> {
+        self.served = self
+            .case
             .serve
             .as_ref()
             .map(|serve| serve::Served::start(Path::new(&serve.unix_socket), &serve.status))
             .transpose()
             .map_err(Error::Io)?;
-        Ok(Self {
-            root,
-            case,
-            settings,
-            served,
-        })
+        Ok(())
     }
 
-    /// Whether the case means the platform this harness runs on.
+    /// Starts nothing: there is no socket to serve off Unix.
+    #[cfg(not(unix))]
+    fn start_serving(&mut self) -> Result<(), Error> {
+        match self.case.serve {
+            None => Ok(()),
+            Some(_) => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the harness serves no Unix socket on this platform",
+            ))),
+        }
+    }
+
+    /// Whether the case means the platform this harness runs on, and, on
+    /// Windows, the loopback mode the filters were installed with.
     fn means_here(&self) -> bool {
-        self.case.runs_on(Platform::current())
+        self.case.runs_on(Platform::current()) && fits_install(&self.case)
     }
 
     /// The closure that puts the fixture back as the case describes it.
@@ -438,6 +489,7 @@ impl Prepared {
     fn run(&self, runners: &[&dyn Runner]) -> Result<(), Error> {
         // The socket the case asked the harness to serve stays served for the
         // whole run, and no probe of the case itself may hold it.
+        #[cfg(unix)]
         let _served = &self.served;
         let restore = self.restore();
         if self.case.refused {
@@ -448,6 +500,7 @@ impl Prepared {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Prepared {
     /// Stops the served socket before any field drops, which is the order the
     /// run needs on every way out of it, a panic's unwinding included. The
@@ -461,12 +514,35 @@ impl Drop for Prepared {
     }
 }
 
-/// A fresh folder, its path as `pwd -P` prints it, removed on drop.
+/// Whether upstream accepts the case's loopback setting under the install it
+/// runs against, see [`windows::loopback_installed`].
+#[cfg(windows)]
+fn fits_install(case: &Case) -> bool {
+    case.allows_loopback() == windows::loopback_installed()
+}
+
+/// Every case fits: only the Windows filters are installed in a mode.
+#[cfg(not(windows))]
+fn fits_install(_: &Case) -> bool {
+    true
+}
+
+/// Where a case's root is made. On Windows the temp folder will not do, see
+/// [`windows::scratch`].
+fn scratch() -> PathBuf {
+    #[cfg(windows)]
+    return windows::scratch();
+    #[cfg(not(windows))]
+    std::env::temp_dir()
+}
+
+/// A fresh folder, its path as `pwd -P` prints it, removed on drop. On Windows
+/// the path is spelled for upstream, see [`spell_for_upstream`].
 struct Root(String);
 
 impl Root {
     fn new(name: &str) -> std::io::Result<Self> {
-        let dir = std::env::temp_dir().join(folder(name));
+        let dir = scratch().join(folder(name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir)?;
         let real = dir.canonicalize()?;
@@ -476,7 +552,11 @@ impl Root {
                 "the temp folder is not UTF-8",
             )
         })?;
-        Ok(Self(text.to_owned()))
+        if cfg!(windows) {
+            Ok(Self(spell_for_upstream(text)))
+        } else {
+            Ok(Self(text.to_owned()))
+        }
     }
 
     /// Removes everything in the folder but `keep`, and leaves the folder.
@@ -515,6 +595,20 @@ fn folder(name: &str) -> String {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_01a3)
     });
     format!("c{}-{head}{hash:08x}", std::process::id())
+}
+
+/// `path` as upstream's Windows runner reads an argument: it wraps one that
+/// holds a backslash in single quotes, which `cmd` does not read as quotes, so
+/// the path takes forward slashes. The `\\?\` prefix of a drive path that
+/// `canonicalize` adds is dropped, since a path without a backslash needs none.
+/// A UNC path stays as it is.
+fn spell_for_upstream(path: &str) -> String {
+    let plain = match path.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest,
+        Some(_) => return path.to_owned(),
+        None => path,
+    };
+    plain.replace('\\', "/")
 }
 
 /// The case's root, which holds the settings file: a `~` in a case names a path

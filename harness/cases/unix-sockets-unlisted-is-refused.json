@@ -7,6 +7,7 @@
     "network": {"allowedDomains": [], "deniedDomains": [], "allowUnixSockets": ["$ROOT/socks"]},
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "bind-unix", "path": "$ROOT/other/b.sock"},
     {"kind": "connect-unix", "path": "$ROOT/other/live.sock"}

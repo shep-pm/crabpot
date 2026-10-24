@@ -13,6 +13,15 @@
 //! developer's machine and fails when `CI` is set. On Linux upstream also needs
 //! `bubblewrap`, `socat` and `ripgrep`, and a kernel that lets bwrap take its
 //! namespaces: `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
+//!
+//! Windows runs crabpot only on the cases `WINDOWS_READY` names, which is none
+//! yet, and every other case under upstream's `srt-win` path alone. That needs
+//! `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+//! windows-install`. The cases that mean only Unix name their platforms and are
+//! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
+//! not the loopback mode the filters were installed with, so a case that opens
+//! loopback runs only after `windows-install --allow-loopback --force` and with
+//! `CRABPOT_HARNESS_LOOPBACK=open`, and every other case runs only without them.
 
 use crabpot_harness::runner::{self, Crabpot, Upstream};
 
@@ -54,6 +63,21 @@ const LINUX_READY: &[&str] = &[
     "move_blocking_read_glob",
 ];
 
+/// The cases that run under crabpot on Windows. Each Windows slice of #143
+/// appends the cases it makes pass.
+const WINDOWS_READY: &[&str] = &[];
+
+/// Whether crabpot runs `name` beside upstream on this platform.
+fn runs_crabpot(name: &str) -> bool {
+    if cfg!(target_os = "macos") {
+        true
+    } else if cfg!(windows) {
+        WINDOWS_READY.contains(&name)
+    } else {
+        LINUX_READY.contains(&name)
+    }
+}
+
 /// Runs the case file `harness/cases/<file>`.
 fn run(name: &str, file: &str) {
     let probe = env!("CARGO_BIN_EXE_probe");
@@ -67,14 +91,16 @@ fn run(name: &str, file: &str) {
     };
     let path = format!("{}/cases/{file}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(&path).unwrap();
-    let outcome = if cfg!(target_os = "macos") || LINUX_READY.contains(&name) {
+    let outcome = if runs_crabpot(name) {
         runner::run_case(&text, name, &upstream, &Crabpot::new(probe))
     } else {
         runner::run_upstream_only(&text, name, &upstream)
     };
     match outcome {
         Ok(true) => {}
-        Ok(false) => eprintln!("skipping {name}: the case names another platform"),
+        Ok(false) => {
+            eprintln!("skipping {name}: the case is not for this platform or this install")
+        }
         Err(error) => panic!("{name}: {error}"),
     }
 }

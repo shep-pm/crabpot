@@ -78,8 +78,10 @@ impl Sandbox {
     /// cannot spell, which is a Linux answer too. On Windows the status checks
     /// of [`windows_preflight_for`](crate::windows_preflight_for) run first, then
     /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
-    /// none nor current, [`StartError::GrantFailed`] when the session's grants
-    /// cannot be made, and [`StartError::LoopbackMismatch`],
+    /// none nor current, [`StartError::LoopbackMismatch`] for a session whose
+    /// `network.allowLocalBinding` is not the install's loopback mode,
+    /// [`StartError::GrantBlocked`] or [`StartError::GrantFailed`] when the
+    /// session's grants and denies cannot be made, and
     /// [`StartError::FenceInactive`] or [`StartError::FenceUnverified`] when the
     /// firewall fence is not shown to be active. The grants are held until the
     /// sandbox drops, which revokes them.
@@ -364,9 +366,16 @@ pub enum StartError {
         /// Its exit code, when it ran to one.
         code: Option<i32>,
     },
-    /// Windows: the installed firewall filters leave loopback open or closed
-    /// the other way from `network.allowLocalBinding`, and the install has to
-    /// be run again with this session's setting.
+    /// Windows: srt-win exited 25 for the `acl grant` call (or 24), because a
+    /// `profile grant` or `profile forget` holds the lock the call needs. Nothing
+    /// was granted or denied, and the call can be made again once that
+    /// operation is done.
+    GrantBlocked,
+    /// Windows: `network.allowLocalBinding` is not the loopback mode the install
+    /// made, which the install fixes and a session cannot change. The repair is
+    /// the install again with `--allow-loopback` for a session that opens
+    /// loopback, or without it for one that keeps it closed. srt-win answers the
+    /// difference with exit 19.
     LoopbackMismatch,
     /// Windows: a direct outbound connect the fence must refuse was not
     /// refused, so the fence is not active and the install has to be run
@@ -472,9 +481,13 @@ impl fmt::Display for StartError {
                 write!(f, "`srt-win acl grant` exited {code}")
             }
             Self::GrantFailed { code: None } => write!(f, "`srt-win acl grant` did not run"),
+            Self::GrantBlocked => write!(
+                f,
+                "`srt-win acl grant` was held off by a profile grant or forget in progress, and changed nothing"
+            ),
             Self::LoopbackMismatch => write!(
                 f,
-                "the installed firewall filters do not match network.allowLocalBinding; run the install again with this session's setting"
+                "network.allowLocalBinding is not the install's loopback mode, which the install fixes; run `crabpot windows-install --allow-loopback --force` to open loopback, or `crabpot windows-install --force` to keep it closed"
             ),
             Self::FenceInactive { detail } => write!(
                 f,

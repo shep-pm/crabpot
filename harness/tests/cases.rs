@@ -16,8 +16,14 @@
 //!
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
 //! default settings, the settings crabpot refuses, the keys upstream ignores
+<<<<<<< HEAD
 //! there, the `allowWrite` cases and the backslash argument, and every other
 //! case under upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+=======
+//! there, the `allowWrite` cases, the `denyRead` and `denyWrite` cases but the
+//! two `literal` ones, and the loopback cases. Every other case runs under
+//! upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+>>>>>>> origin/main
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
 //! not the loopback mode the filters were installed with, so a case that opens
@@ -105,6 +111,12 @@ const LINUX_READY: &[&str] = &[
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143
 /// appends the cases it makes pass.
+///
+/// `deny_read_literal` and `deny_write_literal` stay out: they probe a path
+/// with `[` and `]` in it, which upstream's Windows runner cannot pass on (its
+/// probe exits 2, where crabpot's refuses). `[` and `]` are plain characters in a
+/// Windows name, so `literal` changes nothing there, and the `fs_access` unit
+/// tests hold that. Both still run under upstream alone.
 const WINDOWS_READY: &[&str] = &[
     "default_settings",
     "refused_invalid_json",
@@ -122,12 +134,30 @@ const WINDOWS_READY: &[&str] = &[
     "allow_write_folder",
     "allow_write_outside_is_refused",
     "allow_write_glob",
+    "deny_read_folder",
+    "deny_read_glob",
+    "deny_read_tilde",
+    "deny_write_file",
+    "deny_write_glob",
     // The keys upstream ignores on Windows, which load and change nothing.
     "weaker_isolation_true",
     "weaker_isolation_false",
     "allow_mach_lookup_loads",
     "unix_sockets_key_is_accepted",
+<<<<<<< HEAD
     "windows_backslash_argument",
+=======
+    // The loopback cases, each run under the install that matches it: the first
+    // and `kelpie_loopback_bind` under a closed install, the rest under one made
+    // with `--allow-loopback`. A case of the other mode is skipped, and a
+    // session of the other mode is refused as `StartError::LoopbackMismatch`.
+    "local_binding_bind_refused_by_default",
+    "local_binding_bind_allowed",
+    "local_binding_connect_to_loopback",
+    "local_binding_other_host_still_refused",
+    "kelpie_loopback_bind",
+    "kelpie_bind_allowed",
+>>>>>>> origin/main
 ];
 
 /// Whether crabpot runs `name` beside upstream on this platform.

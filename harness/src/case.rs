@@ -339,7 +339,11 @@ impl Probe {
             Self::UnshareUser => vec!["unshare-user".to_owned()],
             Self::PsOutside => vec!["ps-outside".to_owned()],
             Self::BackslashArgument { value, .. } => {
-                vec!["backslash-argument".to_owned(), value.clone()]
+                vec![
+                    "backslash-argument".to_owned(),
+                    value.clone(),
+                    crate::probe::argument::encode(value),
+                ]
             }
         }
     }
@@ -571,7 +575,10 @@ mod tests {
                 upstream: 1,
             }
         );
-        assert_eq!(probe.args(), ["backslash-argument", r"C:\work"]);
+        assert_eq!(
+            probe.args(),
+            ["backslash-argument", r"C:\work", "433a5c776f726b"]
+        );
         assert_eq!(probe.upstream_exit(), Some(1));
         assert_eq!(Probe::Bind.upstream_exit(), None);
     }

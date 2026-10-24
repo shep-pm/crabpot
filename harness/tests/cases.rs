@@ -17,8 +17,8 @@
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
 //! default settings, the settings crabpot refuses, the keys upstream ignores
 //! there, the `allowWrite` cases, the `denyRead` and `denyWrite` cases but the
-//! two `literal` ones, and the loopback cases. Every other case runs under
-//! upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+//! two `literal` ones, the loopback cases and the backslash argument. Every
+//! other case runs under upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
 //! not the loopback mode the filters were installed with, so a case that opens
@@ -149,6 +149,7 @@ const WINDOWS_READY: &[&str] = &[
     "local_binding_other_host_still_refused",
     "kelpie_loopback_bind",
     "kelpie_bind_allowed",
+    "windows_backslash_argument",
 ];
 
 /// Whether crabpot runs `name` beside upstream on this platform.
@@ -630,6 +631,17 @@ fn kelpie_full_policy() {
 #[test]
 fn ps_outside() {
     run("ps_outside", "ps-outside.json");
+}
+
+/// Upstream's Windows runner wraps an argument that holds a backslash in single
+/// quotes and crabpot passes it as written, so the probe exits 1 under upstream
+/// and 0 under crabpot, and the case records the 1.
+#[test]
+fn windows_backslash_argument() {
+    run(
+        "windows_backslash_argument",
+        "windows-backslash-argument.json",
+    );
 }
 
 /// Linux's seccomp filters refuse what no other platform's sandbox has a name

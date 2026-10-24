@@ -47,6 +47,9 @@ pub enum Probe {
     IoUringSetup,
     /// Make a user namespace with `unshare`. Linux only.
     UnshareUser,
+    /// Ask `ps` for the harness's own process, which a sandbox with a pid
+    /// namespace of its own does not hold.
+    PsOutside,
 }
 
 /// The address family of a `socket` probe: the two a Linux sandbox refuses.
@@ -314,6 +317,7 @@ impl Probe {
             Self::Socket(family) => vec!["socket".to_owned(), family.word().to_owned()],
             Self::IoUringSetup => vec!["io-uring-setup".to_owned()],
             Self::UnshareUser => vec!["unshare-user".to_owned()],
+            Self::PsOutside => vec!["ps-outside".to_owned()],
         }
     }
 
@@ -366,6 +370,7 @@ impl Probe {
             },
             "io-uring-setup" => Ok(Self::IoUringSetup),
             "unshare-user" => Ok(Self::UnshareUser),
+            "ps-outside" => Ok(Self::PsOutside),
             _ => Err(Error::UnknownProbe(kind)),
         }
     }
@@ -449,7 +454,8 @@ mod tests {
                 {"kind": "socket", "family": "unix"},
                 {"kind": "socket", "family": "vsock"},
                 {"kind": "io-uring-setup"},
-                {"kind": "unshare-user"}
+                {"kind": "unshare-user"},
+                {"kind": "ps-outside"}
             ]
         }"#;
         let case = Case::parse(text, "/r").unwrap();
@@ -460,6 +466,7 @@ mod tests {
                 Probe::Socket(Family::Vsock),
                 Probe::IoUringSetup,
                 Probe::UnshareUser,
+                Probe::PsOutside,
             ]
         );
         let words: Vec<Vec<String>> = case.probes.iter().map(Probe::args).collect();
@@ -470,6 +477,7 @@ mod tests {
                 ["socket", "vsock"].as_slice(),
                 ["io-uring-setup"].as_slice(),
                 ["unshare-user"].as_slice(),
+                ["ps-outside"].as_slice(),
             ]
         );
     }
@@ -717,7 +725,10 @@ mod tests {
                     }
                     Probe::Read(_) | Probe::Connect { .. } | Probe::Bind | Probe::Loopback => {}
                     Probe::SignalGroup | Probe::Ps => {}
-                    Probe::Socket(_) | Probe::IoUringSetup | Probe::UnshareUser => {}
+                    Probe::Socket(_)
+                    | Probe::IoUringSetup
+                    | Probe::UnshareUser
+                    | Probe::PsOutside => {}
                 }
             }
         }

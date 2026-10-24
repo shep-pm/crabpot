@@ -1,0 +1,11 @@
+{
+  "files": {},
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "platforms": ["linux"],
+  "probes": [
+    {"kind": "ps-outside"}
+  ]
+}

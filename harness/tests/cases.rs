@@ -66,7 +66,6 @@ const LINUX_READY: &[&str] = &[
     "local_binding_bind_refused_by_default",
     "local_binding_bind_allowed",
     "local_binding_connect_to_loopback",
-    "local_binding_other_host_still_refused",
     "kelpie_loopback_bind",
     "kelpie_bind_allowed",
 ];

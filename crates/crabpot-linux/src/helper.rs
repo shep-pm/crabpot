@@ -13,6 +13,8 @@
 
 mod exec;
 #[cfg(target_os = "linux")]
+mod filters;
+#[cfg(target_os = "linux")]
 mod init;
 #[cfg(target_os = "linux")]
 mod relay;

@@ -219,6 +219,21 @@ mod tests {
     }
 
     #[test]
+    fn every_command_carries_the_write_restricted_token() {
+        let roots = [r"C:\work".to_owned()];
+        for (roots, allow_loopback) in [(&[][..], false), (&roots[..], false), (&roots[..], true)] {
+            let args = args_of(&wrap(&params(roots, allow_loopback), &echo()).unwrap());
+
+            let split = args.iter().position(|arg| arg == "--").unwrap();
+            let count = args[..split]
+                .iter()
+                .filter(|arg| *arg == "--write-restricted-token")
+                .count();
+            assert_eq!(count, 1, "{args:?}");
+        }
+    }
+
+    #[test]
     fn loopback_adds_allow_loopback() {
         let closed = args_of(&wrap(&params(&[], false), &echo()).unwrap());
         let open = args_of(&wrap(&params(&[], true), &echo()).unwrap());

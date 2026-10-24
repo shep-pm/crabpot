@@ -1,0 +1,48 @@
+{
+  "files": {
+    "$ROOT/.ssh/id_ed25519": "x",
+    "$ROOT/.config/gh/hosts.yml": "x",
+    "$ROOT/.shep/worktree/seed": "x",
+    "$ROOT/.shep/worktree/.git/config": "x",
+    "$ROOT/.shep/state": "x",
+    "$ROOT/other/seed": "x",
+    "$ROOT/scratch/seed": "x",
+    "$ROOT/tmp/seed": "x"
+  },
+  "settings": {
+    "network": {
+      "allowedDomains": ["github.com", "api.github.com", "example.com", "mitm.example.com"],
+      "deniedDomains": ["localhost", "127.0.0.1", "private.example.com"],
+      "strictAllowlist": true,
+      "deniedResolvedAddresses": ["198.51.100.0/24", "203.0.113.7"],
+      "mitmProxy": {
+        "socketPath": "$ROOT/mitm.sock",
+        "domains": ["mitm.example.com"]
+      },
+      "allowUnixSockets": ["$ROOT/scratch"],
+      "allowLocalBinding": true,
+      "allowMachLookup": ["com.apple.FSEvents"]
+    },
+    "filesystem": {
+      "denyRead": ["~/.ssh/**", "~/.config/gh/**", "~/.shep/**"],
+      "allowRead": ["$ROOT/.shep/worktree"],
+      "allowWrite": ["$ROOT/.shep/worktree", "$ROOT/scratch", "$ROOT/tmp/cbm-search-*", "$ROOT/tmp/cbm-search-*/*"],
+      "denyWrite": ["$ROOT/.shep/worktree/.git/config", "$ROOT/.mcp.json"]
+    },
+    "enableWeakerNetworkIsolation": true
+  },
+  "platforms": ["windows"],
+  "probes": [
+    {"kind": "read", "path": "$ROOT/.shep/worktree/seed"},
+    {"kind": "read", "path": "$ROOT/.shep/state"},
+    {"kind": "read", "path": "$ROOT/.ssh/id_ed25519"},
+    {"kind": "write", "path": "$ROOT/.shep/worktree/created"},
+    {"kind": "write", "path": "$ROOT/.shep/worktree/.git/config"},
+    {"kind": "write", "path": "$ROOT/other/created"},
+    {"kind": "connect", "host": "api.github.com", "port": 443},
+    {"kind": "connect", "host": "private.example.com", "port": 443},
+    {"kind": "connect", "host": "offlist.example.net", "port": 443},
+    {"kind": "bind"},
+    {"kind": "loopback"}
+  ]
+}

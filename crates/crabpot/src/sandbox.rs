@@ -365,9 +365,10 @@ pub enum StartError {
         /// Its exit code, when it ran to one.
         code: Option<i32>,
     },
-    /// Windows: srt-win exited 24 for the `acl grant` call, which a sandbox
-    /// session or command that is running blocks. Nothing was granted or
-    /// denied, and the call can be made again once that session has ended.
+    /// Windows: srt-win exited 25 for the `acl grant` call (or 24), because a
+    /// `profile grant` or `profile forget` holds the lock the call needs. Nothing
+    /// was granted or denied, and the call can be made again once that
+    /// operation is done.
     GrantBlocked,
     /// Windows: the installed firewall filters leave loopback open or closed
     /// the other way from `network.allowLocalBinding`, and the install has to
@@ -479,7 +480,7 @@ impl fmt::Display for StartError {
             Self::GrantFailed { code: None } => write!(f, "`srt-win acl grant` did not run"),
             Self::GrantBlocked => write!(
                 f,
-                "`srt-win acl grant` was blocked by a running sandbox session or command, and changed nothing"
+                "`srt-win acl grant` was held off by a profile grant or forget in progress, and changed nothing"
             ),
             Self::LoopbackMismatch => write!(
                 f,

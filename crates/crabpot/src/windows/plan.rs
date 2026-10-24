@@ -31,8 +31,11 @@ macro_rules! sections {
 
 sections!(write, deny_read, deny_write);
 
-/// What srt-win exits with when a running session or command blocks a grant.
-const EXIT_GRANT_BLOCKED: i32 = 24;
+/// What srt-win exits with when something holds a grant off and nothing
+/// changed: 25 when a profile grant or forget holds the init lock, which is how
+/// `acl grant` meets it, and 24, which `profile grant` gives for a running
+/// session and the issue names for this call as well.
+const EXIT_GRANT_BLOCKED: [i32; 2] = [24, 25];
 
 /// Settings that list nothing, for a section to fill in the lists it owns.
 const NO_PATHS: Settings<'static> = Settings {
@@ -114,13 +117,19 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// [`StartError::GrantBlocked`] when srt-win exits 24, and
+    /// [`StartError::GrantBlocked`] when srt-win exits 24 or 25, and
     /// [`StartError::GrantFailed`] for any other exit, or a call that did not
     /// run.
     pub(crate) fn apply(&self, srt: &dyn Srt, sid: &str, holder: u32) -> Result<(), StartError> {
         match srt.run(&self.grant(sid, holder)) {
             Ok(output) if output.succeeded() => Ok(()),
-            Ok(output) if output.code == Some(EXIT_GRANT_BLOCKED) => Err(StartError::GrantBlocked),
+            Ok(output)
+                if output
+                    .code
+                    .is_some_and(|code| EXIT_GRANT_BLOCKED.contains(&code)) =>
+            {
+                Err(StartError::GrantBlocked)
+            }
             Ok(output) => Err(StartError::GrantFailed { code: output.code }),
             Err(_) => Err(StartError::GrantFailed { code: None }),
         }
@@ -356,6 +365,16 @@ mod tests {
     #[test]
     fn exit_24_maps_to_the_grant_blocked_error() {
         let (srt, _) = Fake::answering(|_| exit(24, ""));
+        let plan = Plan::build(&Config::default()).unwrap();
+
+        let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();
+
+        assert_eq!(error, StartError::GrantBlocked);
+    }
+
+    #[test]
+    fn exit_25_maps_to_the_grant_blocked_error() {
+        let (srt, _) = Fake::answering(|_| exit(25, ""));
         let plan = Plan::build(&Config::default()).unwrap();
 
         let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();

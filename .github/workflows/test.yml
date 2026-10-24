@@ -145,6 +145,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo test --locked -p crabpot --test windows_installed
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo test --locked -p crabpot --test windows_sandbox
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           ./target/debug/crabpot.exe windows-uninstall
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo test --locked -p crabpot --test windows_status

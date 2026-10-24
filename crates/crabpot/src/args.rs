@@ -27,6 +27,9 @@ pub(crate) enum Invocation {
     Shell(OsString),
 }
 
+/// The hidden first argument that makes the binary srt-win (see `run_from_args`).
+pub(crate) const SRT_WIN_FLAG: &str = "--srt-win";
+
 /// The hidden first argument that makes the binary the helper inside bwrap
 /// (ADR-0014). It is followed by a [`HelperMode`], then the mode's own arguments.
 pub(crate) const HELPER_FLAG: &str = "--crabpot-helper";

@@ -15,6 +15,8 @@ use crate::StartError;
 pub struct WindowsStatus {
     /// Whether a command can be launched as the sandbox user.
     pub user: UserState,
+    /// The sandbox user's SID, when it has an account.
+    pub sandbox_sid: Option<String>,
     /// The install's setup version beside this build's.
     pub setup_version: SetupVersion,
     /// Whether the WFP fence leaves loopback open.
@@ -107,6 +109,7 @@ struct UserJson {
 #[derive(Deserialize)]
 struct UserAccount {
     exists: bool,
+    sid: Option<String>,
 }
 
 /// `wfp status`, as far as a status reads it.
@@ -138,6 +141,7 @@ pub(crate) fn read(
         } else {
             UserState::NotProvisioned
         },
+        sandbox_sid: user.user.sid,
         setup_version: SetupVersion {
             installed: user.marker_version,
             expected: user.setup_version,
@@ -207,6 +211,7 @@ mod tests {
         let status = read(fake(PROVISIONED, WFP)).unwrap();
 
         assert_eq!(status.user, UserState::Provisioned);
+        assert_eq!(status.sandbox_sid.as_deref(), Some("S-1-5-21-1"));
         assert_eq!(
             status.setup_version,
             SetupVersion {

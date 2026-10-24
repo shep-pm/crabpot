@@ -32,8 +32,16 @@ harness = false
 name = "windows_installed"
 harness = false
 
+[[test]]
+name = "windows_sandbox"
+harness = false
+
 [dependencies]
 crabpot-core.workspace = true
+# Compiles on every host: the Windows environment and path rules are plain text
+# rules, and the facade's Windows tests run off Windows. The srt-win half of the
+# crate is empty there.
+crabpot-windows.workspace = true
 # The three srt-win queries a Windows status reads print JSON.
 serde.workspace = true
 serde_json.workspace = true
@@ -51,7 +59,6 @@ crabpot-linux.workspace = true
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [target.'cfg(windows)'.dependencies]
-crabpot-windows.workspace = true
 # `ProcessIdToSessionId` and a file's DACL, the Windows calls the facade makes
 # itself. Tokio already pulls the crate into the lock.
 windows-sys = { version = "0.61", default-features = false, features = [

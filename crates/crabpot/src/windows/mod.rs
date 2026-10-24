@@ -1,14 +1,32 @@
 //! The Windows host's view of the sandbox before a command runs: its status
 //! and the refusals that follow from it.
 
+// The session's pieces are built and tested on every host, and used on Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod command;
 #[cfg(windows)]
 mod ffi;
 pub(crate) mod install;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod plan;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod srt;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod start;
 mod status;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod wfp;
 
 #[cfg(windows)]
 use std::process::Command;
+#[cfg(windows)]
+use std::sync::Arc;
 
+#[cfg(windows)]
+use crabpot_core::config::Config;
+
+#[cfg(windows)]
+pub(crate) use start::Session;
 pub use status::{
     LoopbackMode, ProfileState, SetupVersion, UserState, WindowsStatus, refusal_for_exit,
 };
@@ -93,6 +111,33 @@ fn current_session() -> Result<u32, StartError> {
     Err(StartError::UnsupportedPlatform)
 }
 
+/// The sandbox users the fence has been verified for in this process.
+#[cfg(windows)]
+static VERIFIED: start::Verified = start::Verified::new();
+
+/// Starts a Windows session for `config`: the status checks, then
+/// [`start::start_with`] through this binary run again as srt-win.
+///
+/// # Errors
+///
+/// Those of [`windows_preflight`] and [`start::start_with`], and
+/// [`StartError::CurrentExe`] when the path of this binary is unknown.
+#[cfg(windows)]
+pub(crate) fn start_session(config: &Config) -> Result<Session, StartError> {
+    let status = windows_preflight()?;
+    let exe = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
+    start::start_with(
+        start::Host {
+            srt: Arc::new(srt::Process),
+            exe,
+            holder: std::process::id(),
+        },
+        &VERIFIED,
+        &status,
+        config,
+    )
+}
+
 /// Runs this binary as `srt-win <command>` and returns what it printed.
 #[cfg(windows)]
 fn run_srt_win(command: &'static str) -> Result<String, StartError> {
@@ -123,6 +168,7 @@ mod tests {
     fn status() -> WindowsStatus {
         WindowsStatus {
             user: UserState::Provisioned,
+            sandbox_sid: Some("S-1-5-21-1".to_owned()),
             setup_version: SetupVersion {
                 installed: Some(3),
                 expected: 3,

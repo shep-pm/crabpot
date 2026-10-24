@@ -54,7 +54,7 @@ pub(super) fn locate(path: PathBuf) -> Option<(PathBuf, bool)> {
 /// The paths with those beneath a denied directory left out: the tmpfs over it
 /// already hides them, and a mount beneath it would name a path that is no
 /// longer there.
-fn collapse(found: BTreeMap<PathBuf, bool>) -> Vec<(PathBuf, bool)> {
+pub(super) fn collapse(found: BTreeMap<PathBuf, bool>) -> Vec<(PathBuf, bool)> {
     let mut kept: Vec<(PathBuf, bool)> = Vec::new();
     for (path, is_dir) in found {
         let covered = kept
@@ -67,7 +67,7 @@ fn collapse(found: BTreeMap<PathBuf, bool>) -> Vec<(PathBuf, bool)> {
     kept
 }
 
-fn mount(path: PathBuf, is_dir: bool) -> Vec<OsString> {
+pub(super) fn mount(path: PathBuf, is_dir: bool) -> Vec<OsString> {
     if is_dir {
         vec!["--tmpfs".into(), path.into_os_string()]
     } else {

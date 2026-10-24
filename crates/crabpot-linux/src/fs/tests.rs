@@ -29,6 +29,14 @@ impl Tree {
         self.at(path)
     }
 
+    #[cfg(unix)]
+    fn link(&self, target: &str, path: &str) -> String {
+        let at = self.root.join(path);
+        fs::create_dir_all(at.parent().expect("a link has a parent")).expect("a parent");
+        std::os::unix::fs::symlink(self.at(target), &at).expect("a link");
+        self.at(path)
+    }
+
     fn at(&self, path: &str) -> String {
         self.root
             .join(path)
@@ -184,6 +192,79 @@ fn an_allow_glob_expands_on_disk() {
         read_words(&[&secrets], &[&pattern]),
         ["--tmpfs", &secrets, "--ro-bind", &txt, &txt]
     );
+}
+
+#[test]
+fn a_nested_deny_stays_hidden_under_a_reopened_directory() {
+    let tree = Tree::new("nested-deny-back");
+    let secrets = tree.dir("secrets");
+    let shared = tree.dir("secrets/shared");
+    let key = tree.file("secrets/shared/key");
+
+    assert_eq!(
+        read_words(&[&secrets, &key], &[&shared]),
+        [
+            "--tmpfs",
+            &secrets,
+            "--ro-bind",
+            &shared,
+            &shared,
+            "--ro-bind",
+            "/dev/null",
+            &key,
+        ]
+    );
+}
+
+#[test]
+fn a_deny_glob_covering_a_reopened_directory_gives_way() {
+    let tree = Tree::new("late-carve");
+    let secrets = tree.dir("secrets");
+    let shared = tree.dir("secrets/shared");
+    tree.file("secrets/shared/a");
+    tree.file("secrets/key");
+    let region = tree.at("secrets/**/*");
+
+    assert_eq!(
+        read_words(&[&secrets, &region], &[&shared]),
+        ["--tmpfs", &secrets, "--ro-bind", &shared, &shared]
+    );
+}
+
+#[test]
+fn a_deny_glob_not_covering_a_reopened_directory_stays_masked() {
+    let tree = Tree::new("late-leaf");
+    let secrets = tree.dir("secrets");
+    let shared = tree.dir("secrets/shared");
+    let leaf = tree.file("secrets/shared/deeper.key");
+    tree.file("secrets/key");
+    let pattern = tree.at("secrets/**/*.key");
+
+    assert_eq!(
+        read_words(&[&secrets, &pattern], &[&shared]),
+        [
+            "--tmpfs",
+            &secrets,
+            "--ro-bind",
+            &shared,
+            &shared,
+            "--ro-bind",
+            "/dev/null",
+            &leaf,
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_match_of_an_allow_glob_reopens_nothing() {
+    let tree = Tree::new("allow-glob-link");
+    let secrets = tree.dir("secrets");
+    tree.file("secrets/key");
+    tree.link("secrets/key", "public/key.txt");
+    let pattern = tree.at("public/*.txt");
+
+    assert_eq!(read_words(&[&secrets], &[&pattern]), ["--tmpfs", &secrets]);
 }
 
 #[cfg(target_os = "linux")]

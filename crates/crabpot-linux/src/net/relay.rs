@@ -84,8 +84,10 @@ pub fn serve(listener: &TcpListener, socket: &Path) {
     }
 }
 
-/// Copies between `client` and the Unix socket until both directions are done,
-/// passing an end of input on to the other side.
+/// Copies between `client` and the Unix socket, passing an end of input on to
+/// the other side. When the proxy is done, both sockets are closed, as
+/// upstream's `socat` does, so a client that keeps its end open does not hold
+/// the connection's thread and descriptors.
 fn forward(client: &TcpStream, socket: &Path) -> io::Result<()> {
     let proxy = UnixStream::connect(socket)?;
     let (mut from_client, mut to_proxy) = (client.try_clone()?, proxy.try_clone()?);
@@ -96,7 +98,9 @@ fn forward(client: &TcpStream, socket: &Path) -> io::Result<()> {
     });
     let (mut from_proxy, mut to_client) = (proxy, client.try_clone()?);
     let downstream = io::copy(&mut from_proxy, &mut to_client);
-    let _ = client.shutdown(Shutdown::Write);
+    // Closing both ends wakes the thread above out of its read of the client.
+    let _ = client.shutdown(Shutdown::Both);
+    let _ = from_proxy.shutdown(Shutdown::Both);
     downstream?;
     upstream
         .join()
@@ -109,6 +113,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream};
     use std::os::unix::net::UnixListener;
+    use std::sync::mpsc;
     use std::thread;
 
     use super::*;
@@ -154,6 +159,36 @@ mod tests {
         let wanted = BACKLOG.min(i32::from(Backlog::MAXCONN));
 
         assert_eq!(i32::from(backlog()), wanted);
+    }
+
+    #[test]
+    fn a_client_that_keeps_its_end_open_does_not_hold_the_connection() {
+        let tree = Tree::empty("held");
+        let socket = tree.root().join("p.sock");
+        let proxy = UnixListener::bind(&socket).unwrap();
+        thread::spawn(move || {
+            // Answers and hangs up without waiting for the client.
+            let (mut stream, _) = proxy.accept().unwrap();
+            stream.write_all(b"bye").unwrap();
+        });
+        let listener = bind(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done, forwarded) = mpsc::channel();
+        thread::spawn(move || {
+            let (client, _) = listener.accept().unwrap();
+            done.send(forward(&client, &socket)).unwrap();
+        });
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+
+        // The client's socket is still open here.
+        assert_eq!(answer, b"bye");
+        forwarded
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

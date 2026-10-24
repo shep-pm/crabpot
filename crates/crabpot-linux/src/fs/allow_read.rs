@@ -27,20 +27,24 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crabpot_core::paths::PathBase;
 use crabpot_core::PathError;
 use crabpot_core::ResolvedPath;
 use crabpot_core::config::Config;
+use crabpot_core::paths::PathBase;
 
 use super::allow_write;
 use super::deny_read::{Mount, collapse, locate, located};
 use super::glob_walk;
-use super::Draft;
+use super::{Draft, PlanError};
 
-pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
+pub(super) fn words(
+    config: &Config,
+    base: &PathBase,
+    draft: &mut Draft,
+) -> Result<Vec<OsString>, PlanError> {
     let denies = config.filesystem.read_denies()?;
     let hidden = located(config)?;
-    let writable = allow_write::bind_paths(&PathBase::from_env(), config)?;
+    let writable = allow_write::bind_paths(base, config)?;
     let mut reopened = BTreeMap::new();
     for entry in config.filesystem.read_allows()? {
         for path in glob_walk::matches(&entry) {

@@ -5,6 +5,9 @@
 //! the root bind, which would otherwise cover it. A path that is not there is
 //! skipped, since bwrap would have to create a mount point for it in the
 //! read-only root.
+//!
+//! One path is denied whatever the settings say, because upstream's
+//! `readDenyEntries` adds it to every read policy: see [`ALWAYS_DENIED`].
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -13,9 +16,18 @@ use std::path::PathBuf;
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
+use crabpot_core::paths::PathBase;
 
 use super::Draft;
+use super::PlanError;
 use super::glob_walk::{self, KERNEL_MOUNTS};
+
+/// The directory upstream adds to every read policy, and crabpot always has a
+/// read policy: `filesystem.disabled`, the one setting that would drop it, is
+/// refused (ADR-0013). ssh refuses a config file whose owner or mode looks
+/// wrong, and inside the sandbox every path sits over a bind and looks that way
+/// (`Bad owner or permissions` under OrbStack).
+pub(super) const ALWAYS_DENIED: [&str; 1] = ["/etc/ssh/ssh_config.d"];
 
 /// One mount over a path: a mask of a denied one, or the bind of a host path
 /// back over what a mask hid.
@@ -52,7 +64,11 @@ impl Mount {
     }
 }
 
-pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
+pub(super) fn words(
+    config: &Config,
+    _base: &PathBase,
+    draft: &mut Draft,
+) -> Result<Vec<OsString>, PlanError> {
     let mounts = collapse(located(config)?)
         .into_iter()
         .map(|(path, is_dir)| Mount::mask(path, is_dir))
@@ -67,8 +83,8 @@ pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>,
     Ok(words)
 }
 
-/// The located paths of `config`'s `denyRead`, each with whether it is a
-/// directory, as [`locate`] finds them on disk.
+/// The located paths `denyRead` hides, each with whether it is a directory, as
+/// [`locate`] finds them on disk: `config`'s entries, and [`ALWAYS_DENIED`].
 pub(super) fn located(config: &Config) -> Result<BTreeMap<PathBuf, bool>, PathError> {
     let mut found = BTreeMap::new();
     for entry in config.filesystem.read_denies()? {
@@ -76,6 +92,11 @@ pub(super) fn located(config: &Config) -> Result<BTreeMap<PathBuf, bool>, PathEr
             if let Some((located, is_dir)) = locate(path) {
                 found.insert(located, is_dir);
             }
+        }
+    }
+    for path in ALWAYS_DENIED {
+        if let Some((located, is_dir)) = locate(PathBuf::from(path)) {
+            found.insert(located, is_dir);
         }
     }
     Ok(found)

@@ -61,6 +61,9 @@ const LINUX_READY: &[&str] = &[
     "move_blocking_parent",
     "move_blocking_read",
     "move_blocking_read_glob",
+    "mandatory_git_hooks",
+    "mandatory_nested_git_config",
+    "mandatory_shell_rc",
 ];
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143

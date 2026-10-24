@@ -164,6 +164,7 @@ dependencies = [
  "crabpot-linux",
  "crabpot-macos",
  "crabpot-windows",
+ "nix",
  "serde",
  "serde_json",
  "tokio",

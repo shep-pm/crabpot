@@ -9,6 +9,11 @@
 //! the host, and the plan takes it away when it drops
 //! ([`MountPoints`](super::MountPoints)).
 //!
+//! The list is upstream's `denyPaths`: what `denyWrite` names, then the
+//! mandatory ones the [`mandatory`](super::mandatory) section walked for. One
+//! loop over both, so a mandatory deny and a setting's deny settle each other
+//! the same way two of the settings' own are settled.
+//!
 //! The binds come after `denyRead`'s, since a read mount over an ancestor
 //! would otherwise wipe them. That puts them over a read mount of their own,
 //! though: a deny bind of a directory that holds a read-denied path shows the
@@ -24,7 +29,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
-use crabpot_core::PathError;
 use crabpot_core::config::Config;
 use crabpot_core::paths::{
     ListKind, PathBase, dirname, is_at_or_under, normalize_path_for_sandbox, real_path_of,
@@ -33,20 +37,24 @@ use crabpot_core::paths::{
 
 use super::allow_write::strip_write_globs;
 use super::deny_read::Mount;
-use super::{Draft, MountPoints};
+use super::{Draft, MountPoints, PlanError};
 
-pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
-    let base = PathBase::from_env();
+pub(super) fn words(
+    config: &Config,
+    base: &PathBase,
+    draft: &mut Draft,
+) -> Result<Vec<OsString>, PlanError> {
     let split = split_path_entries(&config.filesystem.deny_write);
-    let mut spellings = strip_write_globs(&base, &split.spelled, ListKind::Deny)?;
+    let mut spellings = strip_write_globs(base, &split.spelled, ListKind::Deny)?;
     spellings.extend(split.marked.iter().map(|path| (*path).to_owned()));
+    spellings.extend(draft.mandatory_denies.iter().cloned());
     let mut raw = Vec::new();
     for spelling in &spellings {
-        raw.push(normalize_path_for_sandbox(&base, spelling, true)?);
+        raw.push(normalize_path_for_sandbox(base, spelling, true)?);
     }
 
     let mut plan = Plan {
-        base: &base,
+        base,
         roots: &draft.write_roots,
         mounts: draft.read_mounts.iter().chain(&draft.remounts).collect(),
         mount_points: &mut draft.mount_points,

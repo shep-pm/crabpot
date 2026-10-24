@@ -14,12 +14,16 @@
 
 use std::ffi::OsString;
 
-use crabpot_core::PathError;
 use crabpot_core::config::Config;
+use crabpot_core::paths::PathBase;
 
-use super::Draft;
+use super::{Draft, PlanError};
 
-pub(super) fn words(_config: &Config, _draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
+pub(super) fn words(
+    _config: &Config,
+    _base: &PathBase,
+    _draft: &mut Draft,
+) -> Result<Vec<OsString>, PlanError> {
     Ok([
         "--dev",
         "/dev",

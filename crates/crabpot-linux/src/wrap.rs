@@ -3,10 +3,9 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
-use crate::fs::{MountPoints, Plan};
+use crate::fs::{MountPoints, Plan, PlanError};
 
 /// A bwrap invocation's words, and what must outlast them.
 #[derive(Debug)]
@@ -33,15 +32,17 @@ pub struct Wrapped {
 ///
 /// # Errors
 ///
-/// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
-/// or is relative and there is no working directory.
+/// [`PlanError::Path`] when a path in `config` starts with `~` and `HOME` is
+/// not set, or is relative and there is no working directory, and
+/// [`PlanError::Unspellable`] when the mandatory-deny walk finds a path the
+/// plan cannot name.
 pub fn words(
     bwrap: &Path,
     config: &Config,
     helper: &Path,
     proxy_socket: &Path,
     root_with_setfcap: bool,
-) -> Result<Wrapped, PathError> {
+) -> Result<Wrapped, PlanError> {
     let (plan_words, mount_points) = Plan::build(config)?.into_parts();
     let mut words = vec![bwrap.as_os_str().to_owned()];
     words.extend(plan_words);

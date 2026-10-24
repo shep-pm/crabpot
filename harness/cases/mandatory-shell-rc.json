@@ -9,6 +9,7 @@
     "network": {"allowedDomains": [], "deniedDomains": []},
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT"], "denyWrite": []}
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "write", "path": "$ROOT/.bashrc"},
     {"kind": "write", "path": "$ROOT/.zshrc"},

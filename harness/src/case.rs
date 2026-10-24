@@ -57,6 +57,8 @@ pub enum Platform {
     MacOs,
     /// Linux, whose sandbox is `bubblewrap`.
     Linux,
+    /// Windows, whose sandbox is `srt-win`.
+    Windows,
 }
 
 impl Platform {
@@ -66,15 +68,18 @@ impl Platform {
         match name {
             "macos" => Some(Self::MacOs),
             "linux" => Some(Self::Linux),
+            "windows" => Some(Self::Windows),
             _ => None,
         }
     }
 
-    /// The platform this harness runs on. The harness runs on macOS and Linux
-    /// only: its probes and wrappers are the Unix ones.
+    /// The platform this harness runs on: macOS, Windows, or Linux for every
+    /// other target.
     pub fn current() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOs
+        } else if cfg!(windows) {
+            Self::Windows
         } else {
             Self::Linux
         }
@@ -494,8 +499,8 @@ mod tests {
         assert!(case.runs_on(Platform::Linux));
 
         assert_eq!(
-            named(r#"["windows"]"#),
-            Err(Error::UnknownPlatform("windows".to_owned()))
+            named(r#"["plan9"]"#),
+            Err(Error::UnknownPlatform("plan9".to_owned()))
         );
         for platforms in [r#""macos""#, "[1]", r#"["macos", 2]"#] {
             assert!(
@@ -503,6 +508,31 @@ mod tests {
                 "{platforms}"
             );
         }
+    }
+
+    #[test]
+    fn a_case_that_names_other_platforms_is_skipped_on_windows() {
+        let named = |platforms: &str| {
+            Case::parse(
+                &format!(
+                    r#"{{"files": {{}}, "settings": {{}}, "platforms": {platforms}, "probes": []}}"#
+                ),
+                "/r",
+            )
+            .unwrap()
+        };
+
+        let unix_only = named(r#"["macos", "linux"]"#);
+        assert!(!unix_only.runs_on(Platform::Windows));
+        assert!(unix_only.runs_on(Platform::MacOs));
+
+        let windows = named(r#"["windows"]"#);
+        assert_eq!(windows.platforms, [Platform::Windows]);
+        assert!(windows.runs_on(Platform::Windows));
+        assert!(!windows.runs_on(Platform::Linux));
+
+        let everywhere = named("[]");
+        assert!(everywhere.runs_on(Platform::Windows));
     }
 
     #[test]

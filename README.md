@@ -20,7 +20,7 @@ crabpot windows-uninstall [--keep-user] [--sublayer-guid GUID]
 ```
 
 - `windows-install` asks for elevation itself, with one UAC prompt, and does the work in the elevated process.
-- Before it asks, it checks that the sandbox user can read the crabpot executable, which the sandbox runs as its runner. A binary the user cannot read is refused with a message naming it. Keep crabpot under your profile or in a folder every user can read.
+- Before it asks, it checks that the sandbox user can read the crabpot executable, which the sandbox runs as its runner. A binary the user cannot read is refused with a message naming it. A binary under your profile passes only when a profile read grant (`srt-win profile grant`) is already in place, so on a first install keep crabpot in a folder every user can read, such as one under Program Files.
 - `--allow-loopback` opens every loopback port to the sandbox user, not only the proxy's. Every listener on localhost becomes reachable from the sandbox, including a forwarder that carries traffic off the machine. A session must use the loopback mode the install used, so changing it means running the install again with `--force`.
 - `--proxy-port-range` sets the loopback ports left open for the proxy (default `60080-60089`).
 - `windows-uninstall` removes the user, its credential and the filters. `--keep-user` keeps the user. It then removes any WFP filters left under the sublayer.

@@ -13,6 +13,9 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(windows)]
+use super::ProfileState;
+
 /// What `windows-install` passes on to `srt-win install`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InstallOptions {
@@ -182,7 +185,12 @@ pub(crate) struct Machine;
 impl Host for Machine {
     fn check_runner(&self) -> Result<(), InstallError> {
         let exe = current_exe()?;
-        let profile = std::env::var_os("USERPROFILE").and_then(|p| std::fs::canonicalize(p).ok());
+        // Only a grant that is in place opens the profile: `profile grant` is
+        // opt-in, and `install` does not make it.
+        let granted = super::windows_status().is_ok_and(|s| s.profile == ProfileState::Current);
+        let profile = std::env::var_os("USERPROFILE")
+            .filter(|_| granted)
+            .and_then(|p| std::fs::canonicalize(p).ok());
         if readable(&exe, profile.as_deref(), super::ffi::groups_can_read(&exe)) {
             Ok(())
         } else {
@@ -221,8 +229,8 @@ fn current_exe() -> Result<PathBuf, InstallError> {
 }
 
 /// Whether the sandbox user can read `exe`: a group it is in can, or `exe` is
-/// under `profile`, which the profile read grant opens to it. A check that
-/// could not be made (`groups_read` is `None`) does not refuse.
+/// under `profile`, the profile a current read grant opens to it (`None` when
+/// there is no such grant). A check that could not be made (`groups_read` is `None`) does not refuse.
 #[cfg(any(windows, test))]
 fn readable(exe: &Path, profile: Option<&Path>, groups_read: Option<bool>) -> bool {
     groups_read.unwrap_or(true) || profile.is_some_and(|profile| exe.starts_with(profile))
@@ -316,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runner_under_the_profile_is_readable_through_the_profile_grant() {
+    fn a_runner_under_the_profile_is_readable_only_through_a_profile_grant() {
         let exe = Path::new("C:/Users/me/.cargo/bin/crabpot.exe");
         let profile = Some(Path::new("C:/Users/me"));
 

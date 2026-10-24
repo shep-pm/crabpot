@@ -152,8 +152,9 @@ impl Sandbox {
     /// On macOS it gains the sandbox's own environment: a name the sandbox owns
     /// is set over the caller's, a name the caller owns is left to it, and the
     /// variables that point its clients at the proxy are set over them. On
-    /// Linux it gains the sandbox's own `SANDBOX_RUNTIME` and `TMPDIR`, set
-    /// over the caller's.
+    /// Linux it gains the sandbox's own `SANDBOX_RUNTIME` and `TMPDIR`, and the
+    /// variables that point its clients at the relay and its ssh at the
+    /// `connect` mode, set over the caller's.
     ///
     /// # Errors
     ///
@@ -217,15 +218,16 @@ impl Sandbox {
             // On the command's environment, not in bwrap's words: its argv is
             // readable from `/proc` by every process of the user, and the token
             // is the proxy's credential.
+            let username = username_for(&command_line(command));
             let host = HostPorts {
                 http: self.proxy.port(),
                 socks: self.proxy.socks_port(),
             };
-            for (name, value) in crabpot_linux::net::env::vars(
-                host,
-                &username_for(&command_line(command)),
-                self.proxy.token(),
-            ) {
+            let ssh = crabpot_linux::net::ssh::vars(&self.helper, &username, self.proxy.token());
+            for (name, value) in crabpot_linux::net::env::vars(host, &username, self.proxy.token())
+                .into_iter()
+                .chain(ssh)
+            {
                 wrapped.env(name, value);
             }
             if let Some(args_file) = rendered.args_file {
@@ -617,6 +619,23 @@ mod tests {
             env("CLAUDE_CODE_HOST_HTTP_PROXY_PORT"),
             sandbox.proxy.port().to_string()
         );
+
+        let helper = std::env::current_exe().unwrap();
+        let ssh = env("GIT_SSH_COMMAND");
+        assert!(
+            ssh.contains(&*helper.to_string_lossy())
+                && ssh.contains("--crabpot-helper connect 3128"),
+            "git's ssh is told to ask this binary for the tunnel: {ssh}"
+        );
+        assert!(
+            !ssh.contains(token),
+            "the credential is not in a command line: {ssh}"
+        );
+        assert!(
+            !env("SRT_SSH_PROXY_CREDENTIAL").is_empty(),
+            "the credential rides in a variable of its own"
+        );
+
         assert!(
             wrapped
                 .get_args()

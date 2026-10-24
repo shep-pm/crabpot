@@ -42,9 +42,10 @@ const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 ///
 /// A first argument of `--crabpot-helper` is the sandbox calling the binary
 /// back, and is not for a person to type: on Linux, bwrap runs the host's
-/// binary inside the sandbox with it, to run the command (ADR-0014). A host
-/// that does not call this first thing in `main` runs its own `main` there in
-/// place of the command.
+/// binary inside the sandbox with it, to run the command (ADR-0014), and a
+/// sandboxed ssh runs it the same way for its `ProxyCommand`. A host that does
+/// not call this first thing in `main` runs its own `main` there in place of
+/// the command.
 pub fn run_from_args() {
     if let Some(helper) = args::parse_helper(env::args_os().skip(1)) {
         run_helper(helper);
@@ -92,7 +93,8 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
             let (relay, command) = args::split_relay(&helper.args);
             helper_init(relay, command)
         }
-        HelperMode::Relay | HelperMode::Connect => fail(format!(
+        HelperMode::Connect => helper_connect(&helper.args),
+        HelperMode::Relay => fail(format!(
             "helper mode {} is not supported yet",
             helper.mode.word()
         )),
@@ -109,6 +111,22 @@ fn helper_init(relay: Option<&Path>, command: &[OsString]) -> ! {
 
 #[cfg(not(target_os = "linux"))]
 fn helper_init(_relay: Option<&Path>, _command: &[OsString]) -> ! {
+    fail("the helper runs only on Linux")
+}
+
+/// Tunnels this process's stdin and stdout to the host and port `args` name,
+/// through the sandbox's relay, which is what a sandboxed ssh's `ProxyCommand`
+/// asks for (ADR-0014).
+#[cfg(target_os = "linux")]
+fn helper_connect(args: &[OsString]) -> ! {
+    match crabpot_linux::helper::connect(args) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => fail(e),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn helper_connect(_args: &[OsString]) -> ! {
     fail("the helper runs only on Linux")
 }
 

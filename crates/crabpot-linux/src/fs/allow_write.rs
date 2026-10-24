@@ -47,9 +47,10 @@ pub(super) fn words_with(config: &Config, base: &PathBase) -> Result<Vec<OsStrin
     Ok(words)
 }
 
-/// Every path a bwrap invocation binds writable: the default write roots, then
-/// `allowWrite` after them, in the one list upstream's `writeNamesOf` makes.
-fn bind_paths(base: &PathBase, config: &Config) -> Result<Vec<String>, PathError> {
+/// Every path a bwrap invocation binds writable: the default write roots,
+/// then `allowWrite` after them, in the one list upstream's `writeNamesOf`
+/// makes.
+pub(super) fn bind_paths(base: &PathBase, config: &Config) -> Result<Vec<String>, PathError> {
     let split = split_path_entries(&config.filesystem.allow_write);
     let mut paths = default_write_paths(base, config)?;
     paths.extend(strip_write_globs(base, &split.spelled)?);

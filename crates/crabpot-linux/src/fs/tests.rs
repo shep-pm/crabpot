@@ -47,6 +47,12 @@ fn denying(entries: &[&str]) -> Config {
 
 /// A config whose read settings are `denyRead` and `allowRead`.
 fn reading(deny: &[&str], allow: &[&str]) -> Config {
+    reading_with(deny, allow, &[])
+}
+
+/// A config whose read settings are `denyRead` and `allowRead`, and whose
+/// `allowWrite` is `write`.
+fn reading_with(deny: &[&str], allow: &[&str], write: &[&str]) -> Config {
     let list = |entries: &[&str]| {
         entries
             .iter()
@@ -59,11 +65,12 @@ fn reading(deny: &[&str], allow: &[&str]) -> Config {
             "network": {{"allowedDomains": [], "deniedDomains": []}},
             "filesystem": {{
                 "denyRead": [{}], "allowRead": [{}],
-                "allowWrite": [], "denyWrite": []
+                "allowWrite": [{}], "denyWrite": []
             }}
         }}"#,
         list(deny),
-        list(allow)
+        list(allow),
+        list(write)
     ))
     .expect("a config")
 }
@@ -79,7 +86,12 @@ fn words(config: &Config, base: &PathBase) -> Vec<String> {
 
 /// The mounts `allowRead` adds to what a config allowing nothing adds.
 fn allowed_words(deny: &[&str], allow: &[&str]) -> Vec<String> {
-    allow_read::words(&reading(deny, allow))
+    allowed_words_with(deny, allow, &[])
+}
+
+/// The mounts `allowRead` adds, with `allowWrite` set to `write`.
+fn allowed_words_with(deny: &[&str], allow: &[&str], write: &[&str]) -> Vec<String> {
+    allow_read::words(&reading_with(deny, allow, write))
         .expect("a config")
         .iter()
         .map(|word| word.to_string_lossy().into_owned())
@@ -502,6 +514,54 @@ fn a_deny_glob_not_covering_a_reopened_directory_stays_masked() {
             "/dev/null",
             &leaf,
         ]
+    );
+}
+
+#[test]
+fn an_allow_named_under_its_own_denial_wins() {
+    let tree = Tree::empty("fs-allow-named-deny");
+    tree.dir("secrets");
+    tree.dir("secrets/shared");
+    tree.file("secrets/shared/key", "");
+    let secrets = at(&tree, "secrets");
+    let shared = at(&tree, "secrets/shared");
+    let key = at(&tree, "secrets/shared/key");
+
+    assert_eq!(
+        allowed_words(&[&secrets, &key], &[&shared, &key]),
+        ["--ro-bind", &shared, &shared, "--ro-bind", &key, &key]
+    );
+}
+
+#[test]
+fn a_denied_directory_under_a_reopening_masks_around_a_deeper_allow() {
+    let tree = Tree::empty("fs-allow-deeper");
+    tree.dir("secrets");
+    tree.dir("secrets/a/b/c");
+    tree.file("secrets/a/b/other", "");
+    let secrets = at(&tree, "secrets");
+    let a = at(&tree, "secrets/a");
+    let b = at(&tree, "secrets/a/b");
+    let c = at(&tree, "secrets/a/b/c");
+
+    assert_eq!(
+        allowed_words(&[&secrets, &b], &[&a, &c]),
+        ["--ro-bind", &a, &a, "--tmpfs", &b, "--ro-bind", &c, &c,]
+    );
+}
+
+#[test]
+fn an_allow_under_a_write_bind_comes_back_writable() {
+    let tree = Tree::empty("fs-allow-write-back");
+    tree.dir("work/secrets");
+    tree.file("work/secrets/out", "");
+    let work = at(&tree, "work");
+    let secrets = at(&tree, "work/secrets");
+    let out = at(&tree, "work/secrets/out");
+
+    assert_eq!(
+        allowed_words_with(&[&secrets], &[&out], &[&work]),
+        ["--bind", &out, &out]
     );
 }
 

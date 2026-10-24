@@ -22,9 +22,9 @@
 //! - The bwrap dependency checks, run before a sandbox starts: [`deps`].
 //! - The Linux path entries mapped onto bwrap binds: `denyRead`, `allowRead`
 //!   and `allowWrite` have landed, the first as a tmpfs over a directory and
-//!   `/dev/null` over a file, the second as a read-only bind of each allowed
-//!   path back over what hid it, the third as a bind of each writable path,
-//!   and `denyWrite` will follow.
+//!   `/dev/null` over a file, the second as a bind of each allowed path back
+//!   over what hid it, writable where a write grant covers it, the third as
+//!   a bind of each writable path, and `denyWrite` will follow.
 //!
 //! The helper crabpot's own binary re-enters inside bwrap (ADR-0010) is the
 //! facade's `cli` half, not this crate.

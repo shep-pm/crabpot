@@ -1,5 +1,6 @@
 //! What upstream's Windows runner asks of the harness: a probe at a path with
-//! no backslash in it, and one command run before the first case.
+//! no backslash in it, folders the sandbox user can enter, and one command run
+//! before the first case.
 
 use std::fs;
 use std::io;
@@ -17,6 +18,26 @@ use super::{Error, Upstream, spell_for_upstream};
 /// installed the filters.
 const ATTEMPTS: u32 = 3;
 
+/// The folder every case root and staged probe goes under, on the system drive.
+///
+/// The temp folder will not do. The sandbox runs as another user, which has no
+/// rights in the runner's profile but the read grant `windows-install` makes,
+/// and that grant leaves `AppData\Local\Temp` out on purpose. Upstream passes
+/// the working directory to the sandbox as it is and grants it nothing, so a
+/// folder under the temp folder fails before the probe runs, with
+/// `mapped_drive_cwd`, which is what it says for any working directory that the
+/// sandbox user cannot enter. A folder made under the drive's root inherits read
+/// access for `Users`, which the sandbox user is in. It does not inherit write
+/// access, since the sandbox's write-restricted token drops the rights a group
+/// holds, so a write is still refused unless the case grants it.
+pub(super) fn scratch() -> PathBuf {
+    let drive = std::env::var_os("SystemDrive").unwrap_or_else(|| "C:".into());
+    PathBuf::from(format!(
+        r"{}\crabpot-harness",
+        drive.to_string_lossy().trim_end_matches(['\\', '/'])
+    ))
+}
+
 /// The smallest settings upstream accepts: it requires both `network` and
 /// `filesystem`, and refuses `{}` before it runs anything.
 const WARM_UP_SETTINGS: &str = r#"{
@@ -27,15 +48,18 @@ const WARM_UP_SETTINGS: &str = r#"{
 /// `path` spelled for upstream.
 fn spelled(path: &Path) -> io::Result<PathBuf> {
     let text = path.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "the temp folder is not UTF-8")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the scratch folder is not UTF-8",
+        )
     })?;
     Ok(PathBuf::from(spell_for_upstream(text)))
 }
 
 /// The `probe` binary copied into a folder of its own and spelled with forward
 /// slashes, which is how upstream passes it to the sandboxed shell. The copy is
-/// under the temp folder, which the sandbox user can read once `windows-install`
-/// has granted it the profile, and the build folder it comes from is not.
+/// under [`scratch`], which the sandbox user can read, and the build folder it
+/// comes from is not.
 #[derive(Debug)]
 pub(super) struct Staged {
     dir: PathBuf,
@@ -47,7 +71,7 @@ impl Staged {
     /// Copies the binary at `probe` into a fresh folder.
     pub(super) fn new(probe: &Path) -> io::Result<Self> {
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
+        let dir = scratch().join(format!(
             "crabpot-probe-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
@@ -128,6 +152,11 @@ mod tests {
         let settings: Value = serde_json::from_str(WARM_UP_SETTINGS).unwrap();
         assert!(settings["network"].is_object());
         assert!(settings["filesystem"].is_object());
+    }
+
+    #[test]
+    fn the_scratch_folder_is_not_under_the_temp_folder() {
+        assert!(!scratch().starts_with(std::env::temp_dir()));
     }
 
     #[test]

@@ -512,13 +512,22 @@ impl Drop for Prepared {
     }
 }
 
+/// Where a case's root is made. On Windows the temp folder will not do, see
+/// [`windows::scratch`].
+fn scratch() -> PathBuf {
+    #[cfg(windows)]
+    return windows::scratch();
+    #[cfg(not(windows))]
+    std::env::temp_dir()
+}
+
 /// A fresh folder, its path as `pwd -P` prints it, removed on drop. On Windows
 /// the path is spelled for upstream, see [`spell_for_upstream`].
 struct Root(String);
 
 impl Root {
     fn new(name: &str) -> std::io::Result<Self> {
-        let dir = std::env::temp_dir().join(folder(name));
+        let dir = scratch().join(folder(name));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir)?;
         let real = dir.canonicalize()?;

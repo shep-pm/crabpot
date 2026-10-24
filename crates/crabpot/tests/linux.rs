@@ -303,19 +303,24 @@ fn the_command_sees_the_ssh_proxy_command_and_its_credential() {
         "--",
         "sh",
         "-c",
-        r#"printf '%s\n' "$GIT_SSH_COMMAND" "$SRT_SSH_PROXY_CREDENTIAL""#,
+        r#"printf '%s\n' "$GIT_SSH_COMMAND" "$SRT_SSH_PROXY_BINARY" "$SRT_SSH_PROXY_CREDENTIAL""#,
     ]);
 
     assert!(output.status.success(), "{output:?}");
     let text = stdout(&output);
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 2, "{output:?}");
+    assert_eq!(lines.len(), 3, "{output:?}");
     assert!(
-        lines[0].contains(CRABPOT) && lines[0].contains("--crabpot-helper connect 3128"),
+        lines[0].contains("--crabpot-helper connect 3128")
+            && lines[0].contains("SRT_SSH_PROXY_BINARY"),
         "{}",
         lines[0]
     );
-    assert!(!lines[1].is_empty(), "the credential is set to read");
+    assert_eq!(
+        lines[1], CRABPOT,
+        "the binary the command expands, on the environment and not in its text"
+    );
+    assert!(!lines[2].is_empty(), "the credential is set to read");
 }
 
 #[test]

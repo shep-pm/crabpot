@@ -226,6 +226,7 @@ impl Sandbox {
             let ssh = crabpot_linux::net::ssh::vars(&self.helper, &username, self.proxy.token());
             for (name, value) in crabpot_linux::net::env::vars(host, &username, self.proxy.token())
                 .into_iter()
+                .map(|(name, value)| (name, OsString::from(value)))
                 .chain(ssh)
             {
                 wrapped.env(name, value);
@@ -623,9 +624,14 @@ mod tests {
         let helper = std::env::current_exe().unwrap();
         let ssh = env("GIT_SSH_COMMAND");
         assert!(
-            ssh.contains(&*helper.to_string_lossy())
-                && ssh.contains("--crabpot-helper connect 3128"),
+            ssh.contains("--crabpot-helper connect 3128") && ssh.contains("SRT_SSH_PROXY_BINARY"),
             "git's ssh is told to ask this binary for the tunnel: {ssh}"
+        );
+        assert_eq!(
+            env(crabpot_linux::net::ssh::BINARY_VARIABLE),
+            helper.to_string_lossy().into_owned(),
+            "the binary the command expands, on the environment and not in a word \
+             git's shell reads"
         );
         assert!(
             !ssh.contains(token),

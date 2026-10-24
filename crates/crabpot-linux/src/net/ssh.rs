@@ -2,13 +2,16 @@
 //! the proxy is the relay on the sandbox's own HTTP port (ADR-0014).
 //!
 //! Upstream builds this hop on `socat`, which crabpot has no reason to borrow
-//! (decision #90): the hop is crabpot's own binary in the `connect` mode. The
-//! credential is not in the command: it rides in a variable of its own, as
-//! macOS carries it in `SRT_SSH_PROXY_COMMAND`, so what reads an argv reads no
-//! credential.
+//! (decision #90): the hop is crabpot's own binary in the `connect` mode. What
+//! the command needs travels in variables of its own, as macOS carries its
+//! script in `SRT_SSH_PROXY_COMMAND`. The credential is one of them, so what
+//! reads an argv reads no credential. The binary's path is the other, for a
+//! harsher reason: three layers read the command text as shell text and as
+//! percent text, and an install path is whatever the install put there.
 
 use core::fmt;
 use core::net::Ipv6Addr;
+use std::ffi::OsString;
 use std::path::Path;
 
 use crabpot_core::proxy::basic_for;
@@ -27,6 +30,13 @@ const MUX_OVERRIDE: &str = "-o ControlMaster=no -o ControlPath=none";
 /// re-enters the binary as the helper (ADR-0010).
 pub const CONNECT_REENTRY: &str = "--crabpot-helper connect";
 
+/// The name of the variable that carries this binary's path, which ssh's
+/// `ProxyCommand` expands to reach the `connect` mode.
+///
+/// The path is the one word of the route that an install chooses, and it is
+/// never part of a word a shell reads: `GIT_SSH_COMMAND` expands it.
+pub const BINARY_VARIABLE: &str = "SRT_SSH_PROXY_BINARY";
+
 /// The name of the variable that carries the proxy's `Basic` credential for the
 /// `connect` mode to read. It is set on the wrapped command's environment and
 /// never in a bwrap word, and the command's own processes are not dumpable, so
@@ -36,28 +46,45 @@ pub const CREDENTIAL_VARIABLE: &str = "SRT_SSH_PROXY_CREDENTIAL";
 /// The variables a command needs to send git over ssh through the relay, for a
 /// proxy that wants `username` and `token` from a client.
 ///
-/// The `ProxyCommand` names `binary`, which is this binary as bwrap binds it
-/// into the sandbox, and the sandbox's HTTP port, which the relay forwards to
-/// the proxy.
+/// `binary` is this binary as bwrap binds it into the sandbox, and the command
+/// is pointed at the sandbox's HTTP port, which the relay forwards to the proxy.
 #[must_use]
-pub fn vars(binary: &Path, username: &str, token: &str) -> Vec<(&'static str, String)> {
+pub fn vars(binary: &Path, username: &str, token: &str) -> Vec<(&'static str, OsString)> {
     vec![
-        ("GIT_SSH_COMMAND", command(binary)),
-        (CREDENTIAL_VARIABLE, basic_for(username, token)),
+        ("GIT_SSH_COMMAND", OsString::from(command())),
+        (BINARY_VARIABLE, binary.as_os_str().to_os_string()),
+        (
+            CREDENTIAL_VARIABLE,
+            OsString::from(basic_for(username, token)),
+        ),
     ]
 }
 
-/// ssh's `ProxyCommand` value: this binary in the `connect` mode, asked for the
-/// host and port ssh names with ssh's own `%h` and `%p`.
+/// The value of `GIT_SSH_COMMAND`: ssh, the mux override, and a `ProxyCommand`
+/// of words that never change, asked for the host and port ssh names with its
+/// own `%h` and `%p`.
 ///
-/// The binary is quoted for the `/bin/sh -c` ssh runs the value with, and the
-/// whole value quoted for the shell-like splitting git reads
-/// `GIT_SSH_COMMAND` with. git's split leaves the inner quotes for ssh's shell,
-/// which is what keeps a path with a space one word.
-fn command(binary: &Path) -> String {
+/// No part of the binary's path is in this text. Three layers read it, and a
+/// path is whatever the install put there:
+///
+/// - git runs the value through a shell of its own, which expands a `$` and
+///   ends a word at an apostrophe;
+/// - ssh expands `%` in `ProxyCommand` before it runs anything, and stops at a
+///   `%` it cannot name;
+/// - ssh runs what is left through a shell again, and which shell that is comes
+///   from the user's `SHELL`.
+///
+/// The binary arrives as the answer to one parameter expansion, inside double
+/// quotes that only that last shell parses, so no layer reads its characters as
+/// quoting and no path changes a word of the command. `:?` is what makes a
+/// variable that is not there a named error from the shell rather than an empty
+/// word run as a command. The host is quoted for the same shell: ssh
+/// substitutes it from a git URL, which a repository chooses, and single quotes
+/// are the ones that keep a `$` and a backtick from being run.
+fn command() -> String {
+    let binary = format!("${{{BINARY_VARIABLE}:?unset, but GIT_SSH_COMMAND needs it}}");
     format!(
-        "ssh {MUX_OVERRIDE} -o ProxyCommand='\"{}\" {CONNECT_REENTRY} {HTTP_PORT} %h %p'",
-        binary.display()
+        "ssh {MUX_OVERRIDE} -o ProxyCommand=\"\\\"\\{binary}\\\" {CONNECT_REENTRY} {HTTP_PORT} '%h' %p\""
     )
 }
 
@@ -162,10 +189,10 @@ mod tests {
     /// This binary, as bwrap binds it into the sandbox.
     const BINARY: &str = "/opt/crabpot/bin/crabpot";
 
-    fn value<'a>(vars: &'a [(&str, String)], name: &str) -> &'a str {
+    fn value(vars: &[(&str, OsString)], name: &str) -> String {
         vars.iter()
             .find(|(var, _)| *var == name)
-            .map(|(_, value)| value.as_str())
+            .map(|(_, value)| value.to_string_lossy().into_owned())
             .unwrap_or_else(|| panic!("{name} is not set"))
     }
 
@@ -181,9 +208,45 @@ mod tests {
         assert_eq!(basic, "c3J0OmYwMGRmYWNlY2FmZTAxMjM=");
         assert!(!command.contains(token), "{command}");
         assert!(
-            !command.contains(basic),
+            !command.contains(&basic),
             "the credential is not in a command line any process can read: {command}"
         );
+    }
+
+    #[test]
+    fn the_command_names_the_binary_and_port_3128() {
+        let vars = vars(Path::new(BINARY), "srt", "0123abcd");
+
+        assert_eq!(
+            value(&vars, "GIT_SSH_COMMAND"),
+            "ssh -o ControlMaster=no -o ControlPath=none -o ProxyCommand=\
+             \"\\\"\\${SRT_SSH_PROXY_BINARY:?unset, but GIT_SSH_COMMAND needs it}\\\" \
+             --crabpot-helper connect 3128 '%h' %p\""
+        );
+        assert_eq!(
+            value(&vars, BINARY_VARIABLE),
+            BINARY,
+            "the binary the command names, in a variable of its own"
+        );
+    }
+
+    /// The shape this design is for. An install path is whatever the install put
+    /// there, and every character of it would be shell text or `%` text in a
+    /// command that named it: git runs `GIT_SSH_COMMAND` with a shell, ssh
+    /// expands `%` in `ProxyCommand` and runs what is left with a shell again.
+    #[test]
+    fn the_command_text_does_not_change_with_the_path() {
+        let nasty = "/opt/it's a $dir %with \"quotes\" `back` \\slash/crabpot";
+
+        let plain = vars(Path::new(BINARY), "srt", "0123abcd");
+        let tricky = vars(Path::new(nasty), "srt", "0123abcd");
+
+        assert_eq!(
+            value(&plain, "GIT_SSH_COMMAND"),
+            value(&tricky, "GIT_SSH_COMMAND"),
+            "no word of the command is the path, so no path can break one"
+        );
+        assert_eq!(value(&tricky, BINARY_VARIABLE), nasty);
     }
 
     #[test]
@@ -245,17 +308,6 @@ mod tests {
         assert_eq!(
             answer("HTTP/1.1 407 Proxy Authentication Required"),
             Answer::Refused("407 Proxy Authentication Required".to_owned())
-        );
-    }
-
-    #[test]
-    fn the_command_names_the_binary_and_port_3128() {
-        let vars = vars(Path::new(BINARY), "srt", "0123abcd");
-
-        assert_eq!(
-            value(&vars, "GIT_SSH_COMMAND"),
-            "ssh -o ControlMaster=no -o ControlPath=none -o ProxyCommand=\
-             '\"/opt/crabpot/bin/crabpot\" --crabpot-helper connect 3128 %h %p'"
         );
     }
 }

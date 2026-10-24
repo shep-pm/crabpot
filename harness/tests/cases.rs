@@ -97,6 +97,10 @@ const LINUX_READY: &[&str] = &[
     "resolved_address_loopback_name",
     "resolved_address_listed_cidr",
     "local_binding_other_host_still_refused",
+    "kelpie_group_signal",
+    "kelpie_ps",
+    "kelpie_full_policy",
+    "ps_outside",
 ];
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143
@@ -597,6 +601,13 @@ fn kelpie_socket_path_104_bytes() {
 #[test]
 fn kelpie_full_policy() {
     run("kelpie_full_policy", "kelpie-full-policy.json");
+}
+
+/// The sandbox's pid namespace holds the sandbox's processes alone, so the
+/// harness that started it is not among the pids `ps` lists.
+#[test]
+fn ps_outside() {
+    run("ps_outside", "ps-outside.json");
 }
 
 /// Linux's seccomp filters refuse what no other platform's sandbox has a name

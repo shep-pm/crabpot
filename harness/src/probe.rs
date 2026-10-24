@@ -14,6 +14,10 @@ pub const ERROR: u8 = 2;
 /// What the `probe` binary prints to stdout, before its code, once it has run.
 pub const REPORT: &str = "probe exited ";
 
+/// The variable a runner sets to the harness's own pid, which `ps-outside`
+/// looks for from inside the sandbox.
+pub const HARNESS_PID: &str = "CRABPOT_HARNESS_PID";
+
 #[cfg(target_os = "linux")]
 mod kernel;
 mod socks;
@@ -46,6 +50,8 @@ pub enum Error {
     BadAnswer(String),
     /// The SOCKS5 proxy's answer does not start with version 5.
     BadSocksAnswer(Vec<u8>),
+    /// [`HARNESS_PID`] is not set to a pid.
+    BadHarnessPid(Option<String>),
     /// The action failed with an error that is not a refusal, such as a missing file.
     Io(std::io::Error),
 }
@@ -56,7 +62,7 @@ impl core::fmt::Display for Error {
             Self::Usage => f.write_str(
                 "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> \
                  <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path> | loopback \
-                 | signal-group | ps | socket <unix|vsock> | io-uring-setup | unshare-user",
+                 | signal-group | ps | ps-outside | socket <unix|vsock> | io-uring-setup | unshare-user",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadSocksProxy => {
@@ -65,6 +71,9 @@ impl core::fmt::Display for Error {
             Self::BadAnswer(line) => write!(f, "the proxy answered {line:?}, not a status line"),
             Self::BadSocksAnswer(bytes) => {
                 write!(f, "the proxy answered {bytes:?}, not a SOCKS5 reply")
+            }
+            Self::BadHarnessPid(value) => {
+                write!(f, "{HARNESS_PID} is {value:?}, not a pid")
             }
             Self::Io(source) => write!(f, "{source}"),
         }
@@ -78,7 +87,8 @@ impl core::error::Error for Error {
             | Self::BadProxy
             | Self::BadSocksProxy
             | Self::BadAnswer(_)
-            | Self::BadSocksAnswer(_) => None,
+            | Self::BadSocksAnswer(_)
+            | Self::BadHarnessPid(_) => None,
             Self::Io(source) => Some(source),
         }
     }
@@ -90,10 +100,15 @@ type Outcome = Result<bool, Error>;
 /// Runs the probe for `args` (the words after `probe`) and returns its exit code.
 ///
 /// `http_proxy` is the value of `HTTP_PROXY`, and `socks_proxy` the value of
-/// `FTP_PROXY`, which holds the SOCKS5 proxy's URL. A diagnostic for an [`ERROR`]
-/// goes to stderr.
-pub fn run(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>) -> u8 {
-    match attempt(args, http_proxy, socks_proxy) {
+/// `FTP_PROXY`, which holds the SOCKS5 proxy's URL. `harness_pid` is the value
+/// of [`HARNESS_PID`]. A diagnostic for an [`ERROR`] goes to stderr.
+pub fn run(
+    args: &[String],
+    http_proxy: Option<&str>,
+    socks_proxy: Option<&str>,
+    harness_pid: Option<&str>,
+) -> u8 {
+    match attempt(args, http_proxy, socks_proxy, harness_pid) {
         Ok(true) => ALLOWED,
         Ok(false) => REFUSED,
         Err(error) => {
@@ -103,7 +118,19 @@ pub fn run(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>)
     }
 }
 
-fn attempt(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>) -> Outcome {
+#[cfg_attr(
+    not(unix),
+    expect(
+        unused_variables,
+        reason = "only `ps-outside` reads the pid, and it is Unix only"
+    )
+)]
+fn attempt(
+    args: &[String],
+    http_proxy: Option<&str>,
+    socks_proxy: Option<&str>,
+    harness_pid: Option<&str>,
+) -> Outcome {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["read", path] => read(path),
@@ -121,6 +148,8 @@ fn attempt(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>)
         ["signal-group"] => signal_group(),
         #[cfg(unix)]
         ["ps"] => ps(),
+        #[cfg(unix)]
+        ["ps-outside"] => ps_outside(harness_pid),
         #[cfg(target_os = "linux")]
         ["socket", family] => kernel::socket(family),
         #[cfg(target_os = "linux")]
@@ -510,13 +539,33 @@ fn signal_group() -> Outcome {
 #[cfg(unix)]
 fn ps() -> Outcome {
     let mut child = start_group()?;
-    let pid = child.id();
-    let asked = Command::new(PS)
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output();
+    let asked = ps_names(child.id());
     // Whatever `ps` answered, end the child the probe started.
     let _ = child.kill();
     let _ = child.wait();
+    asked
+}
+
+/// Asks `ps` whether the harness's own process runs, which it does not from
+/// inside a pid namespace of the sandbox's own: `ps` lists the sandbox's pids
+/// and no others.
+///
+/// Allowed when `ps` names the process, which is the sandbox showing what
+/// runs outside it. Refused when it does not.
+#[cfg(unix)]
+fn ps_outside(harness_pid: Option<&str>) -> Outcome {
+    let pid = harness_pid
+        .and_then(|pid| pid.parse().ok())
+        .ok_or_else(|| Error::BadHarnessPid(harness_pid.map(str::to_owned)))?;
+    ps_names(pid)
+}
+
+/// Whether `ps` names the process `pid`.
+#[cfg(unix)]
+fn ps_names(pid: u32) -> Outcome {
+    let asked = Command::new(PS)
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output();
     match asked {
         Ok(output) => {
             Ok(output.status.success()
@@ -573,7 +622,13 @@ mod tests {
 
     fn probe_via(args: &[&str], http_proxy: Option<&str>) -> u8 {
         let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-        run(&args, http_proxy, None)
+        run(&args, http_proxy, None, None)
+    }
+
+    /// The code `ps-outside` reports when the harness's pid is `harness_pid`.
+    #[cfg(unix)]
+    fn probe_outside(harness_pid: Option<&str>) -> u8 {
+        run(&["ps-outside".to_owned()], None, None, harness_pid)
     }
 
     /// A proxy on a free port that answers one request with `status`.
@@ -717,6 +772,28 @@ mod tests {
     fn signal_group_and_ps_exit_0_unsandboxed() {
         assert_eq!(probe(&["signal-group"]), 0);
         assert_eq!(probe(&["ps"]), 0);
+    }
+
+    /// Unsandboxed the pid namespace is the harness's own, so `ps` names it.
+    #[test]
+    #[cfg(unix)]
+    fn ps_outside_exits_0_for_a_process_it_can_see() {
+        assert_eq!(probe_outside(Some(&std::process::id().to_string())), 0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ps_outside_exits_1_for_a_process_that_is_gone() {
+        let mut gone = Command::new(SLEEP).arg("0").spawn().unwrap();
+        gone.wait().unwrap();
+        assert_eq!(probe_outside(Some(&gone.id().to_string())), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ps_outside_exits_2_without_a_pid_to_look_for() {
+        assert_eq!(probe_outside(None), 2);
+        assert_eq!(probe_outside(Some("harness")), 2);
     }
 
     #[test]
@@ -874,8 +951,8 @@ mod tests {
         let args = ["connect", "example.com", "443", "--via", "socks5"];
         let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
 
-        assert_eq!(run(&args, None, None), 2);
-        assert_eq!(run(&args, None, Some("http://localhost:1")), 2);
+        assert_eq!(run(&args, None, None, None), 2);
+        assert_eq!(run(&args, None, Some("http://localhost:1"), None), 2);
     }
 
     #[test]

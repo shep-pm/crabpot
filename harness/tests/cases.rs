@@ -89,9 +89,6 @@ const LINUX_READY: &[&str] = &[
     "resolved_address_loopback_name",
     "resolved_address_listed_cidr",
     "local_binding_other_host_still_refused",
-    "unix_socket_listed_folder",
-    "unix_socket_unlisted_is_refused",
-    "unix_socket_empty_string_grants_cwd",
 ];
 
 /// The cases that run under crabpot on Windows. Each Windows slice of #143

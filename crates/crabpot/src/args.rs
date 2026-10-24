@@ -3,7 +3,7 @@
 
 use core::fmt;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What the command line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +113,20 @@ pub(crate) fn parse_helper(
         mode,
         args: args.collect(),
     }))
+}
+
+/// The flag that gives `init` the proxy's Unix socket to relay the sandbox's
+/// proxy ports to. The sandbox always puts it before the command, and a direct
+/// `init` leaves it out to run a command with no relay.
+pub(crate) const RELAY_FLAG: &str = "--relay";
+
+/// Splits `init`'s arguments into the relay's socket, when they start with
+/// [`RELAY_FLAG`] and a path, and the command that follows.
+pub(crate) fn split_relay(args: &[OsString]) -> (Option<&Path>, &[OsString]) {
+    match args {
+        [flag, socket, command @ ..] if flag == RELAY_FLAG => (Some(Path::new(socket)), command),
+        _ => (None, args),
+    }
 }
 
 /// Reads the arguments after the program's name. The first one that is not an
@@ -270,6 +284,26 @@ mod tests {
             "the sandboxed command's own arguments are its own"
         );
         assert_eq!(parse_helper(os(&[])), None);
+    }
+
+    #[test]
+    fn init_takes_the_relay_socket_before_the_command() {
+        let args = os(&["--relay", "/tmp/p.sock", "--relay", "x"]);
+        assert_eq!(
+            split_relay(&args),
+            (Some(Path::new("/tmp/p.sock")), &args[2..]),
+            "only the first is the helper's"
+        );
+
+        let args = os(&["sh", "-c", "exit 3"]);
+        assert_eq!(split_relay(&args), (None, &args[..]));
+
+        let args = os(&["--relay"]);
+        assert_eq!(
+            split_relay(&args),
+            (None, &args[..]),
+            "a flag with no socket is a command's name"
+        );
     }
 
     #[test]

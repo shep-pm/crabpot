@@ -16,15 +16,17 @@ use crabpot_core::PathError;
 use crabpot_core::config::Config;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::proxy::Proxy;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::proxy::username_for;
 #[cfg(target_os = "linux")]
 use crabpot_linux::env::Facts;
+#[cfg(target_os = "linux")]
+use crabpot_linux::net::env::HostPorts;
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;
 
 #[cfg(target_os = "linux")]
-use crate::args::{HELPER_FLAG, HelperMode};
+use crate::args::{HELPER_FLAG, HelperMode, RELAY_FLAG};
 
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
 /// with [`Sandbox::command`], and drop it when they have all ended, since the
@@ -51,10 +53,6 @@ pub struct Sandbox {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     facts: Facts,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[cfg_attr(
-        target_os = "linux",
-        expect(dead_code, reason = "held to keep the proxy running")
-    )]
     proxy: Proxy,
 }
 
@@ -115,6 +113,7 @@ impl Sandbox {
                     &bwrap,
                     config,
                     &helper,
+                    proxy.mux_socket(),
                     crabpot_linux::deps::is_root_with_setfcap_here(),
                 )
                 .map_err(StartError::UnresolvedPath)?;
@@ -180,12 +179,7 @@ impl Sandbox {
             for (key, value) in crabpot_macos::env::vars(&self.facts.for_command(command)) {
                 wrapped.env(key, value);
             }
-            let line = core::iter::once(command.get_program())
-                .chain(command.get_args())
-                .map(|word| word.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let username = username_for(&line);
+            let username = username_for(&command_line(command));
             let token = self.proxy.token();
             let http = crabpot_macos::env::http::vars(self.proxy.port(), &username, token);
             let socks = crabpot_macos::env::socks::vars(self.proxy.socks_port(), &username, token);
@@ -206,6 +200,8 @@ impl Sandbox {
                 self.helper.clone().into_os_string(),
                 OsString::from(HELPER_FLAG),
                 OsString::from(HelperMode::Init.word()),
+                OsString::from(RELAY_FLAG),
+                self.proxy.mux_socket().as_os_str().to_owned(),
                 command.get_program().to_owned(),
             ];
             words.extend(command.get_args().map(OsString::from));
@@ -214,6 +210,20 @@ impl Sandbox {
             let mut wrapped = rendered.command;
             carry_over(command, &mut wrapped);
             for (name, value) in crabpot_linux::env::vars(&self.facts) {
+                wrapped.env(name, value);
+            }
+            // On the command's environment, not in bwrap's words: its argv is
+            // readable from `/proc` by every process of the user, and the token
+            // is the proxy's credential.
+            let host = HostPorts {
+                http: self.proxy.port(),
+                socks: self.proxy.socks_port(),
+            };
+            for (name, value) in crabpot_linux::net::env::vars(
+                host,
+                &username_for(&command_line(command)),
+                self.proxy.token(),
+            ) {
                 wrapped.env(name, value);
             }
             if let Some(args_file) = rendered.args_file {
@@ -230,6 +240,17 @@ impl Sandbox {
             Err(WrapError::UnsupportedPlatform)
         }
     }
+}
+
+/// The words of `command` joined by spaces, which the proxy's username is made
+/// from.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn command_line(command: &Command) -> String {
+    core::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|word| word.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Gives `wrapped` the working directory and the environment changes `command`
@@ -423,9 +444,28 @@ mod tests {
         assert_eq!(args[..3], ["--ro-bind", "/", "/"]);
         let helper = std::env::current_exe().unwrap();
         let helper = helper.to_string_lossy();
+        let socket = sandbox.proxy.mux_socket().to_string_lossy();
         assert_eq!(
-            args[args.len() - 6..],
-            ["--", &*helper, "--crabpot-helper", "init", "echo", "hello"][..]
+            args[args.len() - 8..],
+            [
+                "--",
+                &*helper,
+                "--crabpot-helper",
+                "init",
+                "--relay",
+                &*socket,
+                "echo",
+                "hello"
+            ][..]
+        );
+        assert!(
+            args.windows(3)
+                .any(|run| run == ["--bind", &*socket, &*socket]),
+            "the proxy's socket is bound into the sandbox: {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--unshare-net"),
+            "the network stays unshared: {args:?}"
         );
         assert_eq!(wrapped.get_current_dir(), Some(std::path::Path::new("/")));
         assert!(wrapped.get_envs().any(|(name, value)| {
@@ -462,6 +502,42 @@ mod tests {
             tmpdir.as_deref(),
             Some("/caller/tmp"),
             "the sandbox's TMPDIR is set over the caller's: {tmpdir:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wrapped_command_is_pointed_at_the_relays_and_the_token_stays_out_of_argv() {
+        let sandbox = match Sandbox::start(&Config::default()) {
+            Ok(sandbox) => sandbox,
+            // The machine has no bwrap to wrap a command in.
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => return,
+            Err(error) => panic!("{error}"),
+        };
+
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+        let env = |name: &str| {
+            wrapped
+                .get_envs()
+                .find(|(key, _)| *key == name)
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| panic!("{name} is not set"))
+        };
+
+        let token = sandbox.proxy.token();
+        assert!(env("HTTPS_PROXY").ends_with("@localhost:3128"));
+        assert!(env("HTTPS_PROXY").contains(token));
+        assert!(env("FTP_PROXY").ends_with("@localhost:1080"));
+        assert_eq!(
+            env("CLAUDE_CODE_HOST_HTTP_PROXY_PORT"),
+            sandbox.proxy.port().to_string()
+        );
+        assert!(
+            wrapped
+                .get_args()
+                .all(|arg| !arg.to_string_lossy().contains(token)),
+            "bwrap's argv is readable from /proc: {wrapped:?}"
         );
     }
 

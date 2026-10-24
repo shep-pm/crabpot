@@ -7,12 +7,14 @@
 //! Three processes take part. The helper that bwrap runs unshares the
 //! namespaces and waits, outside them. Its child is PID 1 inside: it prepares
 //! the namespace, forks the command, and reaps every orphan left to it until
-//! the command ends. The command's own process is the third.
+//! the command ends. The command's own process is the third. A relay forked
+//! first (see [`super::relay`]) is a fourth, outside the namespaces.
 
 use core::fmt;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::path::Path;
 
 use nix::errno::Errno;
 use nix::mount::{MsFlags, mount};
@@ -23,6 +25,7 @@ use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, getgid, getuid};
 
 use super::exec::{ExecError, exec};
+use super::relay;
 use super::sys;
 
 /// Where the sandbox's `max_user_namespaces` limit is written.
@@ -37,7 +40,9 @@ const FORWARDED: [Signal; 4] = [
     Signal::SIGQUIT,
 ];
 
-/// Runs the command `argv` names as a child of a new PID 1.
+/// Runs the command `argv` names as a child of a new PID 1. With a `relay` it
+/// first forks the relay that forwards the sandbox's proxy ports to that Unix
+/// socket, and waits for it to listen.
 ///
 /// It returns in two cases. `Ok` carries the status the calling process ends
 /// with: the command's, or 128 and the signal number when a signal ended it.
@@ -48,9 +53,12 @@ const FORWARDED: [Signal; 4] = [
 ///
 /// A [`InitError`] names the step that failed, or says the command could not
 /// be started.
-pub fn init(argv: &[OsString]) -> Result<i32, InitError> {
+pub fn init(relay: Option<&Path>, argv: &[OsString]) -> Result<i32, InitError> {
     if argv.is_empty() {
         return Err(InitError::NoCommand);
+    }
+    if let Some(socket) = relay {
+        relay::start(socket)?;
     }
     let own_user_namespace = enter_namespaces()?;
     // No other process of the user's may read or trace the helper before its
@@ -205,6 +213,8 @@ pub enum Step {
     AmbientCapabilities,
     /// Blocking or forwarding the signals that end the command.
     Signals,
+    /// Making the channel the relay reports on.
+    Relay,
 }
 
 impl fmt::Display for Step {
@@ -217,6 +227,7 @@ impl fmt::Display for Step {
             Self::Proc => "mount /proc",
             Self::AmbientCapabilities => "clear the ambient capabilities",
             Self::Signals => "forward signals",
+            Self::Relay => "open the relay's channel",
         })
     }
 }
@@ -240,12 +251,15 @@ pub enum InitError {
         /// How writing it failed.
         reason: io::ErrorKind,
     },
+    /// The relay for the sandbox's proxy ports did not start: it could not
+    /// listen, or ended first.
+    Relay(String),
     /// The command could not be started in the namespace.
     Exec(ExecError),
 }
 
 impl InitError {
-    fn step(step: Step, reason: Errno) -> Self {
+    pub(super) fn step(step: Step, reason: Errno) -> Self {
         Self::Step { step, reason }
     }
 }
@@ -256,6 +270,7 @@ impl fmt::Display for InitError {
             Self::NoCommand => write!(f, "no command specified"),
             Self::Step { step, reason } => write!(f, "cannot {step}: {reason}"),
             Self::Map { path, reason } => write!(f, "cannot write {path}: {reason}"),
+            Self::Relay(reason) => write!(f, "cannot start the relay: {reason}"),
             Self::Exec(error) => fmt::Display::fmt(error, f),
         }
     }
@@ -269,7 +284,7 @@ mod tests {
 
     #[test]
     fn no_command_is_refused_before_any_namespace_is_made() {
-        assert_eq!(init(&[]), Err(InitError::NoCommand));
+        assert_eq!(init(None, &[]), Err(InitError::NoCommand));
     }
 
     #[test]
@@ -279,6 +294,16 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "cannot mount /proc: EPERM: Operation not permitted"
+        );
+    }
+
+    #[test]
+    fn a_relay_that_did_not_start_says_why() {
+        let error = InitError::Relay("cannot listen on port 3128: address in use".to_owned());
+
+        assert_eq!(
+            error.to_string(),
+            "cannot start the relay: cannot listen on port 3128: address in use"
         );
     }
 

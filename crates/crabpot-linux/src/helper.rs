@@ -7,11 +7,15 @@
 //! arguments.
 //!
 //! [`exec`] runs the command and does nothing else. On Linux, `init` puts the
-//! command in a PID and mount namespace of its own first, as PID 1's child.
+//! command in a PID and mount namespace of its own first, as PID 1's child. When
+//! it is given the proxy's socket, it forks the relay for the network namespace
+//! before that, and waits for the relay to listen.
 
 mod exec;
 #[cfg(target_os = "linux")]
 mod init;
+#[cfg(target_os = "linux")]
+mod relay;
 #[cfg(target_os = "linux")]
 mod sys;
 

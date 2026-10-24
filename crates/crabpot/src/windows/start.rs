@@ -230,14 +230,20 @@ fn prepare(
     })?;
     let plan = Plan::build(config)?;
     let allow_loopback = config.network.allow_local_binding == Some(true);
-    // The configured range first, as upstream binds its proxies, then the one
-    // the install's filters name.
-    let range = match (config.windows.proxy_port_range, &status.proxy_ports) {
-        (Some([first, last]), _) => PortRange::new(first, last),
-        (None, Some(ports)) => PortRange::new(*ports.start(), *ports.end()),
-        (None, None) => Ok(PortRange::DEFAULT),
+    // The range the install's filters name, which the fence probe must stay
+    // outside of, and the range the proxy binds: the configured one first, as
+    // upstream binds its proxies, then the installed one.
+    let installed = match &status.proxy_ports {
+        Some(ports) => PortRange::new(*ports.start(), *ports.end()),
+        None => Ok(PortRange::DEFAULT),
     }
     .map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?;
+    let range = match config.windows.proxy_port_range {
+        Some([first, last]) => {
+            PortRange::new(first, last).map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?
+        }
+        None => installed,
+    };
 
     // Held before the call, so that a grant that landed in part is released.
     let held = Held {
@@ -251,7 +257,7 @@ fn prepare(
         Err(_) => return Err(StartError::GrantFailed { code: None }),
     }
     if !verified.holds(&held.sid, allow_loopback) {
-        verify(&*held.srt, &plan, allow_loopback, listen(range))?;
+        verify(&*held.srt, &plan, allow_loopback, listen(installed))?;
         verified.record(&held.sid, allow_loopback);
     }
     Ok(Prepared {
@@ -477,6 +483,33 @@ mod tests {
         let prepared = start(srt, &Verified::new(), &status(), &config).unwrap();
 
         assert_eq!(prepared.range, PortRange::new(41000, 41009).unwrap());
+    }
+
+    #[test]
+    fn the_fence_probe_stays_outside_the_installed_range_not_the_configured_one() {
+        let (srt, _) = Fake::passing();
+        let mut config = Config::default();
+        config.windows.proxy_port_range = Some([41000, 41009]);
+        let asked = std::cell::Cell::new(None);
+        let listen = |range: PortRange| {
+            asked.set(Some(range));
+            no_listener(range)
+        };
+
+        prepare(
+            Host {
+                srt: Arc::new(srt),
+                exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
+                holder: 4242,
+            },
+            &Verified::new(),
+            &status(),
+            &config,
+            &listen,
+        )
+        .unwrap();
+
+        assert_eq!(asked.get(), Some(PortRange::new(40000, 40063).unwrap()));
     }
 
     #[test]

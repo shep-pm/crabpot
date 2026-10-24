@@ -18,6 +18,7 @@ pub const REPORT: &str = "probe exited ";
 /// looks for from inside the sandbox.
 pub const HARNESS_PID: &str = "CRABPOT_HARNESS_PID";
 
+mod argument;
 #[cfg(target_os = "linux")]
 mod kernel;
 mod socks;
@@ -163,7 +164,7 @@ fn attempt(
         ["io-uring-setup"] => kernel::io_uring_setup(),
         #[cfg(target_os = "linux")]
         ["unshare-user"] => kernel::unshare_user(),
-        ["backslash-argument", argument] => backslash_argument(argument),
+        ["backslash-argument", argument] => argument::backslash(argument),
         _ => Err(Error::Usage),
     }
 }
@@ -554,18 +555,6 @@ fn ps() -> Outcome {
     asked
 }
 
-/// Whether an argument that holds a backslash arrived without a pair of single
-/// quotes round it, which is how upstream's Windows runner passes one on.
-///
-/// Allowed when it arrived as it was written, refused when it is wrapped.
-fn backslash_argument(argument: &str) -> Outcome {
-    if !argument.contains('\\') {
-        return Err(Error::NoBackslash(argument.to_owned()));
-    }
-    let wrapped = argument.len() > 1 && argument.starts_with('\'') && argument.ends_with('\'');
-    Ok(!wrapped)
-}
-
 /// Asks `ps` whether the harness's own process runs, which it does not from
 /// inside a pid namespace of the sandbox's own: `ps` lists the sandbox's pids
 /// and no others.
@@ -792,23 +781,6 @@ mod tests {
     fn signal_group_and_ps_exit_0_unsandboxed() {
         assert_eq!(probe(&["signal-group"]), 0);
         assert_eq!(probe(&["ps"]), 0);
-    }
-
-    #[test]
-    fn a_backslash_argument_that_arrives_whole_exits_0() {
-        assert_eq!(probe(&["backslash-argument", r"C:\work\out.txt"]), 0);
-        assert_eq!(probe(&["backslash-argument", r"\\host\share"]), 0);
-    }
-
-    #[test]
-    fn a_backslash_argument_wrapped_in_single_quotes_exits_1() {
-        assert_eq!(probe(&["backslash-argument", r"'C:\work\out.txt'"]), 1);
-    }
-
-    #[test]
-    fn an_argument_with_no_backslash_exits_2() {
-        assert_eq!(probe(&["backslash-argument", "C:/work/out.txt"]), 2);
-        assert_eq!(probe(&["backslash-argument", "'C:/work'"]), 2);
     }
 
     /// Unsandboxed the pid namespace is the harness's own, so `ps` names it.

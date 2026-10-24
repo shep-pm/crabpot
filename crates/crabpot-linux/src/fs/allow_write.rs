@@ -36,11 +36,14 @@ use crabpot_core::paths::{
 };
 use crabpot_core::PathError;
 
-use super::Draft;
+use super::{Draft, PlanError};
 
-pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
-    let base = PathBase::from_env();
-    let binds = bind_paths(&base, config)?;
+pub(super) fn words(
+    config: &Config,
+    base: &PathBase,
+    draft: &mut Draft,
+) -> Result<Vec<OsString>, PlanError> {
+    let binds = bind_paths(base, config)?;
     let words = bind_words(&binds);
     // A bind of the whole root buries the pins spliced in beneath it, so they
     // follow the binds then.
@@ -51,12 +54,6 @@ pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>,
     };
     draft.write_roots = binds;
     Ok(words)
-}
-
-/// The binds for `config`'s writable paths, read against `base`.
-#[cfg(test)]
-pub(super) fn words_with(config: &Config, base: &PathBase) -> Result<Vec<OsString>, PathError> {
-    Ok(bind_words(&bind_paths(base, config)?))
 }
 
 fn bind_words(binds: &[String]) -> Vec<OsString> {

@@ -3,12 +3,12 @@
 
 use core::fmt;
 use std::io;
+use std::path::PathBuf;
 use std::process::Command;
 #[cfg(target_os = "linux")]
 use std::{
     ffi::OsString,
     os::fd::OwnedFd,
-    path::PathBuf,
     sync::{Mutex, PoisonError},
 };
 
@@ -71,6 +71,8 @@ impl Sandbox {
     /// on `PATH`, and [`StartError::Uid0WithoutSetfcap`] for uid 0 without
     /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
     /// binary is unknown. A `bwrap` older than 0.5.0 is a warning on stderr.
+    /// [`StartError::UnspellableDeny`] names a mandatory write deny the plan
+    /// cannot spell, which is a Linux answer too.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "linux")]
         let bwrap = crabpot_linux::deps::check_here()?;
@@ -117,7 +119,7 @@ impl Sandbox {
                     &helper,
                     crabpot_linux::deps::is_root_with_setfcap_here(),
                 )
-                .map_err(StartError::UnresolvedPath)?;
+                .map_err(StartError::from_plan)?;
                 Ok(Self {
                     words: wrapped.words,
                     mount_points: wrapped.mount_points,
@@ -248,9 +250,10 @@ fn carry_over(command: &Command, wrapped: &mut Command) {
 }
 
 /// Why a sandbox did not start.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 // A platform or a proxy that fails to start adds a variant without breaking a
-// caller's `match`.
+// caller's `match`. `UnspellableDeny` carries a path, which is why this one is
+// `Clone` and not `Copy`.
 #[non_exhaustive]
 pub enum StartError {
     /// The platform has no sandbox yet: only macOS and Linux have one.
@@ -297,6 +300,24 @@ pub enum StartError {
         /// Its exit code, when it ran to one.
         code: Option<i32>,
     },
+    /// A write deny the sandbox must apply in its own working directory is a
+    /// path its words cannot name, so there is no mount for it and no command
+    /// runs. Linux only, where the mandatory denies come from a walk.
+    UnspellableDeny {
+        /// The path the walk found, as the filesystem holds it.
+        path: PathBuf,
+    },
+}
+
+#[cfg(target_os = "linux")]
+impl StartError {
+    /// The reason a bwrap plan was not built, as a [`StartError`].
+    fn from_plan(error: crabpot_linux::fs::PlanError) -> Self {
+        match error {
+            crabpot_linux::fs::PlanError::Path(error) => Self::UnresolvedPath(error),
+            crabpot_linux::fs::PlanError::Unspellable { path } => Self::UnspellableDeny { path },
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -358,6 +379,11 @@ impl fmt::Display for StartError {
             } => write!(
                 f,
                 "`srt-win {command}` did not run, or printed what cannot be read"
+            ),
+            Self::UnspellableDeny { path } => write!(
+                f,
+                "a mandatory write deny is a path the sandbox cannot name: {}",
+                path.display()
             ),
         }
     }

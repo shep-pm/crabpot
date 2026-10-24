@@ -113,11 +113,23 @@ mod tests {
     }
 
     fn plan_for(allow_write: &[&str], dirs: &'static [&'static str]) -> Plan {
+        plan_denying(allow_write, &[], dirs)
+    }
+
+    fn plan_denying(
+        allow_write: &[&str],
+        deny_write: &[&str],
+        dirs: &'static [&'static str],
+    ) -> Plan {
+        let entries = |paths: &[&str]| -> Vec<PathEntry> {
+            paths
+                .iter()
+                .map(|path| PathEntry::Spelled((*path).to_owned()))
+                .collect()
+        };
         let mut config = Config::default();
-        config.filesystem.allow_write = allow_write
-            .iter()
-            .map(|path| PathEntry::Spelled((*path).to_owned()))
-            .collect();
+        config.filesystem.allow_write = entries(allow_write);
+        config.filesystem.deny_write = entries(deny_write);
         let host = Host::new(Some(r"C:\Users\me"), Some(r"C:\work"), Volume(dirs));
         Plan::build_on(&config, &host).unwrap()
     }
@@ -186,5 +198,16 @@ mod tests {
             .map(|pair| pair[1].as_str())
             .collect();
         assert_eq!(flags, [r"C:\work", r"D:\scratch"]);
+    }
+
+    #[test]
+    fn a_write_root_at_or_under_a_deny_write_is_not_granted() {
+        let plan = plan_denying(
+            &[r"C:\work", r"C:\work\out", r"D:\scratch"],
+            &[r"C:\work"],
+            &[r"C:\work", r"C:\work\out", r"D:\scratch"],
+        );
+
+        assert_eq!(plan.write_roots(), [r"D:\scratch"]);
     }
 }

@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::case::Probe;
 
-use super::wrapper::{exit_code, refusal};
+use super::wrapper::{exit_code, export_harness_pid, refusal};
 use super::{Error, Runner, home};
 
 /// crabpot, through the `probe` binary in multicall: it calls
@@ -50,6 +50,7 @@ impl Crabpot {
             .args(probe.args())
             .env("HOME", home(settings))
             .current_dir(home(settings));
+        export_harness_pid(&mut command);
         command
     }
 }

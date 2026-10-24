@@ -14,6 +14,12 @@ struct Wrapped {
     reported: Option<u8>,
 }
 
+/// Gives `command` the harness's own pid in [`probe::HARNESS_PID`], which the
+/// `ps-outside` probe looks for from inside the sandbox.
+pub(super) fn export_harness_pid(command: &mut Command) {
+    command.env(probe::HARNESS_PID, std::process::id().to_string());
+}
+
 /// Runs the wrapper to its end. Its stderr is inherited, so a failing run
 /// leaves its diagnostics in the log; it is never compared.
 fn wrapped(mut command: Command, runner: &'static str) -> Result<Wrapped, Error> {
@@ -50,5 +56,23 @@ pub(super) fn refusal(command: Command, runner: &'static str) -> Result<bool, Er
         } => Ok(false),
         Wrapped { status: 1, .. } => Ok(true),
         Wrapped { status, .. } => Err(Error::Unreported { runner, status }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn a_wrapper_command_carries_the_harness_pid() {
+        let mut command = Command::new("probe");
+        export_harness_pid(&mut command);
+        let pid = std::process::id().to_string();
+        let exported = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(probe::HARNESS_PID))
+            .and_then(|(_, value)| value);
+        assert_eq!(exported, Some(OsStr::new(&pid)));
     }
 }

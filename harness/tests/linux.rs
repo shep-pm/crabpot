@@ -1,6 +1,6 @@
-//! What the seccomp filters refuse, under crabpot's wrapper alone. Upstream is
-//! not run: each probe has one right answer, whatever upstream says, and a case
-//! that compares the two runners needs Node.
+//! What the seccomp filters and the pid namespace refuse, under crabpot's
+//! wrapper alone. Upstream is not run: each probe has one right answer,
+//! whatever upstream says, and a case that compares the two runners needs Node.
 
 #![cfg(target_os = "linux")]
 
@@ -54,6 +54,13 @@ fn io_uring_setup_is_refused() {
 #[test]
 fn a_nested_user_namespace_is_refused() {
     let code = under_crabpot("unshare-user", &Probe::UnshareUser);
+
+    assert_eq!(code, probe::REFUSED);
+}
+
+#[test]
+fn ps_lists_the_sandbox_and_not_the_harness() {
+    let code = under_crabpot("ps-outside", &Probe::PsOutside);
 
     assert_eq!(code, probe::REFUSED);
 }

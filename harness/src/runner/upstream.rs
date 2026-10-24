@@ -9,7 +9,7 @@ use std::process::Command;
 
 use crate::case::Probe;
 
-use super::wrapper::{exit_code, refusal};
+use super::wrapper::{exit_code, export_harness_pid, refusal};
 use super::{Error, Runner, home};
 
 /// Upstream's `srt`, from the npm package pinned in `harness/package.json`.
@@ -98,6 +98,7 @@ impl Upstream {
             .args(probe.args())
             .env("HOME", home(settings))
             .current_dir(home(settings));
+        export_harness_pid(&mut command);
         command
     }
 }

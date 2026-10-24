@@ -3,6 +3,7 @@
 
 #[cfg(windows)]
 mod ffi;
+pub(crate) mod install;
 mod status;
 
 #[cfg(windows)]

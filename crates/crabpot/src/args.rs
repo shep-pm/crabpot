@@ -5,6 +5,8 @@ use core::fmt;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::windows::install::{InstallOptions, UninstallOptions};
+
 /// What the command line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Args {
@@ -58,6 +60,16 @@ impl HelperMode {
 pub(crate) struct Helper {
     pub(crate) mode: HelperMode,
     pub(crate) args: Vec<OsString>,
+}
+
+/// A subcommand that sets the Windows sandbox up or takes it down, in place of
+/// running a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Subcommand {
+    /// `windows-install`.
+    WindowsInstall(InstallOptions),
+    /// `windows-uninstall`.
+    WindowsUninstall(UninstallOptions),
 }
 
 /// Why the command line was refused.
@@ -114,6 +126,75 @@ pub(crate) fn parse_helper(
         mode,
         args: args.collect(),
     }))
+}
+
+/// Reads the arguments after the program's name as `windows-install` or
+/// `windows-uninstall`. `None` when the first one is neither: the names are
+/// recognised there and nowhere else, so a program of that name still runs
+/// after `--`.
+pub(crate) fn parse_subcommand(
+    args: impl IntoIterator<Item = OsString>,
+) -> Option<Result<Subcommand, ArgsError>> {
+    let mut args = args.into_iter();
+    let first = args.next()?;
+    match first.to_str()? {
+        "windows-install" => Some(parse_install(args).map(Subcommand::WindowsInstall)),
+        "windows-uninstall" => Some(parse_uninstall(args).map(Subcommand::WindowsUninstall)),
+        _ => None,
+    }
+}
+
+fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<InstallOptions, ArgsError> {
+    let mut options = InstallOptions::default();
+    while let Some(arg) = args.next() {
+        match flag(&arg, &mut args)? {
+            ("--allow-loopback", None) => options.allow_loopback = true,
+            ("--force", None) => options.force = true,
+            ("--sublayer-guid", Some(value)) => options.sublayer_guid = Some(value),
+            ("--proxy-port-range", Some(value)) => options.proxy_port_range = Some(value),
+            ("--sandbox-user", Some(value)) => options.sandbox_user = Some(value),
+            _ => return Err(ArgsError::UnknownOption(arg)),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_uninstall(
+    mut args: impl Iterator<Item = OsString>,
+) -> Result<UninstallOptions, ArgsError> {
+    let mut options = UninstallOptions::default();
+    while let Some(arg) = args.next() {
+        match flag(&arg, &mut args)? {
+            ("--keep-user", None) => options.keep_user = true,
+            ("--sublayer-guid", Some(value)) => options.sublayer_guid = Some(value),
+            _ => return Err(ArgsError::UnknownOption(arg)),
+        }
+    }
+    Ok(options)
+}
+
+/// Splits `arg` into an option's name and its value. A value comes from
+/// `--name=value`, or from the next argument for the options that take one.
+fn flag<'a>(
+    arg: &'a OsString,
+    rest: &mut impl Iterator<Item = OsString>,
+) -> Result<(&'a str, Option<OsString>), ArgsError> {
+    const TAKES_VALUE: [&str; 3] = ["--sublayer-guid", "--proxy-port-range", "--sandbox-user"];
+    let text = arg
+        .to_str()
+        .ok_or_else(|| ArgsError::UnknownOption(arg.clone()))?;
+    if let Some((name, value)) = text.split_once('=')
+        && TAKES_VALUE.contains(&name)
+    {
+        return Ok((name, Some(value.into())));
+    }
+    match TAKES_VALUE.into_iter().find(|name| *name == text) {
+        Some(name) => Ok((
+            name,
+            Some(rest.next().ok_or(ArgsError::MissingValue(name))?),
+        )),
+        None => Ok((text, None)),
+    }
 }
 
 /// The flag that gives `init` the proxy's Unix socket to relay the sandbox's
@@ -288,6 +369,33 @@ mod tests {
     }
 
     #[test]
+    fn windows_install_reads_upstreams_flags() {
+        assert_eq!(
+            parse_subcommand(os(&["windows-install"])),
+            Some(Ok(Subcommand::WindowsInstall(InstallOptions::default())))
+        );
+        assert_eq!(
+            parse_subcommand(os(&[
+                "windows-install",
+                "--allow-loopback",
+                "--proxy-port-range",
+                "61000-61009",
+                "--sandbox-user=ci",
+                "--sublayer-guid",
+                "{G}",
+                "--force",
+            ])),
+            Some(Ok(Subcommand::WindowsInstall(InstallOptions {
+                sublayer_guid: Some("{G}".into()),
+                proxy_port_range: Some("61000-61009".into()),
+                allow_loopback: true,
+                sandbox_user: Some("ci".into()),
+                force: true,
+            })))
+        );
+    }
+
+    #[test]
     fn init_takes_the_relay_socket_before_the_command() {
         let args = os(&["--relay", "/tmp/p.sock", "--relay", "x"]);
         assert_eq!(
@@ -316,6 +424,48 @@ mod tests {
             crabpot_linux::net::ssh::CONNECT_REENTRY,
             format!("{HELPER_FLAG} {}", HelperMode::Connect.word())
         );
+    }
+
+    #[test]
+    fn windows_uninstall_reads_its_flags() {
+        assert_eq!(
+            parse_subcommand(os(&[
+                "windows-uninstall",
+                "--keep-user",
+                "--sublayer-guid=G"
+            ])),
+            Some(Ok(Subcommand::WindowsUninstall(UninstallOptions {
+                sublayer_guid: Some("G".into()),
+                keep_user: true,
+            })))
+        );
+    }
+
+    #[test]
+    fn a_windows_subcommand_refuses_what_it_does_not_know() {
+        assert_eq!(
+            parse_subcommand(os(&["windows-install", "--keep-user"])),
+            Some(Err(ArgsError::UnknownOption("--keep-user".into())))
+        );
+        assert_eq!(
+            parse_subcommand(os(&["windows-uninstall", "--allow-loopback"])),
+            Some(Err(ArgsError::UnknownOption("--allow-loopback".into())))
+        );
+        assert_eq!(
+            parse_subcommand(os(&["windows-install", "--sandbox-user"])),
+            Some(Err(ArgsError::MissingValue("--sandbox-user")))
+        );
+        assert_eq!(
+            parse_subcommand(os(&["windows-install", "--allow-loopback=yes"])),
+            Some(Err(ArgsError::UnknownOption("--allow-loopback=yes".into())))
+        );
+    }
+
+    #[test]
+    fn a_subcommand_is_recognised_only_first() {
+        assert_eq!(parse_subcommand(os(&["--", "windows-install"])), None);
+        assert_eq!(parse_subcommand(os(&["ls", "windows-install"])), None);
+        assert_eq!(parse_subcommand(os(&[])), None);
     }
 
     #[test]

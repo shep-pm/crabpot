@@ -28,6 +28,15 @@ path = "srt-win/tests/persistent_grant_access_check.rs"
 name = "sd_access_check_matrix"
 path = "srt-win/tests/sd_access_check_matrix.rs"
 
+# The path rules (`fs_access`) compile on every host, so this is not
+# `cfg(windows)`: the pure string tests run on the macOS and Linux runners too.
+[dependencies]
+crabpot-core.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
 [features]
 # Test-only CI smoke hooks (`srt-win probe token` / `probe parent-access`),
 # upstream's own feature. OFF by default, never enabled for a shipped binary.

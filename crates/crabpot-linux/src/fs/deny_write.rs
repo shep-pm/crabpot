@@ -287,11 +287,12 @@ impl Plan<'_> {
         for Bind { source, dest } in &self.binds {
             // The deny lands where a mask or a tmpfs of `denyRead` already sits.
             protected.push(dest.clone());
-            if self.hidden(dest) {
-                continue;
-            }
-            words.extend(["--ro-bind", source, dest].map(OsString::from));
+            // What the mounts of `allowRead` opened beneath it came back
+            // writable, so they are made again below, hidden or not.
             emitted.push(dest);
+            if !self.hidden(dest) {
+                words.extend(["--ro-bind", source, dest].map(OsString::from));
+            }
         }
         // A bind over a directory shows what the read mounts hid beneath it, so
         // they are made again over it, as they were. A reopened path is bound

@@ -52,17 +52,20 @@ impl MountPoints {
         self.paths.push(path);
     }
 
-    /// Holds `path` when another plan of this process holds it: bwrap has made
-    /// it by now, so it is found there, but it is still that plan's mount point
-    /// and goes with the last of them.
+    /// Holds `path`, and each directory above it, that another plan of this
+    /// process holds: bwrap has made them by now, so they are found there, but
+    /// each is still that plan's mount point and goes with the last of them.
     pub(super) fn hold_if_held(&mut self, path: &str) {
-        let path = PathBuf::from(path);
-        let held = HELD
+        let path = Path::new(path);
+        let held: Vec<PathBuf> = HELD
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(&path);
-        if held {
-            self.hold(path);
+            .keys()
+            .filter(|held| path.starts_with(held))
+            .cloned()
+            .collect();
+        for held in held {
+            self.hold(held);
         }
     }
 

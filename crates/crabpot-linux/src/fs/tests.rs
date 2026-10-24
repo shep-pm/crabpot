@@ -760,6 +760,52 @@ fn a_reopened_path_beneath_a_denied_directory_is_made_again() {
     assert!(deny < hidden && hidden < reopened, "{words:#?}");
 }
 
+/// A deny of a directory under a read tmpfs makes no bind of its own, but a
+/// path `allowRead` opened inside it came back writable, so it is bound
+/// read-only after.
+#[test]
+fn a_reopened_path_under_a_hidden_deny_is_bound_read_only() {
+    let tree = Tree::empty("fs-deny-write-hidden");
+    tree.file("work/secret/pub/key", "x");
+    let (work, secret, public) = (
+        at(&tree, "work"),
+        at(&tree, "work/secret"),
+        at(&tree, "work/secret/pub"),
+    );
+    let mut config = denying_writes(&[&work], &[&secret]);
+    config.filesystem.deny_read = vec![PathEntry::Spelled(secret.clone())];
+    config.filesystem.allow_read = Some(vec![PathEntry::Spelled(public.clone())]);
+
+    let words = plan(&config);
+
+    let writable = bind_at(&words, &public);
+    let read_only = words
+        .windows(3)
+        .rposition(|triple| triple == ["--ro-bind", &public, &public])
+        .expect("the path is bound read-only");
+    assert!(writable < read_only, "{words:#?}");
+}
+
+/// A mount point another sandbox holds as a directory above this one's is held
+/// as well, or it is left behind with the second's inside it.
+#[test]
+fn a_mount_point_above_the_next_sandboxs_is_held_by_it() {
+    let tree = Tree::empty("fs-deny-write-above");
+    tree.dir("work");
+    let (work, commands) = (at(&tree, "work"), at(&tree, "work/.claude/commands"));
+    let claude = tree.root().join("work/.claude");
+    let config = denying_writes(&[&work], &[&commands]);
+    let first = Plan::build(&config).expect("a plan");
+    std::fs::create_dir(&claude).expect("a mount point");
+    let second = Plan::build(&config).expect("a plan");
+    std::fs::create_dir(claude.join("commands")).expect("a mount point");
+
+    drop(first);
+    assert!(claude.exists());
+    drop(second);
+    assert!(!claude.exists());
+}
+
 #[test]
 fn an_allowed_path_is_bound_back_over_a_tmpfs() {
     let tree = Tree::empty("fs-allow-back");

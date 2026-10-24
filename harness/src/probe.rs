@@ -134,12 +134,13 @@ const WRITE_REFUSED: &[std::io::ErrorKind] = &[
 ];
 
 /// A rename is also refused with EBUSY, which is what the kernel answers for a
-/// path that is a mount point or holds one: how Linux's sandbox blocks a move of
-/// a protected path.
+/// path that is a mount point or holds one, and with EXDEV for one that crosses
+/// mounts: how Linux's sandbox blocks a move of a protected path.
 const RENAME_REFUSED: &[std::io::ErrorKind] = &[
     std::io::ErrorKind::PermissionDenied,
     std::io::ErrorKind::ReadOnlyFilesystem,
     std::io::ErrorKind::ResourceBusy,
+    std::io::ErrorKind::CrossesDevices,
 ];
 
 /// EPERM and ECONNREFUSED refuse a bind or a direct connect. ENETUNREACH is how a
@@ -640,6 +641,19 @@ mod tests {
         let to = fixture.path().join("to");
         assert_eq!(
             probe(&["rename", from.to_str().unwrap(), to.to_str().unwrap()]),
+            1
+        );
+    }
+
+    /// A rename across mounts is EXDEV, and the kernel answers it before it looks
+    /// for the source: a protected path under a tmpfs mask cannot be moved out of it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rename_across_mounts_exits_1() {
+        let fixture = Fixture::new("rename-exdev");
+        let to = fixture.path().join("to");
+        assert_eq!(
+            probe(&["rename", "/proc/self/absent", to.to_str().unwrap()]),
             1
         );
     }

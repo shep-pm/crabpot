@@ -17,6 +17,21 @@ use super::{Error, Upstream, spell_for_upstream};
 /// installed the filters.
 const ATTEMPTS: u32 = 3;
 
+/// The smallest settings upstream accepts: it requires both `network` and
+/// `filesystem`, and refuses `{}` before it runs anything.
+const WARM_UP_SETTINGS: &str = r#"{
+  "network": {"allowedDomains": [], "deniedDomains": []},
+  "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+}"#;
+
+/// `path` spelled for upstream.
+fn spelled(path: &Path) -> io::Result<PathBuf> {
+    let text = path.to_str().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "the temp folder is not UTF-8")
+    })?;
+    Ok(PathBuf::from(spell_for_upstream(text)))
+}
+
 /// The `probe` binary copied into a folder of its own and spelled with forward
 /// slashes, which is how upstream passes it to the sandboxed shell. The copy is
 /// under the temp folder, which the sandbox user can read once `windows-install`
@@ -24,6 +39,7 @@ const ATTEMPTS: u32 = 3;
 #[derive(Debug)]
 pub(super) struct Staged {
     dir: PathBuf,
+    settings: PathBuf,
     probe: PathBuf,
 }
 
@@ -40,13 +56,18 @@ impl Staged {
         let dir = dir.canonicalize()?;
         let copy = dir.join("probe.exe");
         fs::copy(probe, &copy)?;
-        let spelled = copy.to_str().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "the temp folder is not UTF-8")
-        })?;
+        let settings = dir.join("settings.json");
+        fs::write(&settings, WARM_UP_SETTINGS)?;
         Ok(Self {
-            probe: PathBuf::from(spell_for_upstream(spelled)),
+            probe: spelled(&copy)?,
+            settings: spelled(&settings)?,
             dir,
         })
+    }
+
+    /// The warm-up's settings file, spelled for upstream.
+    pub(super) fn settings(&self) -> &Path {
+        &self.settings
     }
 
     /// The copy, spelled for upstream.
@@ -79,12 +100,10 @@ pub(super) fn warm_up(upstream: &Upstream, staged: &Staged) -> Result<(), Error>
 }
 
 fn attempt(upstream: &Upstream, staged: &Staged) -> Result<(), String> {
-    let settings = staged.dir.join("settings.json");
-    fs::write(&settings, "{}").map_err(|error| error.to_string())?;
     let probe = Probe::Read(staged.probe.display().to_string());
     let mut last = String::new();
     for attempt in 1..=ATTEMPTS {
-        match exit_code(upstream.command(&settings, &probe), "upstream") {
+        match exit_code(upstream.command(staged.settings(), &probe), "upstream") {
             Ok(_) => return Ok(()),
             Err(error) => {
                 eprintln!("report: warm-up attempt {attempt} of {ATTEMPTS}: {error}");
@@ -96,4 +115,28 @@ fn attempt(upstream: &Upstream, staged: &Staged) -> Result<(), String> {
         "the warm-up command never ran its probe ({last}): run `node \
          harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js windows-install` first"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn the_warm_up_settings_hold_the_sections_upstream_requires() {
+        let settings: Value = serde_json::from_str(WARM_UP_SETTINGS).unwrap();
+        assert!(settings["network"].is_object());
+        assert!(settings["filesystem"].is_object());
+    }
+
+    #[test]
+    fn a_staged_probe_and_settings_have_no_backslash_or_verbatim_prefix() {
+        let staged = Staged::new(&std::env::current_exe().unwrap()).unwrap();
+        for path in [staged.probe(), staged.settings()] {
+            let text = path.to_str().unwrap();
+            assert!(!text.contains('\\'), "{text}");
+        }
+        assert!(staged.settings().exists());
+    }
 }

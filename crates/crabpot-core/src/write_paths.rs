@@ -6,13 +6,18 @@
 //! entry covers them, so an explicit read deny wins over a write nobody asked
 //! for. Upstream also judges them against the credential denies, and
 //! `credentials` is refused here, so there are none to judge by.
+//!
+//! Every platform starts from this list. The macOS profile allows it as
+//! subpaths, and Linux binds each one that is there back over its read-only
+//! root.
 
-use crabpot_core::PathError;
-use crabpot_core::config::{Config, PathEntry};
-use crabpot_core::paths::{
-    PathBase, contains_glob_chars, deny_glob_matches, is_at_or_under, normalize_path_for_sandbox,
-    read_rules_of, remove_trailing_glob_suffix,
+use crate::config::{Config, PathEntry};
+use crate::glob::deny_glob_matches;
+use crate::path::{
+    PathBase, PathError, contains_glob_chars, is_at_or_under, normalize_path_for_sandbox,
+    remove_trailing_glob_suffix,
 };
+use crate::path_entries::read_rules_of;
 
 /// What the sandbox needs writable: the child's stdio and the `TMPDIR` it is
 /// handed. Kept whatever is read-denied.
@@ -36,10 +41,7 @@ const HOME_DIRS: [&str; 2] = [".npm/_logs", ".claude/debug"];
 ///
 /// [`PathError`] when the home directory is unknown, or a read entry needs a
 /// working directory and there is none.
-pub(super) fn default_write_paths(
-    base: &PathBase,
-    config: &Config,
-) -> Result<Vec<String>, PathError> {
+pub fn default_write_paths(base: &PathBase, config: &Config) -> Result<Vec<String>, PathError> {
     let home = base.home()?;
     let filesystem = &config.filesystem;
     let rules = read_rules_of(
@@ -157,8 +159,8 @@ fn homes_not_read_denied(
 
 #[cfg(test)]
 mod tests {
-    use crabpot_core::config::{Config, PathEntry};
-    use crabpot_core::paths::PathBase;
+    use crate::config::{Config, PathEntry};
+    use crate::path::PathBase;
 
     use super::*;
 

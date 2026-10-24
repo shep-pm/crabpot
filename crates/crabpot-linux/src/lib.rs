@@ -20,8 +20,10 @@
 //! - The two seccomp filters, built per architecture: `seccomp`, on Linux
 //!   only.
 //! - The bwrap dependency checks, run before a sandbox starts: [`deps`].
-//! - The Linux path entries: `denyRead`, `allowRead`, `allowWrite` and
-//!   `denyWrite` mapped onto bwrap binds.
+//! - The Linux path entries mapped onto bwrap binds: `denyRead` and
+//!   `allowWrite` have landed, the first as a tmpfs over a directory and
+//!   `/dev/null` over a file, the second as a bind of each writable path, and
+//!   `allowRead` and `denyWrite` will follow.
 //! - The helper crabpot's own binary becomes when bwrap re-enters it
 //!   (ADR-0010): [`helper`]. Reading the `--crabpot-helper` argument is the
 //!   facade's.
@@ -40,3 +42,9 @@ pub mod mandatory;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 pub mod wrap;
+
+/// The fixture tree the test modules build their cases on, which is
+/// `tests/support` and needs `symlink`, so it sits with the unix tests.
+#[cfg(all(test, unix))]
+#[path = "../tests/support/mod.rs"]
+mod support;

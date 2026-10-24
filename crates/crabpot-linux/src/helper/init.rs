@@ -128,27 +128,47 @@ fn namespace_init(argv: &[OsString], own_user_namespace: bool) -> Result<i32, In
         .map_err(|reason| InitError::step(Step::AmbientCapabilities, reason))?;
     match fork_forwarding()? {
         ForkResult::Parent { child } => Ok(reap_until(child)),
-        ForkResult::Child => Err(InitError::Exec(exec(argv))),
+        ForkResult::Child => {
+            // The mask would outlive the `exec`.
+            unblock_forwarded()?;
+            Err(InitError::Exec(exec(argv)))
+        }
     }
 }
 
 /// Forks, and has the parent pass the signals in [`FORWARDED`] on to the
 /// child, so the command answers a SIGINT or SIGTERM sent to the helper
-/// itself. The signals are blocked across the fork so none arrives before the
-/// parent forwards it, and unblocked in both processes after.
+/// itself.
+///
+/// The signals are blocked across the fork so none arrives before the parent
+/// forwards it. The parent unblocks them once its handlers are installed. The
+/// child keeps them blocked, pending rather than dropped, until it has handlers
+/// of its own or is about to run the command, and then calls
+/// [`unblock_forwarded`]: a namespace's init drops a signal from outside it
+/// that it has no handler for.
 fn fork_forwarding() -> Result<ForkResult, InitError> {
-    let mut forwarded = SigSet::empty();
-    for signal in FORWARDED {
-        forwarded.add(signal);
-    }
     let signals = |reason| InitError::step(Step::Signals, reason);
-    forwarded.thread_block().map_err(signals)?;
+    forwarded_set().thread_block().map_err(signals)?;
     let forked = sys::fork().map_err(|reason| InitError::step(Step::Fork, reason))?;
     if let ForkResult::Parent { child } = forked {
         sys::forward_signals(child, &FORWARDED).map_err(signals)?;
+        unblock_forwarded()?;
     }
-    forwarded.thread_unblock().map_err(signals)?;
     Ok(forked)
+}
+
+fn forwarded_set() -> SigSet {
+    let mut set = SigSet::empty();
+    for signal in FORWARDED {
+        set.add(signal);
+    }
+    set
+}
+
+fn unblock_forwarded() -> Result<(), InitError> {
+    forwarded_set()
+        .thread_unblock()
+        .map_err(|reason| InitError::step(Step::Signals, reason))
 }
 
 /// Waits for every child, whichever it is, until `target` has ended, and

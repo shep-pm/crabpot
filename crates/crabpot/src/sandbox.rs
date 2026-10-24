@@ -167,7 +167,8 @@ impl Sandbox {
     ///
     /// On Windows, this binary runs again as `srt-win exec` in front of the
     /// command, which it launches as the sandbox user in two hops, with
-    /// `cmd.exe /d /s /c` running the words of `command` as one line. A host
+    /// `cmd.exe /d /s /c` running the words of `command` as one line, a word
+    /// `cmd.exe` would act on in quotes. A host
     /// must call [`run_from_args`](crate::run_from_args) first thing in `main`
     /// for that too.
     ///
@@ -181,8 +182,9 @@ impl Sandbox {
     /// # Errors
     ///
     /// [`WrapError::Missing`] when the machine has no `sandbox-exec`,
-    /// [`WrapError::Bwrap`] when the command cannot be put in a bwrap line, and
-    /// [`WrapError::UnsupportedPlatform`] off macOS, Linux and Windows.
+    /// [`WrapError::Bwrap`] when the command cannot be put in a bwrap line,
+    /// [`WrapError::Cmd`] when a word of it cannot be put on a `cmd.exe` line,
+    /// and [`WrapError::UnsupportedPlatform`] off macOS, Linux and Windows.
     pub fn command(&self, command: &Command) -> Result<Command, WrapError> {
         #[cfg(target_os = "macos")]
         {
@@ -263,7 +265,7 @@ impl Sandbox {
         }
         #[cfg(windows)]
         {
-            Ok(self.session.command(command))
+            self.session.command(command)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
@@ -504,6 +506,9 @@ pub enum WrapError {
     /// bytes, a word holds a NUL byte, or the file the flags move to when the
     /// line is long could not be opened.
     Bwrap(String),
+    /// Windows: a word of the command has a double quote, a percent sign or a
+    /// line break, which `cmd.exe` would act on instead of passing on.
+    Cmd(String),
     /// The platform has no sandbox yet: only macOS, Linux and Windows have one.
     UnsupportedPlatform,
 }
@@ -513,6 +518,7 @@ impl fmt::Display for WrapError {
         match self {
             Self::Missing => write!(f, "/usr/bin/sandbox-exec is missing"),
             Self::Bwrap(reason) => write!(f, "cannot build the bwrap command: {reason}"),
+            Self::Cmd(reason) => write!(f, "cannot build the cmd.exe line: {reason}"),
             Self::UnsupportedPlatform => {
                 write!(f, "only macOS, Linux and Windows have a sandbox yet")
             }

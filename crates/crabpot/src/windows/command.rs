@@ -3,6 +3,8 @@
 //! user in two hops (upstream's `wrapCommandWithSandboxWindows`,
 //! `src/sandbox/windows-sandbox-utils.ts`).
 
+use std::borrow::Cow;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
@@ -10,7 +12,7 @@ use crabpot_core::proxy::username_for;
 use crabpot_windows::env::{Facts, vars};
 
 use crate::args::SRT_WIN_FLAG;
-use crate::sandbox::command_line;
+use crate::sandbox::{WrapError, command_line};
 
 /// What a session tells every command it wraps.
 #[derive(Debug, Clone, Copy)]
@@ -35,7 +37,12 @@ pub(crate) struct Params<'a> {
 /// one pair of quotes `/s` strips and passes it on as written. The sandbox
 /// user's own profile environment is the command's, with the overlay of
 /// `--env` pairs on it: the caller's changes, then the sandbox's own, which win.
-pub(crate) fn wrap(params: &Params<'_>, command: &Command) -> Command {
+///
+/// # Errors
+///
+/// [`WrapError::Cmd`] when a word of `command` cannot be put on a `cmd.exe`
+/// line as itself.
+pub(crate) fn wrap(params: &Params<'_>, command: &Command) -> Result<Command, WrapError> {
     let mut wrapped = Command::new(params.exe);
     wrapped
         .arg(SRT_WIN_FLAG)
@@ -51,11 +58,11 @@ pub(crate) fn wrap(params: &Params<'_>, command: &Command) -> Command {
     for (name, value) in overlay(params, command) {
         wrapped.arg("--env").arg(format!("{name}={value}"));
     }
-    wrapped.args(["--", &shell(), "/d", "/s", "/c", &line_of(command)]);
+    wrapped.args(["--", &shell(), "/d", "/s", "/c", &line_of(command)?]);
     if let Some(dir) = command.get_current_dir() {
         wrapped.current_dir(dir);
     }
-    wrapped
+    Ok(wrapped)
 }
 
 /// The variables the command gets, name and value, the caller's first.
@@ -84,12 +91,24 @@ fn overlay(params: &Params<'_>, command: &Command) -> Vec<(String, String)> {
             .chain(params.write_roots.iter().map(String::as_str))
             .map(str::to_owned)
             .collect(),
-        path: std::env::var("PATH").ok(),
-        pathext: std::env::var("PATHEXT").ok(),
+        path: carried(command, "PATH"),
+        pathext: carried(command, "PATHEXT"),
     };
     let username = username_for(&command_line(command));
     overlay.extend(vars(&facts, &username, params.token));
     overlay
+}
+
+/// What the command sees as `name`: the caller's value or removal when the
+/// caller changed it, else this process's.
+fn carried(command: &Command, name: &str) -> Option<String> {
+    let changed = command
+        .get_envs()
+        .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case(name));
+    match changed {
+        Some((_, value)) => value.map(|value| value.to_string_lossy().into_owned()),
+        None => std::env::var(name).ok(),
+    }
 }
 
 /// The shell the command line runs in: `cmd.exe` of the system folder.
@@ -98,21 +117,40 @@ fn shell() -> String {
     format!(r"{root}\System32\cmd.exe")
 }
 
-/// The words of `command` as one `cmd.exe` line: a word with whitespace in it,
-/// or no characters, is in quotes.
-fn line_of(command: &Command) -> String {
-    core::iter::once(command.get_program())
-        .chain(command.get_args())
-        .map(|word| word.to_string_lossy())
-        .map(|word| {
-            if word.is_empty() || word.contains(char::is_whitespace) {
-                format!("\"{word}\"")
-            } else {
-                word.into_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+/// The words of `command` as one `cmd.exe` line, each in quotes when `cmd.exe`
+/// or the program would read it as more than itself.
+fn line_of(command: &Command) -> Result<String, WrapError> {
+    let words = core::iter::once(command.get_program()).chain(command.get_args());
+    let mut quoted = Vec::new();
+    for word in words {
+        quoted.push(quote(word)?);
+    }
+    Ok(quoted.join(" "))
+}
+
+/// `word` as one word of a `cmd.exe` line. A word with a character `cmd.exe`
+/// acts on, whitespace, or no characters is in quotes, with the backslashes
+/// before the closing quote doubled for the program's own parse.
+///
+/// A double quote, a percent sign and a line break cannot be made literal:
+/// `cmd.exe` expands `%name%` and ends a quote at `"` whatever escapes the
+/// program would read, so a word with one is refused.
+fn quote(word: &OsStr) -> Result<Cow<'_, str>, WrapError> {
+    const SPECIAL: &str = "&|<>^()!,;=";
+    let text = word.to_string_lossy();
+    if let Some(bad) = text
+        .chars()
+        .find(|c| matches!(c, '"' | '%' | '\r' | '\n' | '\0'))
+    {
+        return Err(WrapError::Cmd(format!(
+            "{text:?} has {bad:?}, which cmd.exe would not read as part of a word"
+        )));
+    }
+    if !text.is_empty() && !text.contains(|c: char| c.is_whitespace() || SPECIAL.contains(c)) {
+        return Ok(text);
+    }
+    let trailing = text.len() - text.trim_end_matches('\\').len();
+    Ok(Cow::Owned(format!("\"{text}{}\"", "\\".repeat(trailing))))
 }
 
 #[cfg(test)]
@@ -147,7 +185,7 @@ mod tests {
 
     #[test]
     fn the_command_line_carries_held_by_and_the_restricted_token() {
-        let wrapped = wrap(&params(&[], false), &echo());
+        let wrapped = wrap(&params(&[], false), &echo()).unwrap();
         let args = args_of(&wrapped);
 
         assert_eq!(wrapped.get_program(), EXE);
@@ -176,8 +214,8 @@ mod tests {
 
     #[test]
     fn loopback_adds_allow_loopback() {
-        let closed = args_of(&wrap(&params(&[], false), &echo()));
-        let open = args_of(&wrap(&params(&[], true), &echo()));
+        let closed = args_of(&wrap(&params(&[], false), &echo()).unwrap());
+        let open = args_of(&wrap(&params(&[], true), &echo()).unwrap());
 
         assert!(!closed.iter().any(|arg| arg == "--allow-loopback"));
         assert!(open.iter().any(|arg| arg == "--allow-loopback"));
@@ -186,7 +224,7 @@ mod tests {
     #[test]
     fn each_write_root_is_a_flag_of_its_own() {
         let roots = [r"C:\work".to_owned(), r"D:\scratch".to_owned()];
-        let args = args_of(&wrap(&params(&roots, false), &echo()));
+        let args = args_of(&wrap(&params(&roots, false), &echo()).unwrap());
 
         let at = args.iter().position(|arg| arg == "--write-root").unwrap();
         assert_eq!(
@@ -199,7 +237,7 @@ mod tests {
     fn the_overlay_points_the_command_at_the_proxy_and_carries_its_own_variables() {
         let mut command = echo();
         command.env("CALLER", "kept");
-        let args = args_of(&wrap(&params(&[], false), &command));
+        let args = args_of(&wrap(&params(&[], false), &command).unwrap());
 
         let overlay: Vec<&str> = args
             .windows(2)
@@ -218,7 +256,7 @@ mod tests {
     fn a_word_with_a_space_is_quoted_in_the_line() {
         let mut command = Command::new(r"C:\Program Files\tool.exe");
         command.arg("plain").arg("two words");
-        let args = args_of(&wrap(&params(&[], false), &command));
+        let args = args_of(&wrap(&params(&[], false), &command).unwrap());
 
         assert_eq!(
             args.last().unwrap(),
@@ -231,8 +269,66 @@ mod tests {
         let mut command = echo();
         command.current_dir(r"C:\work");
 
-        let wrapped = wrap(&params(&[], false), &command);
+        let wrapped = wrap(&params(&[], false), &command).unwrap();
 
         assert_eq!(wrapped.get_current_dir(), Some(Path::new(r"C:\work")));
+    }
+
+    fn line(words: &[&str]) -> Result<String, WrapError> {
+        let mut command = Command::new(words[0]);
+        command.args(&words[1..]);
+        line_of(&command)
+    }
+
+    #[test]
+    fn a_word_cmd_would_act_on_is_quoted_so_it_stays_one_argument() {
+        assert_eq!(
+            line(&["tool.exe", "a&whoami", "x|y", "(z)", "a>b", "c^d"]).unwrap(),
+            r#"tool.exe "a&whoami" "x|y" "(z)" "a>b" "c^d""#
+        );
+        assert_eq!(line(&["tool.exe", ""]).unwrap(), r#"tool.exe """#);
+    }
+
+    #[test]
+    fn backslashes_before_the_closing_quote_are_doubled() {
+        assert_eq!(
+            line(&["tool.exe", r"C:\my dir\"]).unwrap(),
+            r#"tool.exe "C:\my dir\\""#
+        );
+        assert_eq!(
+            line(&["tool.exe", r"C:\plain\"]).unwrap(),
+            r"tool.exe C:\plain\"
+        );
+    }
+
+    #[test]
+    fn a_word_that_cannot_be_literal_is_refused() {
+        for word in [r#"say "hi""#, "%PATH%", "a\nb", "a\rb"] {
+            let error = line(&["tool.exe", word]).unwrap_err();
+            assert!(matches!(error, WrapError::Cmd(_)), "{word:?}: {error:?}");
+        }
+        assert!(line(&["to%ol.exe"]).is_err());
+    }
+
+    #[test]
+    fn a_callers_path_and_pathext_win_over_this_processs() {
+        let mut command = echo();
+        command.env("Path", r"C:\tools").env_remove("PATHEXT");
+        let args = args_of(&wrap(&params(&[], false), &command).unwrap());
+
+        let paths: Vec<&String> = args
+            .iter()
+            .filter(|arg| arg.to_lowercase().starts_with("path="))
+            .collect();
+        assert!(
+            paths.iter().all(|arg| arg.ends_with(r"=C:\tools")),
+            "{paths:?}"
+        );
+        assert!(!paths.is_empty());
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.to_lowercase().starts_with("pathext="))
+        );
     }
 }

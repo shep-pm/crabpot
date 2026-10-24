@@ -19,7 +19,7 @@ use super::command::{self, Params};
 use super::plan::Plan;
 use super::srt::{Call, Output, Srt};
 use super::status::{ProfileState, WindowsStatus};
-use crate::StartError;
+use crate::{StartError, WrapError};
 
 /// Which sandbox users the fence has been verified for in this process, and in
 /// which loopback mode. The fence is installed for the machine and not for a
@@ -62,7 +62,12 @@ pub(crate) struct Session {
 
 impl Session {
     /// `command`, wrapped to run through `srt-win exec` in this session.
-    pub(crate) fn command(&self, command: &Command) -> Command {
+    ///
+    /// # Errors
+    ///
+    /// [`WrapError::Cmd`] when a word of `command` cannot be put on a `cmd.exe`
+    /// line as itself.
+    pub(crate) fn command(&self, command: &Command) -> Result<Command, WrapError> {
         command::wrap(
             &Params {
                 exe: &self.exe,

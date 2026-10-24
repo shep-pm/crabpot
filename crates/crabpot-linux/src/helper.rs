@@ -6,8 +6,15 @@
 //! facade reads the `--crabpot-helper` argument and hands the stage its
 //! arguments.
 //!
-//! Only [`exec`] exists so far: it runs the command and does nothing else.
+//! [`exec`] runs the command and does nothing else. On Linux, `init` puts the
+//! command in a PID and mount namespace of its own first, as PID 1's child.
 
 mod exec;
+#[cfg(target_os = "linux")]
+mod init;
+#[cfg(target_os = "linux")]
+mod sys;
 
 pub use exec::{ExecError, exec};
+#[cfg(target_os = "linux")]
+pub use init::{InitError, Step, init};

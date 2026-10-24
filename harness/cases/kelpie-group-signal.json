@@ -15,6 +15,7 @@
     },
     "enableWeakerNetworkIsolation": true
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "signal-group"}
   ]

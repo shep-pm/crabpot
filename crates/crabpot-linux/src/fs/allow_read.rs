@@ -33,47 +33,66 @@ use crabpot_core::ResolvedPath;
 use crabpot_core::config::Config;
 
 use super::allow_write;
-use super::deny_read::{collapse, locate, located, mount};
+use super::deny_read::{Mount, collapse, locate, located};
 use super::glob_walk;
+use super::Draft;
 
-pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
+pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
     let denies = config.filesystem.read_denies()?;
     let hidden = located(config)?;
     let writable = allow_write::bind_paths(&PathBase::from_env(), config)?;
-    let mut reopened = BTreeSet::new();
+    let mut reopened = BTreeMap::new();
     for entry in config.filesystem.read_allows()? {
         for path in glob_walk::matches(&entry) {
             if entry.is_pattern() && is_symlink(&path) {
                 continue;
             }
-            if let Some((path, _is_dir)) = locate(path)
+            if let Some((path, is_dir)) = locate(path)
                 && hidden.keys().any(|deny| path.starts_with(deny))
             {
-                reopened.insert(path);
+                reopened.insert(path, is_dir);
             }
         }
     }
-    let late = collapse(late_denies(&denies, &reopened)?);
-    let mut mounts: Vec<(usize, Vec<OsString>)> = reopened
-        .iter()
-        .map(|path| {
+    let open: BTreeSet<PathBuf> = reopened.keys().cloned().collect();
+    let late = collapse(late_denies(&denies, &open)?);
+    let mut mounts: Vec<(usize, Vec<OsString>, Mount)> = reopened
+        .into_iter()
+        .map(|(path, is_dir)| {
             let flag = if writable.iter().any(|bind| path.starts_with(bind)) {
                 "--bind"
             } else {
                 "--ro-bind"
             };
-            (depth(path), bind(flag, path))
+            (
+                depth(&path),
+                bind(flag, &path),
+                Mount {
+                    path,
+                    is_dir,
+                    reopened: true,
+                },
+            )
         })
         .chain(late.into_iter().map(|(path, is_dir)| {
-            (depth(&path), mount(path, is_dir))
+            let mount = Mount::mask(path, is_dir);
+            (depth(&mount.path), mount.words(), mount)
         }))
         .collect();
     // bwrap reads its mounts in order and a later one covers an earlier one,
     // so a mount is written after every mount of a directory above it. Two
     // mounts of the same depth hold neither of the other's path, so their
     // order asks nothing.
-    mounts.sort_by_key(|(depth, _)| *depth);
-    Ok(mounts.into_iter().flat_map(|(_, words)| words).collect())
+    mounts.sort_by_key(|(depth, _, _)| *depth);
+    draft.protected.extend(
+        mounts
+            .iter()
+            .filter(|(_, _, mount)| !mount.reopened)
+            .filter_map(|(_, _, mount)| mount.path.to_str().map(str::to_owned)),
+    );
+    let words = mounts.iter().flat_map(|(_, words, _)| words.clone()).collect();
+    draft.remounts = mounts.into_iter().map(|(_, _, mount)| mount).collect();
+    Ok(words)
 }
 
 /// The number of names in `path`, which is how deep its mount sits under the

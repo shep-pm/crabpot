@@ -33,5 +33,8 @@ crabpot-macos.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 crabpot-linux.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+crabpot-windows.workspace = true
+
 [lints]
 workspace = true

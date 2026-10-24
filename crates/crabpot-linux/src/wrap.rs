@@ -21,6 +21,10 @@ pub struct Wrapped {
 /// The words that make a bwrap invocation, `bwrap` itself first, for a command
 /// under `config`.
 ///
+/// `helper` is the binary that runs the command inside the sandbox. It is bound
+/// read-only at its own path after the filesystem words, so no `denyRead` hides
+/// it.
+///
 /// `root_with_setfcap` is whether this process is uid 0 with `CAP_SETFCAP`,
 /// which [`is_root_with_setfcap_here`](crate::deps::is_root_with_setfcap_here)
 /// answers. The command follows them, after a `--`, as `argv::render` puts it.
@@ -29,10 +33,16 @@ pub struct Wrapped {
 ///
 /// [`PathError`] when a path in `config` starts with `~` and `HOME` is not set,
 /// or is relative and there is no working directory.
-pub fn words(bwrap: &Path, config: &Config, root_with_setfcap: bool) -> Result<Wrapped, PathError> {
+pub fn words(
+    bwrap: &Path,
+    config: &Config,
+    helper: &Path,
+    root_with_setfcap: bool,
+) -> Result<Wrapped, PathError> {
     let (plan_words, mount_points) = Plan::build(config)?.into_parts();
     let mut words = vec![bwrap.as_os_str().to_owned()];
     words.extend(plan_words);
+    words.extend([OsString::from("--ro-bind"), helper.into(), helper.into()]);
     words.extend(capability_words(root_with_setfcap));
     Ok(Wrapped {
         words,
@@ -59,17 +69,24 @@ mod tests {
 
     const BWRAP: &str = "/usr/bin/bwrap";
 
+    const HELPER: &str = "/opt/crabpot/bin/crabpot";
+
     fn words_for(root_with_setfcap: bool) -> Vec<String> {
         words_at(&Config::default(), root_with_setfcap)
     }
 
     fn words_at(config: &Config, root_with_setfcap: bool) -> Vec<String> {
-        words(Path::new(BWRAP), config, root_with_setfcap)
-            .expect("the config resolves")
-            .words
-            .iter()
-            .map(|word| word.to_string_lossy().into_owned())
-            .collect()
+        words(
+            Path::new(BWRAP),
+            config,
+            Path::new(HELPER),
+            root_with_setfcap,
+        )
+        .expect("the config resolves")
+        .words
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect()
     }
 
     #[test]
@@ -123,6 +140,21 @@ mod tests {
                 "{mount:?} is the plan's own mount: {words:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_helper_binary_is_bound_read_only_after_the_filesystem_words() {
+        let words = words_for(false);
+
+        let at = words
+            .windows(3)
+            .position(|run| run == ["--ro-bind", HELPER, HELPER])
+            .unwrap_or_else(|| panic!("{words:?}"));
+        let fs_words = Plan::build(&Config::default()).unwrap();
+        assert!(
+            at > fs_words.words().len(),
+            "a deny bind before it cannot hide it: {words:?}"
+        );
     }
 
     #[test]

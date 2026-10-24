@@ -35,7 +35,14 @@ macro_rules! sections {
     };
 }
 
-sections!(base, allow_write, deny_read, deny_write, private_mounts);
+sections!(
+    base,
+    allow_write,
+    deny_read,
+    allow_read,
+    deny_write,
+    private_mounts
+);
 
 /// What the sections of one plan tell each other.
 #[derive(Debug, Default)]
@@ -48,6 +55,9 @@ struct Draft {
     write_roots: Vec<String>,
     /// What `denyRead` mounts over, set by `deny_read`.
     read_mounts: Vec<deny_read::Mount>,
+    /// What `allowRead` mounts after those, in the order it makes them, set by
+    /// `allow_read`.
+    remounts: Vec<deny_read::Mount>,
     /// The paths whose protection the pins keep from being moved away: where a
     /// deny bind or a read mount lands.
     protected: Vec<String>,

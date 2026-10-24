@@ -48,7 +48,7 @@ pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>,
     let mut plan = Plan {
         base: &base,
         roots: &draft.write_roots,
-        mounts: &draft.read_mounts,
+        mounts: draft.read_mounts.iter().chain(&draft.remounts).collect(),
         mount_points: &mut draft.mount_points,
         seen: BTreeSet::new(),
         decided: BTreeSet::new(),
@@ -80,7 +80,8 @@ struct Bind {
 struct Plan<'a> {
     base: &'a PathBase,
     roots: &'a [String],
-    mounts: &'a [Mount],
+    /// Every mount of the read sections, in the order they were made.
+    mounts: Vec<&'a Mount>,
     mount_points: &'a mut MountPoints,
     /// Paths a deny has been made for, so two spellings of one make one bind.
     seen: BTreeSet<String>,
@@ -261,6 +262,23 @@ impl Plan<'_> {
         Some(source)
     }
 
+    /// Whether the last read mount to cover `dest` hides it: a tmpfs over it or
+    /// a mask at it. A path `allowRead` opened again is the host's own.
+    fn hidden(&self, dest: &str) -> bool {
+        self.mounts
+            .iter()
+            .rfind(|mount| {
+                path_of(mount).is_some_and(|path| {
+                    if mount.is_dir {
+                        is_at_or_under(dest, path)
+                    } else {
+                        path == dest
+                    }
+                })
+            })
+            .is_some_and(|mount| !mount.reopened)
+    }
+
     /// The binds in the order they are made, and the paths they land on.
     fn emit(self) -> (Vec<OsString>, Vec<String>) {
         let mut words = Vec::new();
@@ -269,29 +287,20 @@ impl Plan<'_> {
         for Bind { source, dest } in &self.binds {
             // The deny lands where a mask or a tmpfs of `denyRead` already sits.
             protected.push(dest.clone());
-            let hidden = self
-                .mounts
-                .iter()
-                .any(|mount| path_of(mount).is_some_and(|path| mount.is_dir && is_at_or_under(dest, path)));
-            let masked = self
-                .mounts
-                .iter()
-                .any(|mount| !mount.is_dir && path_of(mount) == Some(dest));
-            if hidden || masked {
+            if self.hidden(dest) {
                 continue;
             }
             words.extend(["--ro-bind", source, dest].map(OsString::from));
             emitted.push(dest);
         }
         // A bind over a directory shows what the read mounts hid beneath it, so
-        // they are made again over it: the directories first, as they were.
-        for is_dir in [true, false] {
-            for mount in self.mounts.iter().filter(|mount| mount.is_dir == is_dir) {
-                if path_of(mount)
-                    .is_some_and(|path| emitted.iter().any(|dest| strictly_under(path, dest)))
-                {
-                    words.extend(mount.words());
-                }
+        // they are made again over it, as they were. A reopened path is bound
+        // read-only: a deny of writes covers it.
+        for mount in &self.mounts {
+            if path_of(mount)
+                .is_some_and(|path| emitted.iter().any(|dest| strictly_under(path, dest)))
+            {
+                words.extend(mount.words());
             }
         }
         (words, protected)

@@ -17,20 +17,34 @@ use crabpot_core::config::Config;
 use super::Draft;
 use super::glob_walk::{self, KERNEL_MOUNTS};
 
-/// One mount over a denied path.
+/// One mount over a path: a mask of a denied one, or the bind of a host path
+/// back over what a mask hid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Mount {
     /// Where it lands.
     pub(super) path: PathBuf,
-    /// A tmpfs over a directory, else `/dev/null` over a file.
+    /// Whether the path is a directory.
     pub(super) is_dir: bool,
+    /// A read-only bind of the host path, where `allowRead` opens it again.
+    pub(super) reopened: bool,
 }
 
 impl Mount {
+    /// A tmpfs over a denied directory, else `/dev/null` over a denied file.
+    pub(super) fn mask(path: PathBuf, is_dir: bool) -> Self {
+        Self {
+            path,
+            is_dir,
+            reopened: false,
+        }
+    }
+
     /// The words that make the mount.
     pub(super) fn words(&self) -> Vec<OsString> {
         let path = self.path.clone().into_os_string();
-        if self.is_dir {
+        if self.reopened {
+            vec!["--ro-bind".into(), path.clone(), path]
+        } else if self.is_dir {
             vec!["--tmpfs".into(), path]
         } else {
             vec!["--ro-bind".into(), "/dev/null".into(), path]
@@ -39,7 +53,10 @@ impl Mount {
 }
 
 pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
-    let mounts = mounts(config)?;
+    let mounts = collapse(located(config)?)
+        .into_iter()
+        .map(|(path, is_dir)| Mount::mask(path, is_dir))
+        .collect::<Vec<_>>();
     let words = mounts.iter().flat_map(Mount::words).collect();
     draft.protected.extend(
         mounts
@@ -50,7 +67,9 @@ pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>,
     Ok(words)
 }
 
-fn mounts(config: &Config) -> Result<Vec<Mount>, PathError> {
+/// The located paths of `config`'s `denyRead`, each with whether it is a
+/// directory, as [`locate`] finds them on disk.
+pub(super) fn located(config: &Config) -> Result<BTreeMap<PathBuf, bool>, PathError> {
     let mut found = BTreeMap::new();
     for entry in config.filesystem.read_denies()? {
         for path in glob_walk::matches(&entry) {
@@ -59,17 +78,14 @@ fn mounts(config: &Config) -> Result<Vec<Mount>, PathError> {
             }
         }
     }
-    Ok(collapse(found)
-        .into_iter()
-        .map(|(path, is_dir)| Mount { path, is_dir })
-        .collect())
+    Ok(found)
 }
 
 /// Where `path` is mounted over, and whether it is a directory; `None` when it
 /// is not there. Links are resolved, so two spellings of one path mount once.
 /// A path in a kernel mount keeps its spelling: `/proc/self` resolves to a host
 /// pid the sandbox's own `/proc` does not hold.
-fn locate(path: PathBuf) -> Option<(PathBuf, bool)> {
+pub(super) fn locate(path: PathBuf) -> Option<(PathBuf, bool)> {
     if KERNEL_MOUNTS.iter().any(|mount| path.starts_with(mount)) {
         let is_dir = fs::metadata(&path).ok()?.is_dir();
         return Some((path, is_dir));
@@ -82,7 +98,7 @@ fn locate(path: PathBuf) -> Option<(PathBuf, bool)> {
 /// The paths with those beneath a denied directory left out: the tmpfs over it
 /// already hides them, and a mount beneath it would name a path that is no
 /// longer there.
-fn collapse(found: BTreeMap<PathBuf, bool>) -> Vec<(PathBuf, bool)> {
+pub(super) fn collapse(found: BTreeMap<PathBuf, bool>) -> Vec<(PathBuf, bool)> {
     let mut kept: Vec<(PathBuf, bool)> = Vec::new();
     for (path, is_dir) in found {
         let covered = kept

@@ -8,6 +8,7 @@ use std::process::Command;
 use std::{
     ffi::OsString,
     os::fd::OwnedFd,
+    path::PathBuf,
     sync::{Mutex, PoisonError},
 };
 
@@ -20,6 +21,9 @@ use crabpot_core::proxy::username_for;
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;
 
+#[cfg(target_os = "linux")]
+use crate::args::{HELPER_FLAG, HelperMode};
+
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
 /// with [`Sandbox::command`], and drop it when they have all ended, since the
 /// proxy stops with it.
@@ -30,6 +34,9 @@ pub struct Sandbox {
     /// The bwrap words, `bwrap` first, that each command's own words follow.
     #[cfg(target_os = "linux")]
     words: Vec<OsString>,
+    /// This binary, which bwrap runs as the helper in front of each command.
+    #[cfg(target_os = "linux")]
+    helper: PathBuf,
     /// The args files of the commands wrapped so far, each held open for as
     /// long as the command may run, which is until the sandbox drops.
     #[cfg(target_os = "linux")]
@@ -55,10 +62,13 @@ impl Sandbox {
     /// proxy that carries its network cannot start. On Linux the bwrap checks
     /// run first: [`StartError::Missing`] when there is no executable `bwrap`
     /// on `PATH`, and [`StartError::Uid0WithoutSetfcap`] for uid 0 without
-    /// `CAP_SETFCAP`. A `bwrap` older than 0.5.0 is a warning on stderr.
+    /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
+    /// binary is unknown. A `bwrap` older than 0.5.0 is a warning on stderr.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "linux")]
         let bwrap = crabpot_linux::deps::check_here()?;
+        #[cfg(target_os = "linux")]
+        let helper = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             let proxy = Proxy::start(
@@ -97,9 +107,11 @@ impl Sandbox {
                 words: crabpot_linux::wrap::words(
                     &bwrap,
                     config,
+                    &helper,
                     crabpot_linux::deps::is_root_with_setfcap_here(),
                 )
                 .map_err(StartError::UnresolvedPath)?,
+                helper,
                 args_files: Mutex::new(Vec::new()),
                 proxy,
             })
@@ -113,6 +125,11 @@ impl Sandbox {
 
     /// Wraps `command` into one that runs it inside this sandbox, to spawn in
     /// its place.
+    ///
+    /// On Linux, bwrap runs this binary again inside the sandbox as the helper,
+    /// and the helper runs `command`. A host must call
+    /// [`run_from_args`](crate::run_from_args) first thing in `main`, or its
+    /// own `main` runs inside the sandbox in place of the command.
     ///
     /// The wrapped command keeps `command`'s program, arguments, working
     /// directory and environment changes. It does not keep its standard
@@ -172,10 +189,13 @@ impl Sandbox {
         }
         #[cfg(target_os = "linux")]
         {
-            let words: Vec<OsString> = core::iter::once(command.get_program())
-                .chain(command.get_args())
-                .map(OsString::from)
-                .collect();
+            let mut words = vec![
+                self.helper.clone().into_os_string(),
+                OsString::from(HELPER_FLAG),
+                OsString::from(HelperMode::Init.word()),
+                command.get_program().to_owned(),
+            ];
+            words.extend(command.get_args().map(OsString::from));
             let rendered = crabpot_linux::argv::render(&self.words, &words, &std::env::temp_dir())
                 .map_err(|e| WrapError::Bwrap(e.to_string()))?;
             let mut wrapped = rendered.command;
@@ -233,6 +253,9 @@ pub enum StartError {
     /// The process is uid 0 without `CAP_SETFCAP`, and bwrap cannot make a
     /// user namespace.
     Uid0WithoutSetfcap,
+    /// The path of this binary is unknown, and bwrap needs it to run the
+    /// helper.
+    CurrentExe(io::ErrorKind),
 }
 
 #[cfg(target_os = "linux")]
@@ -261,6 +284,7 @@ impl fmt::Display for StartError {
                 f,
                 "running as uid 0 without CAP_SETFCAP, so bwrap cannot make a user namespace"
             ),
+            Self::CurrentExe(kind) => write!(f, "cannot find this binary: {kind}"),
         }
     }
 }
@@ -381,7 +405,12 @@ mod tests {
             .map(|arg| arg.to_string_lossy())
             .collect();
         assert_eq!(args[..3], ["--ro-bind", "/", "/"]);
-        assert_eq!(args[args.len() - 3..], ["--", "echo", "hello"]);
+        let helper = std::env::current_exe().unwrap();
+        let helper = helper.to_string_lossy();
+        assert_eq!(
+            args[args.len() - 6..],
+            ["--", &*helper, "--crabpot-helper", "init", "echo", "hello"][..]
+        );
         assert_eq!(wrapped.get_current_dir(), Some(std::path::Path::new("/")));
         assert!(wrapped.get_envs().any(|(name, value)| {
             name == "CALLER" && value.is_some_and(|value| value == "kept")

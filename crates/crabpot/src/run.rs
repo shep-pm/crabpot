@@ -20,7 +20,7 @@ use tokio::signal::unix::{SignalKind, signal};
 #[cfg(unix)]
 use tokio::task::JoinHandle;
 
-use crate::args::{self, Invocation};
+use crate::args::{self, Helper, HelperMode, Invocation};
 use crate::sandbox::Sandbox;
 
 #[cfg(unix)]
@@ -35,11 +35,47 @@ const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 /// command the rest of the arguments name inside a sandbox, and exits with its
 /// status. Any other arguments leave it a no-op, so a host calls it first
 /// thing in `main` (ADR-0010).
+///
+/// A first argument of `--crabpot-helper` is the sandbox calling the binary
+/// back, and is not for a person to type: on Linux, bwrap runs the host's
+/// binary inside the sandbox with it, to run the command (ADR-0014). A host
+/// that does not call this first thing in `main` runs its own `main` there in
+/// place of the command.
 pub fn run_from_args() {
+    if let Some(helper) = args::parse_helper(env::args_os().skip(1)) {
+        run_helper(helper);
+    }
     let mut args = env::args_os().skip(1);
     if args.next().is_some_and(|arg| arg == "--crabpot") {
         run_args(args);
     }
+}
+
+/// Becomes the helper `helper` names. It never returns.
+fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
+    let helper = helper.unwrap_or_else(|e| fail(e));
+    match helper.mode {
+        HelperMode::Init => helper_init(&helper.args),
+        HelperMode::Relay | HelperMode::Connect => fail(format!(
+            "helper mode {} is not supported yet",
+            helper.mode.word()
+        )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn helper_init(command: &[OsString]) -> ! {
+    fail(crabpot_linux::helper::exec(command))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn helper_init(_command: &[OsString]) -> ! {
+    fail("the helper runs only on Linux")
+}
+
+fn fail(reason: impl core::fmt::Display) -> ! {
+    eprintln!("crabpot: {reason}");
+    std::process::exit(1)
 }
 
 /// Runs the command `args` name inside a sandbox, then exits the process with

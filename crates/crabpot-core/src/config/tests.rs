@@ -58,6 +58,19 @@ const ASKING: &[(&str, &str)] = &[
     ("git.safeDirectories", r#"["/repo"]"#),
 ];
 
+/// The keys only Linux refuses: each changes what bwrap or the seccomp filter
+/// does, and crabpot applies none of them.
+#[cfg(target_os = "linux")]
+const LINUX_ASKING: &[(&str, &str)] = &[
+    ("bwrapPath", r#""/usr/bin/bwrap""#),
+    ("seccomp", r#"{"applyPath": "/x"}"#),
+    ("mandatoryDenySearchDepth", "5"),
+    ("enableWeakerNestedSandbox", "true"),
+    ("allowNestedUserNamespaces", "true"),
+];
+#[cfg(not(target_os = "linux"))]
+const LINUX_ASKING: &[(&str, &str)] = &[];
+
 #[test]
 fn each_unsupported_key_is_refused_naming_its_path() {
     for (path, value) in ASKING {
@@ -73,8 +86,12 @@ fn each_unsupported_key_is_refused_naming_its_path() {
 
 #[test]
 fn the_asking_table_covers_the_whole_unsupported_list() {
-    let mut listed: Vec<&str> = unsupported::PATHS.to_vec();
-    let mut tested: Vec<&str> = ASKING.iter().map(|(path, _)| *path).collect();
+    let mut listed: Vec<&str> = [unsupported::PATHS, unsupported::LINUX_PATHS].concat();
+    let mut tested: Vec<&str> = [ASKING, LINUX_ASKING]
+        .concat()
+        .iter()
+        .map(|(path, _)| *path)
+        .collect();
     listed.sort_unstable();
     tested.sort_unstable();
 
@@ -148,6 +165,7 @@ fn an_unknown_key_is_dropped() {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn a_key_upstream_ignores_on_macos_is_accepted_and_ignored() {
     for (path, value) in [
@@ -158,6 +176,78 @@ fn a_key_upstream_ignores_on_macos_is_accepted_and_ignored() {
         ("enableWeakerNestedSandbox", json!(true)),
         ("allowNestedUserNamespaces", json!(true)),
         ("windows", json!({"sandboxUser": "srt"})),
+        ("ripgrep", json!({"command": "rg"})),
+    ] {
+        assert_eq!(
+            Config::from_json(&with(path, value)),
+            Ok(Config::default()),
+            "{path}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_macos_only_keys_are_accepted_on_linux() {
+    for (path, value) in [
+        ("network.allowUnixSockets", json!(["/tmp/s"])),
+        ("network.allowLocalBinding", json!(true)),
+        ("enableWeakerNetworkIsolation", json!(true)),
+        ("network.allowMachLookup", json!(["com.apple.trustd"])),
+    ] {
+        let loaded = Config::from_json(&with(path, value));
+
+        assert!(loaded.is_ok(), "{path}: {loaded:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_key_that_changes_enforcement_is_refused_on_linux() {
+    for (path, value) in LINUX_ASKING {
+        let value: Value = serde_json::from_str(value).unwrap();
+
+        assert_eq!(
+            Config::from_json(&with(path, value)),
+            Err(ConfigError::Unsupported { key: path }),
+            "{path}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linux_key_that_asks_for_nothing_loads() {
+    for (path, value) in [
+        ("bwrapPath", json!("")),
+        ("enableWeakerNestedSandbox", json!(false)),
+        ("allowNestedUserNamespaces", json!(false)),
+    ] {
+        let loaded = Config::from_json(&with(path, value));
+
+        assert!(loaded.is_ok(), "{path}: {loaded:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linux_key_of_the_wrong_type_is_invalid() {
+    for (path, value) in [
+        ("bwrapPath", json!(true)),
+        ("seccomp", json!(false)),
+        ("mandatoryDenySearchDepth", json!("5")),
+        ("enableWeakerNestedSandbox", json!("true")),
+        ("allowNestedUserNamespaces", json!(1)),
+    ] {
+        assert_eq!(invalid_key(&with(path, value)), path);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn socat_path_and_ripgrep_are_accepted_on_linux() {
+    for (path, value) in [
+        ("socatPath", json!("/usr/bin/socat")),
         ("ripgrep", json!({"command": "rg"})),
     ] {
         assert_eq!(

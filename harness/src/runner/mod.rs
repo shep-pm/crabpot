@@ -86,6 +86,17 @@ pub enum Error {
         /// What crabpot gave.
         crabpot: u8,
     },
+    /// A runner alone gave a probe a code other than the one the case is held to.
+    Unexpected {
+        /// The runner that ran it.
+        runner: &'static str,
+        /// The probe that gave another code.
+        probe: Probe,
+        /// The code the probe had to give.
+        expected: u8,
+        /// The code it gave.
+        got: u8,
+    },
     /// A runner did not refuse settings the case says are refused: the probe
     /// ran, or left the marker it writes.
     NotRefused {
@@ -126,6 +137,12 @@ impl core::fmt::Display for Error {
                     "{probe:?} exited {upstream} under upstream and {crabpot} under crabpot"
                 )
             }
+            Self::Unexpected {
+                runner,
+                probe,
+                expected,
+                got,
+            } => write!(f, "{probe:?} exited {got} under {runner}, not {expected}"),
             Self::NotRefused { runner, probe } => write!(
                 f,
                 "{probe:?} ran under {runner}, which should have refused the settings first"
@@ -144,6 +161,7 @@ impl core::error::Error for Error {
             | Self::Unreported { .. }
             | Self::Erred { .. }
             | Self::Differ { .. }
+            | Self::Unexpected { .. }
             | Self::NotRefused { .. }
             | Self::NoUpstream(_) => None,
         }
@@ -171,6 +189,37 @@ pub fn compare(
     crabpot: &dyn Runner,
 ) -> Result<(), Error> {
     run_probes(case, settings, restore, &[upstream, crabpot])
+}
+
+/// Runs every probe of `case` under `runner` alone, which must give each the
+/// code `expected`. This holds a runner to an answer where there is no second
+/// runner to agree with.
+///
+/// # Errors
+///
+/// [`Error::Unexpected`] for the first probe that gives another code, and
+/// whatever `restore`, serving a socket or the runner returns.
+pub fn expect(
+    case: &Case,
+    settings: &Path,
+    restore: &dyn Fn() -> Result<(), Error>,
+    runner: &dyn Runner,
+    expected: u8,
+) -> Result<(), Error> {
+    for probe in &case.probes {
+        restore()?;
+        let _served = serve(probe, settings)?;
+        let got = code(runner, settings, probe, false)?;
+        if got != expected {
+            return Err(Error::Unexpected {
+                runner: runner.name(),
+                probe: probe.clone(),
+                expected,
+                got,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Runs every probe of `case` under each runner in `runners`, in order. Two of
@@ -375,6 +424,37 @@ pub fn run_case(
 /// a runner that should have refused the settings first.
 pub fn run_upstream_only(text: &str, name: &str, upstream: &dyn Runner) -> Result<bool, Error> {
     run_case_under(text, name, &[upstream])
+}
+
+/// Runs the case file's `text` under `runner` alone, which must give every probe
+/// the code `expected`. See [`expect`].
+///
+/// Reports whether the case ran, as [`run_case`] does.
+///
+/// # Errors
+///
+/// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root, its
+/// files or a served socket cannot be created, and what [`expect`] returns.
+pub fn run_expecting(
+    text: &str,
+    name: &str,
+    runner: &dyn Runner,
+    expected: u8,
+) -> Result<bool, Error> {
+    let mut prepared = Prepared::new(text, name)?;
+    if !prepared.means_here() {
+        return Ok(false);
+    }
+    prepared.start_serving()?;
+    let restore = prepared.restore();
+    expect(
+        &prepared.case,
+        &prepared.settings,
+        &restore,
+        runner,
+        expected,
+    )?;
+    Ok(true)
 }
 
 /// Runs the case file's `text` in a fresh root named after `name` under each

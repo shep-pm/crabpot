@@ -537,3 +537,30 @@ fn a_windows_path_is_spelled_with_forward_slashes_for_upstream() {
         assert_eq!(spell_for_upstream(path), spelled, "{path}");
     }
 }
+
+#[test]
+fn a_runner_alone_must_give_every_probe_the_expected_code() {
+    let expect_with = |answer: fn(&Probe) -> u8| {
+        expect(
+            &case(),
+            Path::new("/r/settings.json"),
+            &|| Ok(()),
+            &StandIn("crabpot", answer),
+            probe::ALLOWED,
+        )
+    };
+
+    expect_with(|_| probe::ALLOWED).unwrap();
+    assert!(matches!(
+        expect_with(|probe| match probe {
+            Probe::Bind => probe::REFUSED,
+            _ => probe::ALLOWED,
+        }),
+        Err(Error::Unexpected {
+            runner: "crabpot",
+            probe: Probe::Bind,
+            expected: probe::ALLOWED,
+            got: probe::REFUSED,
+        })
+    ));
+}

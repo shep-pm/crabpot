@@ -26,6 +26,7 @@
 //! loopback runs only after `windows-install --allow-loopback --force` and with
 //! `CRABPOT_HARNESS_LOOPBACK=open`, and every other case runs only without them.
 
+use crabpot_harness::probe;
 use crabpot_harness::runner::{self, Crabpot, Upstream};
 
 /// The cases that run under crabpot on Linux. Each Linux slice of #99 appends
@@ -117,9 +118,10 @@ const LINUX_READY: &[&str] = &[
 /// `mitm_matching_domain_reaches_the_socket` stays out too: upstream dials the
 /// mitm socket with Node's `net.connect({ path })`, which reads a path on Windows
 /// as a named pipe and not an AF_UNIX socket, so its probe exits 1 where
-/// crabpot's tunnel through the served socket exits 0. It still runs under
-/// upstream alone, against the socket the harness serves. The other two mitm
-/// cases never dial the socket successfully, and pass under both.
+/// crabpot's tunnel through the served socket exits 0. It runs under upstream
+/// alone, and under crabpot alone, held to that 0 by `WINDOWS_CRABPOT_ALONE`.
+/// The other two mitm cases never dial the socket successfully, and pass under
+/// both.
 const WINDOWS_READY: &[&str] = &[
     "default_settings",
     "refused_invalid_json",
@@ -177,6 +179,10 @@ const WINDOWS_READY: &[&str] = &[
     "resolved_address_listed_cidr",
 ];
 
+/// The Windows cases that run under crabpot on its own, because upstream cannot
+/// give the answer to compare with. Each probe must be allowed.
+const WINDOWS_CRABPOT_ALONE: &[&str] = &["mitm_matching_domain_reaches_the_socket"];
+
 /// Whether crabpot runs `name` beside upstream on this platform.
 fn runs_crabpot(name: &str) -> bool {
     if cfg!(target_os = "macos") {
@@ -203,6 +209,11 @@ fn run(name: &str, file: &str) {
     let text = std::fs::read_to_string(&path).unwrap();
     let outcome = if runs_crabpot(name) {
         runner::run_case(&text, name, &upstream, &Crabpot::new(probe))
+    } else if cfg!(windows) && WINDOWS_CRABPOT_ALONE.contains(&name) {
+        runner::run_upstream_only(&text, name, &upstream).and_then(|ran| {
+            let alone = runner::run_expecting(&text, name, &Crabpot::new(probe), probe::ALLOWED)?;
+            Ok(ran && alone)
+        })
     } else {
         runner::run_upstream_only(&text, name, &upstream)
     };

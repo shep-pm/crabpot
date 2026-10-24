@@ -1,0 +1,11 @@
+{
+  "files": {},
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "platforms": ["windows"],
+  "probes": [
+    {"kind": "backslash-argument", "value": "C:\\work\\out.txt", "upstream": 1}
+  ]
+}

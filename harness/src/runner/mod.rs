@@ -97,6 +97,26 @@ pub enum Error {
         /// The code it gave.
         got: u8,
     },
+    /// Upstream gave a probe a code other than the one the case records for it,
+    /// so the difference the case pins is no longer measured.
+    Changed {
+        /// The probe that carries the record.
+        probe: Probe,
+        /// The code the case records for upstream.
+        recorded: u8,
+        /// What upstream gave.
+        upstream: u8,
+    },
+    /// Crabpot gave a probe the code upstream gives, where the case records
+    /// that it differs on purpose.
+    NotDifferent {
+        /// The probe that carries the record.
+        probe: Probe,
+        /// What upstream gave.
+        upstream: u8,
+        /// What crabpot gave.
+        crabpot: u8,
+    },
     /// A runner did not refuse settings the case says are refused: the probe
     /// ran, or left the marker it writes.
     NotRefused {
@@ -143,6 +163,22 @@ impl core::fmt::Display for Error {
                 expected,
                 got,
             } => write!(f, "{probe:?} exited {got} under {runner}, not {expected}"),
+            Self::Changed {
+                probe,
+                recorded,
+                upstream,
+            } => write!(
+                f,
+                "{probe:?} exited {upstream} under upstream, where the case records {recorded}"
+            ),
+            Self::NotDifferent {
+                probe,
+                upstream,
+                crabpot,
+            } => write!(
+                f,
+                "{probe:?} exited {crabpot} under crabpot and {upstream} under upstream, where the case records that they differ"
+            ),
             Self::NotRefused { runner, probe } => write!(
                 f,
                 "{probe:?} ran under {runner}, which should have refused the settings first"
@@ -162,6 +198,8 @@ impl core::error::Error for Error {
             | Self::Erred { .. }
             | Self::Differ { .. }
             | Self::Unexpected { .. }
+            | Self::Changed { .. }
+            | Self::NotDifferent { .. }
             | Self::NotRefused { .. }
             | Self::NoUpstream(_) => None,
         }
@@ -179,8 +217,9 @@ impl core::error::Error for Error {
 /// # Errors
 ///
 /// [`Error::Erred`] for the first probe that exits [`probe::ERROR`] under either
-/// runner, [`Error::Differ`] for the first probe the runners disagree on, and
-/// whatever `restore` or a runner returns.
+/// runner, [`Error::Differ`] for the first probe the runners disagree on,
+/// [`Error::Changed`] and [`Error::NotDifferent`] for a probe that records a
+/// difference and does not show it, and whatever `restore` or a runner returns.
 pub fn compare(
     case: &Case,
     settings: &Path,
@@ -227,6 +266,10 @@ pub fn expect(
 /// its probes must still each report a code, so a runner that cannot run the
 /// probe at all fails the case.
 ///
+/// A probe that records the code upstream gives, where crabpot differs on
+/// purpose, passes a comparison only if upstream gives that code and crabpot
+/// gives another.
+///
 /// A probe that reported a code and still could not tell what the sandbox did
 /// ([`probe::ERROR`]) fails a comparison, which is what a code is for. The
 /// exception is a read of a file the case made: a read deny hides it, so the
@@ -265,6 +308,23 @@ fn run_probes(
             // One runner alone has nothing to agree with.
             continue;
         };
+        if let Some(recorded) = probe.upstream_exit() {
+            if upstream != recorded {
+                return Err(Error::Changed {
+                    probe: probe.clone(),
+                    recorded,
+                    upstream,
+                });
+            }
+            if crabpot == upstream {
+                return Err(Error::NotDifferent {
+                    probe: probe.clone(),
+                    upstream,
+                    crabpot,
+                });
+            }
+            continue;
+        }
         if upstream != crabpot {
             return Err(Error::Differ {
                 probe: probe.clone(),

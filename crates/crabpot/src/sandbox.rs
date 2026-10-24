@@ -524,6 +524,7 @@ impl core::error::Error for WrapError {}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     use super::*;
 
     #[cfg(target_os = "macos")]

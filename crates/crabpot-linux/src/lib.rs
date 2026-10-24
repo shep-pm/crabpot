@@ -34,6 +34,7 @@
 #[cfg(unix)]
 pub mod argv;
 pub mod deps;
+pub mod env;
 pub mod fs;
 #[cfg(unix)]
 pub mod helper;

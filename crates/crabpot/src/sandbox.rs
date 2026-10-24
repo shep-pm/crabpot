@@ -18,6 +18,8 @@ use crabpot_core::config::Config;
 use crabpot_core::proxy::Proxy;
 #[cfg(target_os = "macos")]
 use crabpot_core::proxy::username_for;
+#[cfg(target_os = "linux")]
+use crabpot_linux::env::Facts;
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;
 
@@ -41,7 +43,7 @@ pub struct Sandbox {
     /// long as the command may run, which is until the sandbox drops.
     #[cfg(target_os = "linux")]
     args_files: Mutex<Vec<OwnedFd>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     facts: Facts,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[cfg_attr(
@@ -113,6 +115,7 @@ impl Sandbox {
                 .map_err(StartError::UnresolvedPath)?,
                 helper,
                 args_files: Mutex::new(Vec::new()),
+                facts: Facts::for_sandbox(),
                 proxy,
             })
         }
@@ -139,7 +142,8 @@ impl Sandbox {
     /// On macOS it gains the sandbox's own environment: a name the sandbox owns
     /// is set over the caller's, a name the caller owns is left to it, and the
     /// variables that point its clients at the proxy are set over them. On
-    /// Linux the sandbox sets none yet.
+    /// Linux it gains the sandbox's own `SANDBOX_RUNTIME` and `TMPDIR`, set
+    /// over the caller's.
     ///
     /// # Errors
     ///
@@ -200,6 +204,9 @@ impl Sandbox {
                 .map_err(|e| WrapError::Bwrap(e.to_string()))?;
             let mut wrapped = rendered.command;
             carry_over(command, &mut wrapped);
+            for (name, value) in crabpot_linux::env::vars(&self.facts) {
+                wrapped.env(name, value);
+            }
             if let Some(args_file) = rendered.args_file {
                 self.args_files
                     .lock()
@@ -415,6 +422,38 @@ mod tests {
         assert!(wrapped.get_envs().any(|(name, value)| {
             name == "CALLER" && value.is_some_and(|value| value == "kept")
         }));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wrapped_command_gains_the_sandbox_environment() {
+        let sandbox = match Sandbox::start(&Config::default()) {
+            Ok(sandbox) => sandbox,
+            // The machine has no bwrap to wrap a command in.
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => return,
+            Err(error) => panic!("{error}"),
+        };
+        let mut echo = Command::new("echo");
+        echo.arg("hello").env("TMPDIR", "/caller/tmp");
+
+        let wrapped = sandbox.command(&echo).unwrap();
+        let last = |name: &str| {
+            wrapped
+                .get_envs()
+                .filter(|(key, _)| *key == name)
+                .last()
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned())
+        };
+
+        assert_eq!(last("SANDBOX_RUNTIME").as_deref(), Some("1"));
+        let tmpdir = last("TMPDIR");
+        assert!(tmpdir.is_some(), "the sandbox sets TMPDIR: {tmpdir:?}");
+        assert_ne!(
+            tmpdir.as_deref(),
+            Some("/caller/tmp"),
+            "the sandbox's TMPDIR is set over the caller's: {tmpdir:?}"
+        );
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]

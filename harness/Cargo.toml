@@ -19,5 +19,11 @@ serde_json.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 
+# The kernel probes: sockets by family and a user namespace through nix's safe
+# calls, and `io_uring_setup`, which nix has no form of, through `libc`.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", default-features = false }
+nix = { version = "0.31", default-features = false, features = ["sched", "socket"] }
+
 [lints]
 workspace = true

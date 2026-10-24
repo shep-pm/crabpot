@@ -14,6 +14,8 @@ pub const ERROR: u8 = 2;
 /// What the `probe` binary prints to stdout, before its code, once it has run.
 pub const REPORT: &str = "probe exited ";
 
+#[cfg(target_os = "linux")]
+mod kernel;
 mod socks;
 
 use std::io::{BufRead, BufReader, Write};
@@ -54,7 +56,7 @@ impl core::fmt::Display for Error {
             Self::Usage => f.write_str(
                 "usage: probe read <path> | write <path> | rename <from> <to> | connect <host> \
                  <port> [--via socks5] | bind | bind-unix <path> | connect-unix <path> | loopback \
-                 | signal-group | ps",
+                 | signal-group | ps | socket <unix|vsock> | io-uring-setup | unshare-user",
             ),
             Self::BadProxy => f.write_str("HTTP_PROXY is not an http:// URL with a host"),
             Self::BadSocksProxy => {
@@ -119,6 +121,12 @@ fn attempt(args: &[String], http_proxy: Option<&str>, socks_proxy: Option<&str>)
         ["signal-group"] => signal_group(),
         #[cfg(unix)]
         ["ps"] => ps(),
+        #[cfg(target_os = "linux")]
+        ["socket", family] => kernel::socket(family),
+        #[cfg(target_os = "linux")]
+        ["io-uring-setup"] => kernel::io_uring_setup(),
+        #[cfg(target_os = "linux")]
+        ["unshare-user"] => kernel::unshare_user(),
         _ => Err(Error::Usage),
     }
 }
@@ -709,6 +717,21 @@ mod tests {
     fn signal_group_and_ps_exit_0_unsandboxed() {
         assert_eq!(probe(&["signal-group"]), 0);
         assert_eq!(probe(&["ps"]), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_kernel_probe_given_the_wrong_words_exits_2() {
+        assert_eq!(probe(&["socket"]), 2);
+        assert_eq!(probe(&["socket", "inet"]), 2);
+        assert_eq!(probe(&["io-uring-setup", "extra"]), 2);
+        assert_eq!(probe(&["unshare-user", "extra"]), 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_unix_socket_is_made_unsandboxed() {
+        assert_eq!(probe(&["socket", "unix"]), 0);
     }
 
     #[test]

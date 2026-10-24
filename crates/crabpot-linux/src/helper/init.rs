@@ -2,7 +2,9 @@
 //!
 //! A port of the namespace half of upstream's `apply-seccomp.c`. A process the
 //! command starts cannot see or signal one outside the namespace, and its
-//! `/proc` lists only the sandbox's. No filter is installed here yet.
+//! `/proc` lists only the sandbox's. The command also runs with both seccomp
+//! filters installed, so it cannot make a socket of the kinds they refuse or
+//! leave the namespaces.
 //!
 //! Three processes take part. The helper that bwrap runs unshares the
 //! namespaces and waits, outside them. Its child is PID 1 inside: it prepares
@@ -20,11 +22,12 @@ use nix::errno::Errno;
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, unshare};
 use nix::sys::prctl;
-use nix::sys::signal::{SigSet, Signal};
+use nix::sys::signal::{SigSet, Signal, kill};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, getgid, getuid};
 
-use super::exec::{ExecError, exec};
+use super::exec::ExecError;
+use super::filters;
 use super::relay;
 use super::sys;
 
@@ -65,9 +68,22 @@ pub fn init(relay: Option<&Path>, argv: &[OsString]) -> Result<i32, InitError> {
     // children take over, whatever the namespaces hold.
     set_dumpable()?;
     match fork_forwarding()? {
-        ForkResult::Parent { child } => Ok(reap_until(child)),
+        ForkResult::Parent { child } => {
+            confine_outer(child)?;
+            Ok(reap_until(child))
+        }
         ForkResult::Child => namespace_init(argv, own_user_namespace),
     }
+}
+
+/// Installs the `namespaces` filter on the helper that stays outside the
+/// namespaces, after the fork: the child needs the calls the filter refuses.
+/// Should the install fail, the namespace's init is killed, and with it
+/// everything in the namespace, since it may already be running the command.
+fn confine_outer(child: Pid) -> Result<(), InitError> {
+    filters::install_namespaces().inspect_err(|_| {
+        let _ = kill(child, Signal::SIGKILL);
+    })
 }
 
 /// Unshares the PID and mount namespaces. A process without `CAP_SYS_ADMIN` is
@@ -139,7 +155,7 @@ fn namespace_init(argv: &[OsString], own_user_namespace: bool) -> Result<i32, In
         ForkResult::Child => {
             // The mask would outlive the `exec`.
             unblock_forwarded()?;
-            Err(InitError::Exec(exec(argv)))
+            Err(filters::exec_confined(argv))
         }
     }
 }
@@ -254,6 +270,9 @@ pub enum InitError {
     /// The relay for the sandbox's proxy ports did not start: it could not
     /// listen, or ended first.
     Relay(String),
+    /// A seccomp filter could not be built or installed, so the command was not
+    /// run. Holds the reason, which names the filter.
+    Filter(String),
     /// The command could not be started in the namespace.
     Exec(ExecError),
 }
@@ -271,6 +290,7 @@ impl fmt::Display for InitError {
             Self::Step { step, reason } => write!(f, "cannot {step}: {reason}"),
             Self::Map { path, reason } => write!(f, "cannot write {path}: {reason}"),
             Self::Relay(reason) => write!(f, "cannot start the relay: {reason}"),
+            Self::Filter(reason) => f.write_str(reason),
             Self::Exec(error) => fmt::Display::fmt(error, f),
         }
     }

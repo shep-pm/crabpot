@@ -1,5 +1,5 @@
 //! The seccomp filters the helper installs before it execs the command, built
-//! per architecture and installed by nobody here (ADR-0014).
+//! per architecture here and installed by [`crate::helper`] (ADR-0014).
 //!
 //! Upstream's `seccomp-unix-block.c` makes two filters with libseccomp, and the
 //! rules here are its rules:
@@ -44,6 +44,19 @@ pub enum Arch {
 }
 
 impl Arch {
+    /// The architecture this process runs on, or `None` where no filter is
+    /// built.
+    #[must_use]
+    pub const fn host() -> Option<Self> {
+        if cfg!(target_arch = "x86_64") {
+            Some(Self::X86_64)
+        } else if cfg!(target_arch = "aarch64") {
+            Some(Self::Aarch64)
+        } else {
+            None
+        }
+    }
+
     fn target(self) -> TargetArch {
         match self {
             Self::X86_64 => TargetArch::x86_64,

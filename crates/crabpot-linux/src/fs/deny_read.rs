@@ -14,13 +14,57 @@ use std::path::PathBuf;
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
 
+use super::Draft;
 use super::glob_walk::{self, KERNEL_MOUNTS};
 
-pub(super) fn words(config: &Config) -> Result<Vec<OsString>, PathError> {
-    Ok(collapse(located(config)?)
+/// One mount over a path: a mask of a denied one, or the bind of a host path
+/// back over what a mask hid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Mount {
+    /// Where it lands.
+    pub(super) path: PathBuf,
+    /// Whether the path is a directory.
+    pub(super) is_dir: bool,
+    /// A read-only bind of the host path, where `allowRead` opens it again.
+    pub(super) reopened: bool,
+}
+
+impl Mount {
+    /// A tmpfs over a denied directory, else `/dev/null` over a denied file.
+    pub(super) fn mask(path: PathBuf, is_dir: bool) -> Self {
+        Self {
+            path,
+            is_dir,
+            reopened: false,
+        }
+    }
+
+    /// The words that make the mount.
+    pub(super) fn words(&self) -> Vec<OsString> {
+        let path = self.path.clone().into_os_string();
+        if self.reopened {
+            vec!["--ro-bind".into(), path.clone(), path]
+        } else if self.is_dir {
+            vec!["--tmpfs".into(), path]
+        } else {
+            vec!["--ro-bind".into(), "/dev/null".into(), path]
+        }
+    }
+}
+
+pub(super) fn words(config: &Config, draft: &mut Draft) -> Result<Vec<OsString>, PathError> {
+    let mounts = collapse(located(config)?)
         .into_iter()
-        .flat_map(|(path, is_dir)| mount(path, is_dir))
-        .collect())
+        .map(|(path, is_dir)| Mount::mask(path, is_dir))
+        .collect::<Vec<_>>();
+    let words = mounts.iter().flat_map(Mount::words).collect();
+    draft.protected.extend(
+        mounts
+            .iter()
+            .filter_map(|mount| mount.path.to_str().map(str::to_owned)),
+    );
+    draft.read_mounts = mounts;
+    Ok(words)
 }
 
 /// The located paths of `config`'s `denyRead`, each with whether it is a
@@ -65,12 +109,4 @@ pub(super) fn collapse(found: BTreeMap<PathBuf, bool>) -> Vec<(PathBuf, bool)> {
         }
     }
     kept
-}
-
-pub(super) fn mount(path: PathBuf, is_dir: bool) -> Vec<OsString> {
-    if is_dir {
-        vec!["--tmpfs".into(), path.into_os_string()]
-    } else {
-        vec!["--ro-bind".into(), "/dev/null".into(), path.into_os_string()]
-    }
 }

@@ -4,6 +4,7 @@ mod address;
 pub mod config;
 pub mod dangerous;
 mod domain;
+pub mod env;
 mod glob;
 mod path;
 mod path_entries;

@@ -36,6 +36,29 @@ fn the_helper_runs_the_command_and_passes_its_exit_status() {
 }
 
 #[test]
+fn the_command_sees_the_sandbox_environment() {
+    // `CLAUDE_CODE_TMPDIR` is pinned so the temp folder the command is handed
+    // is known whatever the runner carries.
+    let output = Command::new(CRABPOT)
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("CLAUDE_CODE_TMPDIR", "/tmp/claude-integration")
+        .args([
+            "--",
+            "sh",
+            "-c",
+            r#"printf '%s\n' "$SANDBOX_RUNTIME" "$TMPDIR""#,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1\n/tmp/claude-integration\n"
+    );
+}
+
+#[test]
 fn the_helper_passes_its_arguments_untouched() {
     let args = ["-d", "--", "--crabpot", "--crabpot-helper", "a b", ""];
     let mut helper = vec![

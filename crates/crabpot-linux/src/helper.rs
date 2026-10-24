@@ -9,8 +9,12 @@
 //! [`exec`] runs the command and does nothing else. On Linux, `init` puts the
 //! command in a PID and mount namespace of its own first, as PID 1's child. When
 //! it is given the proxy's socket, it forks the relay for the network namespace
-//! before that, and waits for the relay to listen.
+//! before that, and waits for the relay to listen. The `connect` mode is the
+//! other way the binary is re-entered: a sandboxed ssh starts it for its
+//! `ProxyCommand`.
 
+#[cfg(target_os = "linux")]
+mod connect;
 mod exec;
 #[cfg(target_os = "linux")]
 mod init;
@@ -19,6 +23,8 @@ mod relay;
 #[cfg(target_os = "linux")]
 mod sys;
 
+#[cfg(target_os = "linux")]
+pub use connect::{ConnectError, connect};
 pub use exec::{ExecError, exec};
 #[cfg(target_os = "linux")]
 pub use init::{InitError, Step, init};

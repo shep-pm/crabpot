@@ -38,7 +38,8 @@ pub(crate) enum HelperMode {
     Init,
     /// Relays a TCP port to the proxy's Unix socket.
     Relay,
-    /// Connects standard input and output to the proxy's Unix socket.
+    /// Connects standard input and output to the proxy, through the relay port
+    /// inside the sandbox. This is ssh's `ProxyCommand` hop.
     Connect,
 }
 
@@ -411,6 +412,17 @@ mod tests {
             split_relay(&args),
             (None, &args[..]),
             "a flag with no socket is a command's name"
+        );
+    }
+
+    /// The Linux half spells the re-entry into the `connect` mode for ssh's
+    /// `ProxyCommand`, and this is the reader of it: the two spellings are one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_connect_mode_is_spelled_as_the_parser_reads_it() {
+        assert_eq!(
+            crabpot_linux::net::ssh::CONNECT_REENTRY,
+            format!("{HELPER_FLAG} {}", HelperMode::Connect.word())
         );
     }
 

@@ -20,7 +20,7 @@ use tokio::signal::unix::{SignalKind, signal};
 #[cfg(unix)]
 use tokio::task::JoinHandle;
 
-use crate::args::{self, Helper, HelperMode, Invocation, Subcommand};
+use crate::args::{self, Helper, HelperMode, Invocation, SRT_WIN_FLAG, Subcommand};
 use crate::sandbox::Sandbox;
 use crate::windows::install::{self, Machine};
 
@@ -70,7 +70,7 @@ enum Route {
 
 fn route(first: Option<&OsStr>) -> Option<Route> {
     match first {
-        Some(arg) if arg == "--srt-win" => Some(Route::SrtWin),
+        Some(arg) if arg == SRT_WIN_FLAG => Some(Route::SrtWin),
         Some(arg) if arg == "--crabpot" => Some(Route::Crabpot),
         _ => None,
     }

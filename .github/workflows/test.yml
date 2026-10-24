@@ -129,6 +129,11 @@ jobs:
       # relies on when it relaunches its own executable.
       - name: crabpot routes the --srt-win argument
         run: cargo test --locked -p crabpot --lib -- srt_win crabpot_as_first
+      # No install has run on this job, so `windows_status()` has to read the
+      # not-provisioned state off real srt-win output. The test has no libtest
+      # harness: it is its own host for the `--srt-win` relaunch.
+      - name: windows_status reads a machine with no install
+        run: cargo test --locked -p crabpot --test windows_status
       - name: crabpot --srt-win --help prints srt-win's usage
         run: |
           $out = cargo run --quiet --locked -p crabpot -- --srt-win --help 2>&1 | Out-String

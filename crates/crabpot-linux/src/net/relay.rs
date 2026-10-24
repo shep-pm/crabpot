@@ -19,6 +19,12 @@ use nix::sys::socket::{
 /// How many connections may wait to be accepted, as upstream's `backlog=4096`.
 const BACKLOG: i32 = 4096;
 
+/// [`BACKLOG`], or the most the system names when that is less: nix refuses a
+/// value above `SOMAXCONN`, which is 128 on macOS, where the unit tests run.
+fn backlog() -> Backlog {
+    Backlog::new(BACKLOG).unwrap_or(Backlog::MAXCONN)
+}
+
 /// How long an accept that failed waits before the next, so a descriptor limit
 /// does not spin the relay.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
@@ -56,7 +62,7 @@ fn listen_on(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
             &SockaddrIn::from(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
         )?;
     }
-    listen(&fd, Backlog::new(BACKLOG)?)?;
+    listen(&fd, backlog())?;
     Ok(fd)
 }
 
@@ -141,6 +147,13 @@ mod tests {
         let mut answer = Vec::new();
         client.read_to_end(&mut answer).unwrap();
         answer
+    }
+
+    #[test]
+    fn the_backlog_is_the_largest_the_system_takes() {
+        let wanted = BACKLOG.min(i32::from(Backlog::MAXCONN));
+
+        assert_eq!(i32::from(backlog()), wanted);
     }
 
     #[test]

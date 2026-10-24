@@ -29,7 +29,6 @@ use serde_json::Value;
 
 use crate::case::{self, Case, Platform, Probe};
 use crate::probe;
-#[cfg(unix)]
 use crate::serve;
 
 /// Something that runs one probe in a sandbox and reports the probe's exit code.
@@ -86,6 +85,17 @@ pub enum Error {
         upstream: u8,
         /// What crabpot gave.
         crabpot: u8,
+    },
+    /// A runner alone gave a probe a code other than the one the case is held to.
+    Unexpected {
+        /// The runner that ran it.
+        runner: &'static str,
+        /// The probe that gave another code.
+        probe: Probe,
+        /// The code the probe had to give.
+        expected: u8,
+        /// The code it gave.
+        got: u8,
     },
     /// Upstream gave a probe a code other than the one the case records for it,
     /// so the difference the case pins is no longer measured.
@@ -147,6 +157,12 @@ impl core::fmt::Display for Error {
                     "{probe:?} exited {upstream} under upstream and {crabpot} under crabpot"
                 )
             }
+            Self::Unexpected {
+                runner,
+                probe,
+                expected,
+                got,
+            } => write!(f, "{probe:?} exited {got} under {runner}, not {expected}"),
             Self::Changed {
                 probe,
                 recorded,
@@ -181,6 +197,7 @@ impl core::error::Error for Error {
             | Self::Unreported { .. }
             | Self::Erred { .. }
             | Self::Differ { .. }
+            | Self::Unexpected { .. }
             | Self::Changed { .. }
             | Self::NotDifferent { .. }
             | Self::NotRefused { .. }
@@ -211,6 +228,37 @@ pub fn compare(
     crabpot: &dyn Runner,
 ) -> Result<(), Error> {
     run_probes(case, settings, restore, &[upstream, crabpot])
+}
+
+/// Runs every probe of `case` under `runner` alone, which must give each the
+/// code `expected`. This holds a runner to an answer where there is no second
+/// runner to agree with.
+///
+/// # Errors
+///
+/// [`Error::Unexpected`] for the first probe that gives another code, and
+/// whatever `restore`, serving a socket or the runner returns.
+pub fn expect(
+    case: &Case,
+    settings: &Path,
+    restore: &dyn Fn() -> Result<(), Error>,
+    runner: &dyn Runner,
+    expected: u8,
+) -> Result<(), Error> {
+    for probe in &case.probes {
+        restore()?;
+        let _served = serve(probe, settings)?;
+        let got = code(runner, settings, probe, false)?;
+        if got != expected {
+            return Err(Error::Unexpected {
+                runner: runner.name(),
+                probe: probe.clone(),
+                expected,
+                got,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Runs every probe of `case` under each runner in `runners`, in order. Two of
@@ -438,6 +486,37 @@ pub fn run_upstream_only(text: &str, name: &str, upstream: &dyn Runner) -> Resul
     run_case_under(text, name, &[upstream])
 }
 
+/// Runs the case file's `text` under `runner` alone, which must give every probe
+/// the code `expected`. See [`expect`].
+///
+/// Reports whether the case ran, as [`run_case`] does.
+///
+/// # Errors
+///
+/// [`Error::Case`] when `text` is not a case, [`Error::Io`] when the root, its
+/// files or a served socket cannot be created, and what [`expect`] returns.
+pub fn run_expecting(
+    text: &str,
+    name: &str,
+    runner: &dyn Runner,
+    expected: u8,
+) -> Result<bool, Error> {
+    let mut prepared = Prepared::new(text, name)?;
+    if !prepared.means_here() {
+        return Ok(false);
+    }
+    prepared.start_serving()?;
+    let restore = prepared.restore();
+    expect(
+        &prepared.case,
+        &prepared.settings,
+        &restore,
+        runner,
+        expected,
+    )?;
+    Ok(true)
+}
+
 /// Runs the case file's `text` in a fresh root named after `name` under each
 /// runner in `runners`, which is the whole comparison for two of them and one
 /// runner's own run for one.
@@ -458,7 +537,6 @@ struct Prepared {
     settings: PathBuf,
     /// Served for the run, and stopped by [`Prepared`]'s `Drop` before the root
     /// is removed, on every way out of the run.
-    #[cfg(unix)]
     served: Option<serve::Served>,
 }
 
@@ -477,19 +555,15 @@ impl Prepared {
             root,
             case,
             settings,
-            #[cfg(unix)]
             served: None,
         })
     }
 
-    /// Starts whatever socket the case asks the harness to serve, which only a
-    /// case that means this platform needs.
+    /// Starts whatever socket the case asks the harness to serve.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the socket cannot be served, or, off Unix, when the
-    /// case asks for one.
-    #[cfg(unix)]
+    /// [`Error::Io`] when the socket cannot be served.
     fn start_serving(&mut self) -> Result<(), Error> {
         self.served = self
             .case
@@ -499,18 +573,6 @@ impl Prepared {
             .transpose()
             .map_err(Error::Io)?;
         Ok(())
-    }
-
-    /// Starts nothing: there is no socket to serve off Unix.
-    #[cfg(not(unix))]
-    fn start_serving(&mut self) -> Result<(), Error> {
-        match self.case.serve {
-            None => Ok(()),
-            Some(_) => Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "the harness serves no Unix socket on this platform",
-            ))),
-        }
     }
 
     /// Whether the case means the platform this harness runs on, and, on
@@ -549,7 +611,6 @@ impl Prepared {
     fn run(&self, runners: &[&dyn Runner]) -> Result<(), Error> {
         // The socket the case asked the harness to serve stays served for the
         // whole run, and no probe of the case itself may hold it.
-        #[cfg(unix)]
         let _served = &self.served;
         let restore = self.restore();
         if self.case.refused {
@@ -560,7 +621,6 @@ impl Prepared {
     }
 }
 
-#[cfg(unix)]
 impl Drop for Prepared {
     /// Stops the served socket before any field drops, which is the order the
     /// run needs on every way out of it, a panic's unwinding included. The

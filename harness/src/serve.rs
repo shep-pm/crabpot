@@ -1,15 +1,58 @@
 //! The peer a case serves for its probes to reach: a Unix socket that answers
 //! the request head it is given with the status the case names, and echoes what
-//! follows it.
+//! follows it. On Windows the socket is an AF_UNIX one through Winsock.
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+#[cfg(unix)]
+mod peer {
+    use std::io;
+    use std::path::Path;
+
+    pub(super) use std::os::unix::net::{UnixListener as Listener, UnixStream as Stream};
+
+    pub(super) fn bind(path: &Path) -> io::Result<Listener> {
+        Listener::bind(path)
+    }
+
+    pub(super) fn accept(listener: &Listener) -> io::Result<Stream> {
+        listener.accept().map(|(stream, _)| stream)
+    }
+
+    pub(super) fn connect(path: &Path) -> io::Result<Stream> {
+        Stream::connect(path)
+    }
+}
+
+#[cfg(windows)]
+mod peer {
+    use std::io;
+    use std::path::Path;
+
+    pub(super) use std::net::TcpStream as Stream;
+
+    pub(super) use crate::winsock::Listener;
+
+    pub(super) fn bind(path: &Path) -> io::Result<Listener> {
+        Listener::bind(path)
+    }
+
+    pub(super) fn accept(listener: &Listener) -> io::Result<Stream> {
+        listener.accept()
+    }
+
+    pub(super) fn connect(path: &Path) -> io::Result<Stream> {
+        crate::winsock::connect_unix(path)
+    }
+}
+
+use peer::Stream;
 
 /// How long a served connection may go quiet before the harness drops it, which
 /// bounds how long dropping a server can wait on one that will not close.
@@ -36,7 +79,7 @@ impl Served {
     /// serves it.
     pub fn start(socket: &Path, status: &str) -> Result<Self, io::Error> {
         let _ = fs::remove_file(socket);
-        let listener = UnixListener::bind(socket)?;
+        let listener = peer::bind(socket)?;
         let running = Arc::new(AtomicBool::new(true));
         let serving = Arc::clone(&running);
         let answer = status.to_owned();
@@ -44,8 +87,8 @@ impl Served {
             .name("crabpot-harness-serve".to_owned())
             .spawn(move || {
                 while serving.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((stream, _)) => serve(stream, &answer),
+                    match peer::accept(&listener) {
+                        Ok(stream) => serve(stream, &answer),
                         Err(_) => break,
                     }
                 }
@@ -62,7 +105,7 @@ impl Drop for Served {
     fn drop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
         // A connect, closed at once, is what ends the accept the thread waits in.
-        let _ = UnixStream::connect(&self.socket);
+        let _ = peer::connect(&self.socket);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -71,7 +114,7 @@ impl Drop for Served {
 
 /// One connection: read the request head, answer it, then echo what the peer
 /// sends, including what it sent in the same packet as the head.
-fn serve(mut stream: UnixStream, status: &str) {
+fn serve(mut stream: Stream, status: &str) {
     let _ = stream.set_read_timeout(Some(PATIENCE));
     let mut buf = [0u8; 4096];
     let mut head = Vec::new();
@@ -137,7 +180,7 @@ mod tests {
         let socket = fixture.socket();
         let served = Served::start(&socket, "200 Connection Established").unwrap();
 
-        let mut client = UnixStream::connect(&socket).unwrap();
+        let mut client = peer::connect(&socket).unwrap();
         client.set_read_timeout(Some(PATIENCE)).unwrap();
         client
             .write_all(b"CONNECT example.com:443 HTTP/1.1\r\n\r\npayload")
@@ -157,7 +200,7 @@ mod tests {
 
         drop(served);
         assert!(
-            UnixStream::connect(&socket).is_err(),
+            peer::connect(&socket).is_err(),
             "the socket is served no more"
         );
     }
@@ -168,7 +211,7 @@ mod tests {
         let socket = fixture.socket();
         let served = Served::start(&socket, "200 Connection Established").unwrap();
 
-        let mut client = UnixStream::connect(&socket).unwrap();
+        let mut client = peer::connect(&socket).unwrap();
         client.set_read_timeout(Some(PATIENCE * 4)).unwrap();
         client
             .write_all(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")

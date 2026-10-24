@@ -125,14 +125,20 @@ struct ProfileJson {
     state: String,
 }
 
-/// Reads the status through `run`, which runs one srt-win query and returns
-/// what it printed.
+/// Reads the status through `run`, which runs one srt-win query with the
+/// arguments after it and returns what it printed. `sublayer` is the WFP
+/// sublayer the filters were installed under, when it is not the default.
 pub(crate) fn read(
-    run: impl Fn(&'static str) -> Result<String, StartError>,
+    sublayer: Option<&str>,
+    run: impl Fn(&'static str, &[&str]) -> Result<String, StartError>,
 ) -> Result<WindowsStatus, StartError> {
-    let user: UserJson = parse("user status", &run)?;
-    let wfp: WfpJson = parse("wfp status", &run)?;
-    let profile: ProfileJson = parse("profile status", &run)?;
+    let user: UserJson = parse("user status", &[], &run)?;
+    let wfp_args: Vec<&str> = sublayer
+        .into_iter()
+        .flat_map(|guid| ["--sublayer-guid", guid])
+        .collect();
+    let wfp: WfpJson = parse("wfp status", &wfp_args, &run)?;
+    let profile: ProfileJson = parse("profile status", &[], &run)?;
     let provisioned =
         user.user.exists && user.cred_present && user.marker_version == Some(user.setup_version);
     Ok(WindowsStatus {
@@ -171,9 +177,10 @@ pub(crate) fn read(
 /// Runs `command` through `run` and reads what it printed as `T`.
 fn parse<T: for<'de> Deserialize<'de>>(
     command: &'static str,
-    run: &impl Fn(&'static str) -> Result<String, StartError>,
+    args: &[&str],
+    run: &impl Fn(&'static str, &[&str]) -> Result<String, StartError>,
 ) -> Result<T, StartError> {
-    serde_json::from_str(&run(command)?).map_err(|_| StartError::StatusFailed {
+    serde_json::from_str(&run(command, args)?).map_err(|_| StartError::StatusFailed {
         command,
         code: None,
     })
@@ -181,6 +188,8 @@ fn parse<T: for<'de> Deserialize<'de>>(
 
 #[cfg(test)]
 mod tests {
+    use core::cell::RefCell;
+
     use super::*;
 
     const PROVISIONED: &str = r#"{
@@ -196,9 +205,9 @@ mod tests {
     const PROFILE: &str = r#"{"state":"current","record_version":1}"#;
 
     /// A srt-win whose three queries print what it is given.
-    fn fake(user: &str, wfp: &str) -> impl Fn(&'static str) -> Result<String, StartError> {
+    fn fake(user: &str, wfp: &str) -> impl Fn(&'static str, &[&str]) -> Result<String, StartError> {
         let (user, wfp) = (user.to_owned(), wfp.to_owned());
-        move |command| match command {
+        move |command, _| match command {
             "user status" => Ok(user.clone()),
             "wfp status" => Ok(wfp.clone()),
             "profile status" => Ok(PROFILE.to_owned()),
@@ -208,7 +217,7 @@ mod tests {
 
     #[test]
     fn user_status_json_maps_to_the_state() {
-        let status = read(fake(PROVISIONED, WFP)).unwrap();
+        let status = read(None, fake(PROVISIONED, WFP)).unwrap();
 
         assert_eq!(status.user, UserState::Provisioned);
         assert_eq!(status.sandbox_sid.as_deref(), Some("S-1-5-21-1"));
@@ -229,7 +238,7 @@ mod tests {
     fn setup_version_mismatch_is_reported_not_provisioned() {
         let older = PROVISIONED.replace(r#""marker_version": 3"#, r#""marker_version": 2"#);
 
-        let status = read(fake(&older, WFP)).unwrap();
+        let status = read(None, fake(&older, WFP)).unwrap();
 
         assert_eq!(status.user, UserState::NotProvisioned);
         assert_eq!(
@@ -249,7 +258,7 @@ mod tests {
             "seclogon": "disabled"}"#;
         let absent = r#"{"state":"absent","filters":0,"allow_loopback":true}"#;
 
-        let status = read(fake(none, absent)).unwrap();
+        let status = read(None, fake(none, absent)).unwrap();
 
         assert_eq!(status.user, UserState::NotProvisioned);
         assert_eq!(status.setup_version.installed, None);
@@ -268,7 +277,7 @@ mod tests {
 
     #[test]
     fn the_port_range_comes_from_wfp_status() {
-        let status = read(fake(PROVISIONED, WFP)).unwrap();
+        let status = read(None, fake(PROVISIONED, WFP)).unwrap();
 
         assert_eq!(status.proxy_ports, Some(3128..=3130));
     }
@@ -280,14 +289,35 @@ mod tests {
             r#""session_user_sid": "S-1-5-21-9""#,
         );
 
-        let status = read(fake(&runas, WFP)).unwrap();
+        let status = read(None, fake(&runas, WFP)).unwrap();
 
         assert!(!status.in_desktop_session);
     }
 
     #[test]
+    fn the_sublayer_reaches_wfp_status_alone() {
+        let asked = RefCell::new(Vec::new());
+        let guid = "0f4b1c2d-0000-4000-8000-000000000001";
+
+        read(Some(guid), |command, args| {
+            asked.borrow_mut().push((command, args.join(" ")));
+            fake(PROVISIONED, WFP)(command, args)
+        })
+        .unwrap();
+
+        assert_eq!(
+            asked.into_inner(),
+            [
+                ("user status", String::new()),
+                ("wfp status", format!("--sublayer-guid {guid}")),
+                ("profile status", String::new()),
+            ]
+        );
+    }
+
+    #[test]
     fn output_that_is_not_json_is_a_failed_query() {
-        let error = read(fake("not json", WFP)).unwrap_err();
+        let error = read(None, fake("not json", WFP)).unwrap_err();
 
         assert_eq!(
             error,

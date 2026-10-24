@@ -76,7 +76,7 @@ impl Sandbox {
     /// binary is unknown. A `bwrap` older than 0.5.0 is a warning on stderr.
     /// [`StartError::UnspellableDeny`] names a mandatory write deny the plan
     /// cannot spell, which is a Linux answer too. On Windows the status checks
-    /// of [`windows_preflight`](crate::windows_preflight) run first, then
+    /// of [`windows_preflight_for`](crate::windows_preflight_for) run first, then
     /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
     /// none nor current, [`StartError::GrantFailed`] when the session's grants
     /// cannot be made, and [`StartError::LoopbackMismatch`],

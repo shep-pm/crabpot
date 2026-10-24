@@ -12,7 +12,8 @@
 //! built, and none is left at parity.
 //!
 //! On Linux [`LINUX_PATHS`] joins it: the keys that tune the bwrap and seccomp
-//! path upstream runs there, and crabpot's own does not read.
+//! path upstream runs there, and crabpot's own does not read. On Windows
+//! [`WINDOWS_IGNORED`] leaves it: the keys upstream's Windows path never reads.
 
 use serde_json::Value;
 
@@ -53,6 +54,20 @@ pub(super) const PATHS: &[&str] = &[
     // Directories git is told are safe through `GIT_CONFIG_*`.
     "git.safeDirectories",
 ];
+
+/// The keys of [`PATHS`] that upstream's Windows path never reads: the macOS
+/// profile and the JVM agent are the only places they act. They are accepted and
+/// ignored on Windows, and refused everywhere else.
+///
+/// `network.allowAllUnixSockets` is not here. Upstream ignores it on Windows
+/// too, but ADR-0013 keeps it refused on every platform, so a config that lifts
+/// the rule on macOS or Linux does not load on Windows with the rule unlifted.
+pub(super) const WINDOWS_IGNORED: &[&str] = &["allowPty", "allowAppleEvents", "javaAgentJarPath"];
+
+/// The keys of [`PATHS`] this build accepts and ignores.
+pub(super) const fn ignored_here() -> &'static [&'static str] {
+    if cfg!(windows) { WINDOWS_IGNORED } else { &[] }
+}
 
 /// Dotted paths only Linux refuses, since upstream applies each there and
 /// ignores it on macOS.
@@ -161,13 +176,19 @@ pub(super) fn check_shapes(settings: &Value) -> Result<(), ConfigError> {
 }
 
 /// Refuses `settings` when a key in [`PATHS`], or on Linux in [`LINUX_PATHS`],
-/// asks for something.
+/// asks for something, and the key is not one this build ignores.
 pub(super) fn refuse(settings: &Value) -> Result<(), ConfigError> {
+    refuse_ignoring(settings, ignored_here())
+}
+
+/// [`refuse`], with the keys in `ignored` accepted whatever they ask.
+pub(super) fn refuse_ignoring(settings: &Value, ignored: &[&str]) -> Result<(), ConfigError> {
     for &key in PATHS.iter().chain(LINUX_PATHS) {
-        if key
-            .split('.')
-            .try_fold(settings, |at, part| at.get(part))
-            .is_some_and(asks)
+        if !ignored.contains(&key)
+            && key
+                .split('.')
+                .try_fold(settings, |at, part| at.get(part))
+                .is_some_and(asks)
         {
             return Err(ConfigError::Unsupported { key });
         }

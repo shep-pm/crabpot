@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 
 use super::*;
 
+mod windows;
+
 /// A settings file that sets only what upstream's schema requires.
 fn minimal() -> Value {
     json!({
@@ -12,6 +14,10 @@ fn minimal() -> Value {
 
 /// `minimal()` with the key at the dotted `path` set to `value`.
 fn with(path: &str, value: Value) -> String {
+    settings_with(path, value).to_string()
+}
+
+fn settings_with(path: &str, value: Value) -> Value {
     let mut settings = minimal();
     let mut at = &mut settings;
     let mut keys = path.split('.').peekable();
@@ -23,7 +29,7 @@ fn with(path: &str, value: Value) -> String {
         }
         at = fields.entry(key).or_insert_with(|| json!({}));
     }
-    settings.to_string()
+    settings
 }
 
 #[test]
@@ -71,9 +77,18 @@ const LINUX_ASKING: &[(&str, &str)] = &[
 #[cfg(not(target_os = "linux"))]
 const LINUX_ASKING: &[(&str, &str)] = &[];
 
+/// `minimal()` with `path` set to what [`ASKING`] gives it.
+fn asking(path: &str) -> Value {
+    let (_, value) = ASKING.iter().find(|(asked, _)| *asked == path).unwrap();
+    settings_with(path, serde_json::from_str(value).unwrap())
+}
+
 #[test]
 fn each_unsupported_key_is_refused_naming_its_path() {
-    for (path, value) in ASKING {
+    for (path, value) in ASKING
+        .iter()
+        .filter(|(path, _)| !unsupported::ignored_here().contains(path))
+    {
         let value: Value = serde_json::from_str(value).unwrap();
 
         assert_eq!(
@@ -167,7 +182,7 @@ fn an_unknown_key_is_dropped() {
 
 #[cfg(not(target_os = "linux"))]
 #[test]
-fn a_key_upstream_ignores_on_macos_is_accepted_and_ignored() {
+fn a_key_ignored_on_macos_is_unchanged() {
     for (path, value) in [
         ("bwrapPath", json!("/usr/bin/bwrap")),
         ("socatPath", json!("/usr/bin/socat")),
@@ -175,12 +190,71 @@ fn a_key_upstream_ignores_on_macos_is_accepted_and_ignored() {
         ("mandatoryDenySearchDepth", json!(5)),
         ("enableWeakerNestedSandbox", json!(true)),
         ("allowNestedUserNamespaces", json!(true)),
-        ("windows", json!({"sandboxUser": "srt"})),
         ("ripgrep", json!({"command": "rg"})),
     ] {
         assert_eq!(
             Config::from_json(&with(path, value)),
             Ok(Config::default()),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn the_macos_list_refuses_every_key_the_windows_list_ignores() {
+    for path in unsupported::WINDOWS_IGNORED {
+        let settings = asking(path);
+
+        assert_eq!(
+            unsupported::refuse_ignoring(&settings, &[]),
+            Err(ConfigError::Unsupported { key: path }),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_key_upstream_ignores_on_windows_is_accepted_and_ignored() {
+    let kelpie = [
+        ("network.allowUnixSockets", json!(["/tmp/s"])),
+        ("network.allowMachLookup", json!(["com.apple.trustd"])),
+        ("enableWeakerNetworkIsolation", json!(true)),
+    ]
+    .map(|(path, value)| (path, settings_with(path, value)));
+    let upstream = unsupported::WINDOWS_IGNORED
+        .iter()
+        .map(|path| (*path, asking(path)));
+
+    for (path, settings) in kelpie.into_iter().chain(upstream) {
+        assert_eq!(
+            unsupported::refuse_ignoring(&settings, unsupported::WINDOWS_IGNORED),
+            Ok(()),
+            "{path}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn on_windows_the_ignored_keys_load() {
+    for path in unsupported::WINDOWS_IGNORED {
+        let loaded = Config::from_json(&asking(path).to_string());
+
+        assert_eq!(loaded, Ok(Config::default()), "{path}");
+    }
+}
+
+#[test]
+fn a_key_upstream_refuses_on_windows_is_refused_by_name() {
+    for (path, _) in ASKING
+        .iter()
+        .filter(|(path, _)| !unsupported::WINDOWS_IGNORED.contains(path))
+    {
+        let settings = asking(path);
+
+        assert_eq!(
+            unsupported::refuse_ignoring(&settings, unsupported::WINDOWS_IGNORED),
+            Err(ConfigError::Unsupported { key: path }),
             "{path}"
         );
     }

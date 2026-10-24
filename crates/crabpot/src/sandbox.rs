@@ -270,8 +270,33 @@ pub enum StartError {
     /// user namespace.
     Uid0WithoutSetfcap,
     /// The path of this binary is unknown, and bwrap needs it to run the
-    /// helper.
+    /// helper, or srt-win needs it to run this binary again.
     CurrentExe(io::ErrorKind),
+    /// Windows: the sandbox user is not provisioned, or its install has a setup
+    /// version other than this build's. srt-win exits 15 for either, and the
+    /// repair for both is to run the install again.
+    NotProvisioned,
+    /// Windows: the Secondary Logon service is disabled or missing, and every
+    /// launch as the sandbox user goes through it. srt-win exits 18.
+    SeclogonDisabled,
+    /// Windows: this process runs in session 0, the services' session, and the
+    /// sandbox runs from the signed-in user's desktop session only.
+    SessionZero,
+    /// Windows: this process is in a session, but not as the user who owns it,
+    /// so the install's grants were not made for it.
+    NotDesktopSession,
+    /// Windows: the sandbox user cannot read this binary, which it has to run
+    /// as the runner.
+    RunnerUnreadable,
+    /// Windows: `command`, one of the srt-win queries a status is read from,
+    /// did not run, exited with `code`, or printed what this build cannot read
+    /// (`code` is `None` for the first and the last).
+    StatusFailed {
+        /// The query, such as `user status`.
+        command: &'static str,
+        /// Its exit code, when it ran to one.
+        code: Option<i32>,
+    },
 }
 
 #[cfg(target_os = "linux")]
@@ -301,6 +326,39 @@ impl fmt::Display for StartError {
                 "running as uid 0 without CAP_SETFCAP, so bwrap cannot make a user namespace"
             ),
             Self::CurrentExe(kind) => write!(f, "cannot find this binary: {kind}"),
+            Self::NotProvisioned => write!(
+                f,
+                "the sandbox user is not provisioned, or its setup version is not this build's; run the install again"
+            ),
+            Self::SeclogonDisabled => write!(
+                f,
+                "the Secondary Logon service is disabled or missing, and the sandbox user cannot be launched without it"
+            ),
+            Self::SessionZero => write!(
+                f,
+                "this process is in session 0, and the sandbox runs from the desktop session only"
+            ),
+            Self::NotDesktopSession => write!(
+                f,
+                "this process is not running as the user who owns its session, so the sandbox's grants do not apply to it"
+            ),
+            Self::RunnerUnreadable => {
+                write!(
+                    f,
+                    "the sandbox user cannot read this binary, which it runs as the runner"
+                )
+            }
+            Self::StatusFailed {
+                command,
+                code: Some(code),
+            } => write!(f, "`srt-win {command}` exited {code}"),
+            Self::StatusFailed {
+                command,
+                code: None,
+            } => write!(
+                f,
+                "`srt-win {command}` did not run, or printed what cannot be read"
+            ),
         }
     }
 }

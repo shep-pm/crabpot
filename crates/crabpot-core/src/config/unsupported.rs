@@ -10,6 +10,9 @@
 //! The list is upstream's schema at aceba124 (`src/sandbox/sandbox-config.ts`)
 //! less what upstream applies nowhere on macOS. Each key leaves it when it is
 //! built, and none is left at parity.
+//!
+//! On Linux [`LINUX_PATHS`] joins it: the keys that tune the bwrap and seccomp
+//! path upstream runs there, and crabpot's own does not read.
 
 use serde_json::Value;
 
@@ -51,6 +54,27 @@ pub(super) const PATHS: &[&str] = &[
     "git.safeDirectories",
 ];
 
+/// Dotted paths only Linux refuses, since upstream applies each there and
+/// ignores it on macOS.
+///
+/// `socatPath` and `ripgrep` are not here: crabpot runs neither tool
+/// (ADR-0014), so a path to one asks for nothing.
+#[cfg(target_os = "linux")]
+pub(super) const LINUX_PATHS: &[&str] = &[
+    // The bwrap binary to run.
+    "bwrapPath",
+    // The seccomp filter and helper to apply.
+    "seccomp",
+    // How deep the mandatory deny walk looks.
+    "mandatoryDenySearchDepth",
+    // Gives up the sandbox's own isolation so it can run inside a container.
+    "enableWeakerNestedSandbox",
+    // Lets the command create user namespaces.
+    "allowNestedUserNamespaces",
+];
+#[cfg(not(target_os = "linux"))]
+pub(super) const LINUX_PATHS: &[&str] = &[];
+
 /// What type upstream's schema gives a key in [`PATHS`] that the typed read
 /// does not cover.
 #[derive(Clone, Copy)]
@@ -58,6 +82,8 @@ enum Shape {
     Bool,
     Number,
     Object,
+    #[cfg(target_os = "linux")]
+    String,
     Strings,
 }
 
@@ -67,6 +93,8 @@ impl Shape {
             Self::Bool => value.is_boolean(),
             Self::Number => value.is_number(),
             Self::Object => value.is_object(),
+            #[cfg(target_os = "linux")]
+            Self::String => value.is_string(),
             Self::Strings => value
                 .as_array()
                 .is_some_and(|items| items.iter().all(Value::is_string)),
@@ -78,6 +106,8 @@ impl Shape {
             Self::Bool => "expected a boolean",
             Self::Number => "expected a number",
             Self::Object => "expected an object",
+            #[cfg(target_os = "linux")]
+            Self::String => "expected a string",
             Self::Strings => "expected an array of strings",
         }
     }
@@ -102,10 +132,22 @@ const SHAPES: &[(&str, Shape)] = &[
     ("git.safeDirectories", Shape::Strings),
 ];
 
+/// The keys of [`LINUX_PATHS`] whose type is checked here.
+#[cfg(target_os = "linux")]
+const LINUX_SHAPES: &[(&str, Shape)] = &[
+    ("bwrapPath", Shape::String),
+    ("seccomp", Shape::Object),
+    ("mandatoryDenySearchDepth", Shape::Number),
+    ("enableWeakerNestedSandbox", Shape::Bool),
+    ("allowNestedUserNamespaces", Shape::Bool),
+];
+#[cfg(not(target_os = "linux"))]
+const LINUX_SHAPES: &[(&str, Shape)] = &[];
+
 /// Refuses `settings` when a key in [`SHAPES`] is there with the wrong type,
 /// `null` included, since upstream's optional keys do not take it.
 pub(super) fn check_shapes(settings: &Value) -> Result<(), ConfigError> {
-    for &(key, shape) in SHAPES {
+    for &(key, shape) in SHAPES.iter().chain(LINUX_SHAPES) {
         if let Some(value) = key.split('.').try_fold(settings, |at, part| at.get(part))
             && !shape.holds(value)
         {
@@ -118,9 +160,10 @@ pub(super) fn check_shapes(settings: &Value) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Refuses `settings` when a key in [`PATHS`] asks for something.
+/// Refuses `settings` when a key in [`PATHS`], or on Linux in [`LINUX_PATHS`],
+/// asks for something.
 pub(super) fn refuse(settings: &Value) -> Result<(), ConfigError> {
-    for &key in PATHS {
+    for &key in PATHS.iter().chain(LINUX_PATHS) {
         if key
             .split('.')
             .try_fold(settings, |at, part| at.get(part))

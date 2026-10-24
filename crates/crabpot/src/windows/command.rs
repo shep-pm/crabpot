@@ -285,6 +285,30 @@ mod tests {
         );
     }
 
+    fn last_arg(words: &[&str]) -> String {
+        let mut command = Command::new(words[0]);
+        command.args(&words[1..]);
+        args_of(&wrap(&params(&[], false), &command).unwrap())
+            .pop()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_backslash_argument_is_not_quoted() {
+        assert_eq!(
+            last_arg(&["tool.exe", r"C:\work\out.txt", r"\\host\share", r"C:\work\"]),
+            r"tool.exe C:\work\out.txt \\host\share C:\work\"
+        );
+    }
+
+    #[test]
+    fn an_argument_with_spaces_stays_one_word() {
+        assert_eq!(
+            last_arg(&["tool.exe", r"C:\my dir\out.txt", "two words"]),
+            r#"tool.exe "C:\my dir\out.txt" "two words""#
+        );
+    }
+
     #[test]
     fn the_callers_working_directory_is_kept() {
         let mut command = echo();

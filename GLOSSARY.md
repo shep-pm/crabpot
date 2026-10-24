@@ -52,7 +52,13 @@ _Avoid_: profile file, args profile, response file
 ### Filesystem
 
 **Mandatory denies**:
-The write protection a sandbox applies in and below its own working directory whatever the settings say: shell and tool settings files and each git repository's hooks and config, and the directories holding them, found by a walk down to the search depth. They are in no list of the settings, and on Linux they go through the same deny loop as `denyWrite`.
+The protection a sandbox applies whatever the settings say. The write half is in
+and below its own working directory: shell and tool settings files and each git
+repository's hooks and config, and the directories holding them, found by a walk
+down to the search depth. The read half is Linux's `/etc/ssh/ssh_config.d`, hidden
+from every read policy because ssh refuses a config file whose owner or mode looks
+wrong. Neither is in any list of the settings, and on Linux the write half goes
+through the same deny loop as `denyWrite`.
 _Avoid_: built-in denies, implicit denies, system denies
 
 ### Consumers

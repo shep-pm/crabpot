@@ -6,6 +6,7 @@
     "network": {"allowedDomains": [], "deniedDomains": []},
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "write", "path": "/tmp/claude/crabpot-harness-written"},
     {"kind": "write", "path": "/tmp/crabpot-harness-outside"}

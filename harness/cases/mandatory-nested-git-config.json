@@ -8,6 +8,7 @@
     "network": {"allowedDomains": [], "deniedDomains": []},
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": ["$ROOT"], "denyWrite": []}
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "write", "path": "$ROOT/sub/repo/.git/config"},
     {"kind": "write", "path": "$ROOT/sub/repo/.git/hooks/x"},

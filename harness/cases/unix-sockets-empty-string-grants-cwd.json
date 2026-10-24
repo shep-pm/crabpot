@@ -6,6 +6,7 @@
     "network": {"allowedDomains": [], "deniedDomains": [], "allowUnixSockets": [""]},
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
   },
+  "platforms": ["macos", "linux"],
   "probes": [
     {"kind": "bind-unix", "path": "$ROOT/cwd.sock"},
     {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"}

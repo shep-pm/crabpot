@@ -79,11 +79,15 @@ fn head(tunnel: &mut TcpStream) -> Result<String, ConnectError> {
     Ok(answer.lines().next().unwrap_or_default().to_owned())
 }
 
-/// Copies stdin to the tunnel and the tunnel to stdout, until both are done.
+/// Copies stdin to the tunnel and the tunnel to stdout, until the tunnel ends.
 ///
 /// Each side ends the other: the end of what ssh sends closes the tunnel's far
 /// end, and the end of what the far end sends closes this process's read of it,
 /// as the relay's [`crate::net::relay`] copy does.
+///
+/// The copy out of stdin is left to end with the process. Its read is ssh's to
+/// end, and waiting for it here would wait for ssh to notice that the tunnel
+/// has ended, which is what this process ending is for ssh to learn from.
 fn copy(tunnel: TcpStream) -> Result<(), ConnectError> {
     let (mut to_tunnel, mut from_tunnel) = (
         tunnel
@@ -91,20 +95,17 @@ fn copy(tunnel: TcpStream) -> Result<(), ConnectError> {
             .map_err(|reason| ConnectError::Tunnel(reason.kind()))?,
         tunnel,
     );
-    let up = thread::spawn(move || {
+    thread::spawn(move || {
         let copied = pump(&mut io::stdin().lock(), &mut to_tunnel);
         // ssh has sent all it has: say so to the far end, which answers it by
         // closing.
         let _ = to_tunnel.shutdown(Shutdown::Write);
-        copied
+        let _ = copied;
     });
     let down = pump(&mut from_tunnel, &mut io::stdout().lock());
-    // Closing both ends wakes the other copy out of its read of stdin.
+    // Closing both ends wakes the other copy out of its read of stdin, and out
+    // of any write the tunnel no longer takes.
     let _ = from_tunnel.shutdown(Shutdown::Both);
-    let _ = up.join();
-    // The read of the tunnel is what knows how the tunnel ended. A copy that
-    // failed because the other half had already ended it is that end, and not a
-    // failure of this mode.
     down.map_err(|reason| ConnectError::Tunnel(reason.kind()))
 }
 

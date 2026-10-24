@@ -17,7 +17,8 @@
 //! Windows runs crabpot only on the cases `WINDOWS_READY` names, which are the
 //! default settings, the settings crabpot refuses, the keys upstream ignores
 //! there, the `allowWrite` cases, the `denyRead` and `denyWrite` cases but the
-//! two `literal` ones, and the loopback cases. Every other case runs under
+//! two `literal` ones, the loopback cases, and the network cases, the mitm ones
+//! among them, which reach a Unix socket the harness serves through Winsock. Every other case runs under
 //! upstream's `srt-win` path alone. That needs `windows-install` run once: `node harness/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
 //! windows-install`. The cases that mean only Unix name their platforms and are
 //! skipped there. Upstream refuses a session whose `network.allowLocalBinding` is
@@ -149,6 +150,25 @@ const WINDOWS_READY: &[&str] = &[
     "local_binding_other_host_still_refused",
     "kelpie_loopback_bind",
     "kelpie_bind_allowed",
+    // The network cases: allowed hosts connect through the proxy, denied hosts
+    // fail, and a mitm host goes through the socket the harness serves.
+    "allowed_domain_example_com",
+    "socks_allowed_example_com",
+    "other_domain_example_org_is_refused",
+    "allowed_domain_untrimmed_matches_nothing",
+    "socks_other_domain_refused",
+    "mux_http_allowed",
+    "mux_socks_allowed",
+    "mux_other_domain_refused",
+    "denied_beats_allowed",
+    "denied_port_only",
+    "denied_star",
+    "strict_allowlist_false",
+    "mitm_matching_domain_reaches_the_socket",
+    "mitm_other_domain_goes_direct",
+    "mitm_bad_socket_path_is_502",
+    "resolved_address_loopback_name",
+    "resolved_address_listed_cidr",
 ];
 
 /// Whether crabpot runs `name` beside upstream on this platform.

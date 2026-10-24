@@ -29,7 +29,6 @@ use serde_json::Value;
 
 use crate::case::{self, Case, Platform, Probe};
 use crate::probe;
-#[cfg(unix)]
 use crate::serve;
 
 /// Something that runs one probe in a sandbox and reports the probe's exit code.
@@ -398,7 +397,6 @@ struct Prepared {
     settings: PathBuf,
     /// Served for the run, and stopped by [`Prepared`]'s `Drop` before the root
     /// is removed, on every way out of the run.
-    #[cfg(unix)]
     served: Option<serve::Served>,
 }
 
@@ -417,19 +415,15 @@ impl Prepared {
             root,
             case,
             settings,
-            #[cfg(unix)]
             served: None,
         })
     }
 
-    /// Starts whatever socket the case asks the harness to serve, which only a
-    /// case that means this platform needs.
+    /// Starts whatever socket the case asks the harness to serve.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when the socket cannot be served, or, off Unix, when the
-    /// case asks for one.
-    #[cfg(unix)]
+    /// [`Error::Io`] when the socket cannot be served.
     fn start_serving(&mut self) -> Result<(), Error> {
         self.served = self
             .case
@@ -439,18 +433,6 @@ impl Prepared {
             .transpose()
             .map_err(Error::Io)?;
         Ok(())
-    }
-
-    /// Starts nothing: there is no socket to serve off Unix.
-    #[cfg(not(unix))]
-    fn start_serving(&mut self) -> Result<(), Error> {
-        match self.case.serve {
-            None => Ok(()),
-            Some(_) => Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "the harness serves no Unix socket on this platform",
-            ))),
-        }
     }
 
     /// Whether the case means the platform this harness runs on, and, on
@@ -489,7 +471,6 @@ impl Prepared {
     fn run(&self, runners: &[&dyn Runner]) -> Result<(), Error> {
         // The socket the case asked the harness to serve stays served for the
         // whole run, and no probe of the case itself may hold it.
-        #[cfg(unix)]
         let _served = &self.served;
         let restore = self.restore();
         if self.case.refused {
@@ -500,7 +481,6 @@ impl Prepared {
     }
 }
 
-#[cfg(unix)]
 impl Drop for Prepared {
     /// Stops the served socket before any field drops, which is the order the
     /// run needs on every way out of it, a panic's unwinding included. The

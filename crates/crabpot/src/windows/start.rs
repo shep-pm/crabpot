@@ -560,18 +560,25 @@ mod tests {
     }
 
     #[test]
-    fn the_proxy_range_is_the_installed_one_or_the_default() {
+    fn the_proxy_range_comes_from_the_installed_range() {
         let (srt, _) = Fake::passing();
-        let installed = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
+
+        let prepared = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
+
+        assert_eq!(prepared.range, PortRange::new(40000, 40063).unwrap());
+    }
+
+    #[test]
+    fn the_proxy_range_is_the_default_when_the_install_reports_none() {
         let (srt, _) = Fake::passing();
         let unread = WindowsStatus {
             proxy_ports: None,
             ..status()
         };
-        let default = start(srt, &Verified::new(), &unread, &Config::default()).unwrap();
 
-        assert_eq!(installed.range, PortRange::new(40000, 40063).unwrap());
-        assert_eq!(default.range, PortRange::DEFAULT);
+        let prepared = start(srt, &Verified::new(), &unread, &Config::default()).unwrap();
+
+        assert_eq!(prepared.range, PortRange::DEFAULT);
     }
 
     #[test]

@@ -68,23 +68,29 @@ pub fn vars(binary: &Path, username: &str, token: &str) -> Vec<(&'static str, Os
 /// path is whatever the install put there:
 ///
 /// - git runs the value through a shell of its own, which expands a `$` and
-///   ends a word at an apostrophe;
+///   ends a word at an apostrophe. It is `/bin/sh -c` unless `core.shell` names
+///   another, and a `core.shell` that is not POSIX is not something any
+///   `GIT_SSH_COMMAND` text can answer at the same time as a POSIX one;
 /// - ssh expands `%` in `ProxyCommand` before it runs anything, and stops at a
 ///   `%` it cannot name;
-/// - ssh runs what is left through a shell again, and which shell that is comes
-///   from the user's `SHELL`.
+/// - ssh runs what is left through a shell again, `$SHELL -c "exec ..."`, and
+///   `SHELL` is the caller's own, which crabpot passes into the sandbox and
+///   never sets. It is not a shell that has to read this text.
 ///
-/// The binary arrives as the answer to one parameter expansion, inside double
-/// quotes that only that last shell parses, so no layer reads its characters as
-/// quoting and no path changes a word of the command. `:?` is what makes a
-/// variable that is not there a named error from the shell rather than an empty
-/// word run as a command. The host is quoted for the same shell: ssh
-/// substitutes it from a git URL, which a repository chooses, and single quotes
-/// are the ones that keep a `$` and a backtick from being run.
+/// So the text ssh's shell is handed is one command in a known shell:
+/// `/bin/sh -c '<the connect mode>' sh '<host>' <port>`, with the host and port
+/// arriving as its `$1` and `$2`. Single quotes are the one quoting every shell
+/// agrees on, and everything that is POSIX-only syntax (`${VAR:?msg}`, the
+/// double quotes around the expansion) is inside them, where only `/bin/sh`
+/// reads it. `:?` is what makes a variable that is not there a named error from
+/// `/bin/sh` rather than an empty word run as a command. The host is quoted for
+/// the same reason macOS quotes it: a `$` or a backtick in a double-quoted host
+/// would be run, and ssh substitutes it from a git URL, which a repository
+/// chooses.
 fn command() -> String {
     let binary = format!("${{{BINARY_VARIABLE}:?unset, but GIT_SSH_COMMAND needs it}}");
     format!(
-        "ssh {MUX_OVERRIDE} -o ProxyCommand=\"\\\"\\{binary}\\\" {CONNECT_REENTRY} {HTTP_PORT} '%h' %p\""
+        "ssh {MUX_OVERRIDE} -o ProxyCommand=\"/bin/sh -c '\\\"\\{binary}\\\" {CONNECT_REENTRY} {HTTP_PORT} \\\"\\$1\\\" \\\"\\$2\\\"' sh '%h' %p\""
     )
 }
 
@@ -220,8 +226,8 @@ mod tests {
         assert_eq!(
             value(&vars, "GIT_SSH_COMMAND"),
             "ssh -o ControlMaster=no -o ControlPath=none -o ProxyCommand=\
-             \"\\\"\\${SRT_SSH_PROXY_BINARY:?unset, but GIT_SSH_COMMAND needs it}\\\" \
-             --crabpot-helper connect 3128 '%h' %p\""
+             \"/bin/sh -c '\\\"\\${SRT_SSH_PROXY_BINARY:?unset, but GIT_SSH_COMMAND needs it}\\\" \
+             --crabpot-helper connect 3128 \\\"\\$1\\\" \\\"\\$2\\\"' sh '%h' %p\""
         );
         assert_eq!(
             value(&vars, BINARY_VARIABLE),

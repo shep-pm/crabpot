@@ -6,6 +6,8 @@
 pub(crate) mod command;
 #[cfg(windows)]
 mod ffi;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod held;
 pub(crate) mod install;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod plan;

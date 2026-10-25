@@ -4,21 +4,20 @@
 //! verified, and the proxy starts in the range the fence permits.
 
 use core::any::Any;
-use core::fmt;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crabpot_core::config::Config;
 use crabpot_core::proxy::{PortRange, Proxy, RangeError};
-use serde::Deserialize;
 
 use super::command::{self, Params};
+use super::held::Held;
 use super::plan::Plan;
 use super::runner::Runner;
-use super::srt::{Call, Output, Srt};
+use super::srt::{Call, Srt};
 use super::status::{LoopbackMode, ProfileState, WindowsStatus};
 use crate::{StartError, WrapError};
 
@@ -81,84 +80,6 @@ impl Session {
             command,
         )
     }
-}
-
-/// The grants one process holds for a sandbox user, released when it drops.
-struct Held {
-    srt: Arc<dyn Srt>,
-    sid: String,
-    holder: u32,
-}
-
-impl fmt::Debug for Held {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Held")
-            .field("sid", &self.sid)
-            .field("holder", &self.holder)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Held {
-    fn call(&self, verb: &str) -> Call {
-        Call::new([
-            "acl",
-            verb,
-            "--holder-pid",
-            &self.holder.to_string(),
-            "--sandbox-user-sid",
-            &self.sid,
-            "--json",
-        ])
-    }
-}
-
-impl Drop for Held {
-    /// Revokes the grants, then restores the denies. A revoke that did not
-    /// finish leaves the denies in place, since a grant may still be on disk.
-    fn drop(&mut self) {
-        if revoked(&self.srt.run(&self.call("revoke"))) {
-            let _ = self.srt.run(&self.call("restore"));
-        } else {
-            eprintln!(
-                "crabpot: the sandbox's grants could not all be revoked, so its denies stay in place; `crabpot --srt-win acl recover` clears them once this process has exited"
-            );
-        }
-    }
-}
-
-/// One path `acl revoke` reports on.
-#[derive(Deserialize)]
-struct Outcome {
-    path: String,
-    status: String,
-}
-
-impl Outcome {
-    /// Whether the grant is released. A status this build does not know is not.
-    fn released(&self) -> bool {
-        match self.status.as_str() {
-            "revoked" | "stillHeld" | "downgraded" | "relocated" | "mismatch" | "noRow"
-            | "gone" => true,
-            // An older srt-win says it of a path it could not open too, so it
-            // counts only when the path is gone.
-            "missing" => matches!(
-                Path::new(&self.path).symlink_metadata(),
-                Err(e) if e.kind() == io::ErrorKind::NotFound
-            ),
-            _ => false,
-        }
-    }
-}
-
-/// Whether an `acl revoke` ran to the end and released every grant.
-fn revoked(output: &io::Result<Output>) -> bool {
-    let Ok(output) = output else {
-        return false;
-    };
-    output.succeeded()
-        && serde_json::from_str::<Vec<Outcome>>(&output.stdout)
-            .is_ok_and(|outcomes| outcomes.iter().all(Outcome::released))
 }
 
 /// What a session is started from: the calls to srt-win, the binary the
@@ -391,7 +312,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::windows::srt::fake::{BLOCKED, Calls, Fake, exit};
+    use crate::windows::srt::fake::{Calls, Fake, exit};
     use crate::windows::status::{LoopbackMode, ProfileExclusions, SetupVersion, UserState};
 
     /// Where the next window of ports to hold is looked for, so that tests
@@ -943,69 +864,5 @@ mod tests {
             !verified.holds("S-1-5-21-7", false),
             "a failure is not remembered"
         );
-    }
-
-    #[test]
-    fn dropping_a_session_revokes_then_restores() {
-        let (srt, calls) = Fake::passing();
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        let all = calls.all();
-        let [.., revoke, restore] = all.as_slice() else {
-            panic!("calls: {all:?}");
-        };
-        let release = |verb: &str| {
-            ["acl", verb, "--holder-pid", "4242"]
-                .into_iter()
-                .chain(["--sandbox-user-sid", "S-1-5-21-7", "--json"])
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(revoke.args, release("revoke"));
-        assert_eq!(restore.args, release("restore"));
-    }
-
-    #[test]
-    fn a_revoke_that_did_not_finish_leaves_the_denies_in_place() {
-        let (srt, calls) = Fake::answering(|call| match call.args[1].as_str() {
-            "revoke" => exit(1, r#"[{"path":"C:\\work","status":"pending"}]"#),
-            "verify" => exit(0, BLOCKED),
-            _ => exit(0, "[]"),
-        });
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        assert!(calls.starting(&["acl", "restore"]).is_empty());
-    }
-
-    #[test]
-    fn a_revoke_that_found_a_substituted_path_is_finished() {
-        let (srt, calls) = Fake::answering(|call| match call.args[1].as_str() {
-            "revoke" => exit(0, r#"[{"path":"C:\\work","status":"mismatch"}]"#),
-            "verify" => exit(0, BLOCKED),
-            _ => exit(0, "[]"),
-        });
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        assert_eq!(calls.starting(&["acl", "restore"]).len(), 1);
-    }
-
-    #[test]
-    fn a_revoke_that_printed_an_unknown_status_is_not_finished() {
-        let (srt, calls) = Fake::answering(|call| match call.args[1].as_str() {
-            "revoke" => exit(0, r#"[{"path":"C:\\work","status":"somethingNew"}]"#),
-            "verify" => exit(0, BLOCKED),
-            _ => exit(0, "[]"),
-        });
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        assert!(calls.starting(&["acl", "restore"]).is_empty());
     }
 }

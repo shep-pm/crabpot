@@ -1,0 +1,22 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": ["github.com", "api.github.com"],
+      "deniedDomains": ["localhost", "127.0.0.1"],
+      "strictAllowlist": true,
+      "allowUnixSockets": ["$ROOT/scratch"]
+    },
+    "filesystem": {
+      "denyRead": ["~/.ssh/**"],
+      "allowRead": [],
+      "allowWrite": ["$ROOT/work"],
+      "denyWrite": ["$ROOT/work/.env"]
+    },
+    "enableWeakerNetworkIsolation": true
+  },
+  "platforms": ["windows"],
+  "probes": [
+    {"kind": "signal-group"}
+  ]
+}

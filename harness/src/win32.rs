@@ -1,5 +1,7 @@
-//! The AF_UNIX sockets Windows 10 and later carry, through Winsock: the
-//! listener a served case answers on and the connect that ends its accept.
+//! The harness's Windows FFI (IR-22): the AF_UNIX sockets Windows 10 and later
+//! carry, through Winsock, which are the listener a served case answers on and
+//! the connect that ends its accept, and the job object a sandboxed command is
+//! held in, which is what the `signal-group` probe asks about.
 //! `std` has no AF_UNIX on Windows, so a stream is held as the
 //! [`TcpStream`] of its socket, which only reads and writes a Winsock stream
 //! socket whatever its family.
@@ -10,18 +12,23 @@ use core::mem::offset_of;
 use core::ptr;
 use std::io;
 use std::net::TcpStream;
-use std::os::windows::io::{AsRawSocket, FromRawSocket, OwnedSocket, RawSocket};
+use std::os::windows::io::{AsRawHandle, AsRawSocket, FromRawSocket, OwnedSocket, RawSocket};
 use std::path::Path;
+use std::process::Child;
 use std::sync::OnceLock;
 
+use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, INVALID_SOCKET, SOCK_STREAM, SOCKADDR, SOCKADDR_UN, SOCKET_ERROR,
     WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSADATA, WSAGetLastError, WSASocketW,
     WSAStartup, accept, bind, connect, listen,
 };
+use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 /// The longest path a `sockaddr_un` carries, with the terminator after it.
-const MAX_PATH: usize = size_of::<SOCKADDR_UN>() - offset_of!(SOCKADDR_UN, sun_path) - 1;
+pub(crate) const SOCKET_PATH_MAX: usize =
+    size_of::<SOCKADDR_UN>() - offset_of!(SOCKADDR_UN, sun_path) - 1;
 
 /// The backlog std listens with.
 const BACKLOG: i32 = 128;
@@ -71,7 +78,7 @@ impl Address {
             .to_str()
             .ok_or_else(|| invalid("is not UTF-8"))?
             .as_bytes();
-        if name.len() > MAX_PATH {
+        if name.len() > SOCKET_PATH_MAX {
             return Err(invalid("is longer than a sockaddr_un takes"));
         }
         if name.contains(&0) {
@@ -192,4 +199,54 @@ impl Listener {
             OwnedSocket::from_raw_socket(raw as RawSocket)
         }))
     }
+}
+
+/// Whether this process is held in a job object.
+///
+/// `srt-win` holds every sandboxed command in one, with
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`crates/crabpot-windows/srt-win/src/job.rs`),
+/// so closing it ends the command and every process the command started
+/// together. That is what Windows has in place of the process group a host
+/// signals on Unix.
+///
+/// # Errors
+///
+/// The error of the call, which only a handle it cannot answer for gives. A
+/// null job handle asks whether the process is in some job and not which one,
+/// so it reads no job of its own.
+pub(crate) fn this_process_is_held() -> io::Result<bool> {
+    let mut held = 0i32;
+    // SAFETY: `GetCurrentProcess` is the pseudo-handle of this process, which
+    // is always valid; the null job handle asks for no job; and `held` is a
+    // live `BOOL` the call writes.
+    let answered = unsafe { IsProcessInJob(GetCurrentProcess(), ptr::null_mut(), &raw mut held) };
+    held_or_error(answered, held)
+}
+
+/// Whether the process `child` is held in a job object, which it is when the
+/// process that started it is held in one and the job lets no process start a
+/// child outside it.
+///
+/// # Errors
+///
+/// As [`this_process_is_held`].
+pub(crate) fn child_is_held(child: &Child) -> io::Result<bool> {
+    let mut held = 0i32;
+    // SAFETY: the handle is `child`'s own, which the `spawn` that made it gave
+    // this process and which nothing has closed; the null job handle asks for
+    // no job; and `held` is a live `BOOL` the call writes.
+    let answered = unsafe { IsProcessInJob(child.as_raw_handle(), ptr::null_mut(), &raw mut held) };
+    held_or_error(answered, held)
+}
+
+/// Whether `IsProcessInJob` says the process is held, or the error of the call
+/// that answered nothing.
+fn held_or_error(answered: i32, held: i32) -> io::Result<bool> {
+    if answered == 0 {
+        // SAFETY: the call that just failed set this thread's last error, and
+        // nothing has run since.
+        let code = unsafe { GetLastError() };
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    Ok(held != 0)
 }

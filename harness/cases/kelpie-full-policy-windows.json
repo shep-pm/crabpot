@@ -43,6 +43,7 @@
     {"kind": "connect", "host": "private.example.com", "port": 443},
     {"kind": "connect", "host": "offlist.example.net", "port": 443},
     {"kind": "bind"},
-    {"kind": "loopback"}
+    {"kind": "loopback"},
+    {"kind": "bind-unix", "path": "$ROOT/scratch/s.sock"}
   ]
 }

@@ -3,6 +3,11 @@
 //! Both runners run the same `probe` binary, so a case compares exit codes.
 //! The binary also prints [`REPORT`] and its code to stdout, which is how a
 //! runner tells a probe that ran from a wrapper that failed before running it.
+//!
+//! The actions that name a process group, a process or a Unix socket mean a
+//! different call on each platform, and `probe/unix.rs` and `probe/windows.rs`
+//! hold the two forms. The Windows one starts its child as this same binary
+//! with `--hold <secs>`, which is no action a case can hold.
 
 /// Exit code of an action the sandbox allowed.
 pub const ALLOWED: u8 = 0;
@@ -22,20 +27,15 @@ pub(crate) mod argument;
 #[cfg(target_os = "linux")]
 mod kernel;
 mod socks;
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
-#[cfg(unix)]
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-#[cfg(unix)]
-use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-
-#[cfg(unix)]
-use crate::signal;
 
 /// Why a probe could not tell whether the sandbox allowed its action.
 #[derive(Debug)]
@@ -148,16 +148,24 @@ fn attempt(
         ["connect", host, port, "--via", "socks5"] => connect_socks(host, port, socks_proxy),
         ["bind"] => bind(),
         #[cfg(unix)]
-        ["bind-unix", path] => bind_unix(path),
+        ["bind-unix", path] => unix::bind_unix(path),
+        #[cfg(windows)]
+        ["bind-unix", path] => windows::bind_unix(path),
         #[cfg(unix)]
-        ["connect-unix", path] => connect_unix(path),
+        ["connect-unix", path] => unix::connect_unix(path),
         ["loopback"] => loopback(),
         #[cfg(unix)]
-        ["signal-group"] => signal_group(),
+        ["signal-group"] => unix::signal_group(),
+        #[cfg(windows)]
+        ["signal-group"] => windows::signal_group(),
         #[cfg(unix)]
-        ["ps"] => ps(),
+        ["ps"] => unix::ps(),
+        #[cfg(windows)]
+        ["ps"] => windows::ps(),
         #[cfg(unix)]
-        ["ps-outside"] => ps_outside(harness_pid),
+        ["ps-outside"] => unix::ps_outside(harness_pid),
+        #[cfg(windows)]
+        ["--hold", secs] => windows::hold(secs),
         #[cfg(target_os = "linux")]
         ["socket", family] => kernel::socket(family),
         #[cfg(target_os = "linux")]
@@ -446,147 +454,23 @@ fn accept(listener: &TcpListener) -> Outcome {
 #[cfg(unix)]
 const SOCKET_PATH_LIMIT: usize = if cfg!(target_os = "macos") { 104 } else { 108 };
 
+/// Windows carries `AF_UNIX` through Winsock, where `sun_path` is 108 bytes and
+/// the terminator has to fit in them: 107 bytes of path, and one byte more does
+/// not fit at all. The probe answers such a path the same refusal, before
+/// Winsock is asked.
+#[cfg(windows)]
+const SOCKET_PATH_LIMIT: usize = crate::win32::SOCKET_PATH_MAX + 1;
+
 /// Whether `path` is too long for a Unix socket to be named by.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn socket_path_too_long(path: &str) -> bool {
     path.len() >= SOCKET_PATH_LIMIT
 }
 
-/// A socket the sandbox will not let the command use answers `EPERM`, which is
-/// what a refused `bind` or `connect` on `AF_UNIX` gives back.
-#[cfg(unix)]
-const UNIX_BIND_REFUSED: &[std::io::ErrorKind] = &[std::io::ErrorKind::PermissionDenied];
-
-/// A dial of a socket file nobody is listening on is answered, and an answer
-/// is not a refusal.
-#[cfg(unix)]
-const UNIX_CONNECT_REFUSED: &[std::io::ErrorKind] = &[
-    std::io::ErrorKind::PermissionDenied,
-    std::io::ErrorKind::ConnectionRefused,
-];
-
-/// Binds a Unix socket at `path`, which is how a command takes a path the
-/// profile lists for it.
-#[cfg(unix)]
-fn bind_unix(path: &str) -> Outcome {
-    if socket_path_too_long(path) {
-        return Ok(false);
-    }
-    judge(UnixListener::bind(path).map(drop), UNIX_BIND_REFUSED)
-}
-
-/// Dials the Unix socket at `path`, which is how a command reaches a socket
-/// the profile lists for it.
-#[cfg(unix)]
-fn connect_unix(path: &str) -> Outcome {
-    if socket_path_too_long(path) {
-        return Ok(false);
-    }
-    judge(UnixStream::connect(path).map(drop), UNIX_CONNECT_REFUSED)
-}
-
-/// The program the probe starts as the member of the group it means to signal.
-#[cfg(unix)]
-const SLEEP: &str = "/bin/sleep";
-
-/// The program that names a process and how it runs, which a host asks when it
-/// decides whether a session it attached to still holds.
-#[cfg(unix)]
-const PS: &str = "/bin/ps";
-
-/// How long the probe's child lives on its own, in seconds. A sandbox that
-/// refuses both the group signal and the signal to the child alone still leaves
-/// nothing behind once this runs out.
-#[cfg(unix)]
-const CHILD_LIFE: &str = "5";
-
-/// Starts `sleep` as the leader of a process group of its own, which is how a
-/// host leads a group it means to signal: the child's pid is the group's.
-#[cfg(unix)]
-fn start_group() -> Result<Child, Error> {
-    Command::new(SLEEP)
-        .arg(CHILD_LIFE)
-        .process_group(0)
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(Error::Io)
-}
-
-/// Signals the process group the probe started, and asks whether it took the
-/// signal.
-///
-/// Allowed when the group died by it, refused when the sandbox would not let a
-/// group signal through, which is what a host meets when it ends a call it
-/// started inside a worker.
-#[cfg(unix)]
-fn signal_group() -> Outcome {
-    let mut child = start_group()?;
-    let group = child.id();
-    match signal::signal_group(group, signal::TERM) {
-        Ok(()) => {
-            let ended = child.wait().map_err(Error::Io)?;
-            Ok(ended.signal() == Some(signal::TERM as i32))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            // The group is out of reach. End the child on its own so the run
-            // leaves nothing behind, and report what the group signal answered.
-            let _ = child.kill();
-            let _ = child.wait();
-            Ok(false)
-        }
-        Err(error) => Err(Error::Io(error)),
-    }
-}
-
-/// Asks `ps` whether a process runs, which is how a host tells whether a
-/// session it attached to still holds.
-///
-/// Allowed when `ps` names the process. Refused when `ps` cannot run at all or
-/// runs and names nothing: macOS answers `EPERM` to a sandboxed command that
-/// tries to run it, which is the sandbox refusing the action and not the probe
-/// failing to run.
-#[cfg(unix)]
-fn ps() -> Outcome {
-    let mut child = start_group()?;
-    let asked = ps_names(child.id());
-    // Whatever `ps` answered, end the child the probe started.
-    let _ = child.kill();
-    let _ = child.wait();
-    asked
-}
-
-/// Asks `ps` whether the harness's own process runs, which it does not from
-/// inside a pid namespace of the sandbox's own: `ps` lists the sandbox's pids
-/// and no others.
-///
-/// Allowed when `ps` names the process, which is the sandbox showing what
-/// runs outside it. Refused when it does not.
-#[cfg(unix)]
-fn ps_outside(harness_pid: Option<&str>) -> Outcome {
-    let pid = harness_pid
-        .and_then(|pid| pid.parse().ok())
-        .ok_or_else(|| Error::BadHarnessPid(harness_pid.map(str::to_owned)))?;
-    ps_names(pid)
-}
-
-/// Whether `ps` names the process `pid`.
-#[cfg(unix)]
-fn ps_names(pid: u32) -> Outcome {
-    let asked = Command::new(PS)
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output();
-    match asked {
-        Ok(output) => {
-            Ok(output.status.success()
-                && output.stdout.iter().any(|byte| !byte.is_ascii_whitespace()))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
-        Err(error) => Err(Error::Io(error)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::unix::SLEEP;
     use super::*;
     use std::fs;
     use std::io::{BufRead, BufReader, Write};
@@ -595,6 +479,8 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
+    use std::process::Command;
 
     /// A folder unique to one test, removed with its permissions restored on drop.
     struct Fixture(PathBuf);
@@ -872,11 +758,12 @@ mod tests {
     }
 
     /// A socket path of `sun_path` bytes or more is a refusal, and one byte
-    /// under it is allowed. The case root a differential run names its sockets
-    /// against is under the same temp folder, so the room here is the room a
-    /// case has.
+    /// under it is allowed. The room this leaves is the room a case has: a case
+    /// root sits under the same temp folder on Unix, and under the drive's root
+    /// on Windows, which is shorter than the temp folder this fixture is made
+    /// in.
     #[test]
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn a_socket_path_at_the_limit_is_refused_and_one_byte_under_is_not() {
         let fixture = Fixture::new("socket-limit");
         let dir = fixture.path().to_str().unwrap();

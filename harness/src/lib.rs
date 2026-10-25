@@ -7,4 +7,4 @@ pub mod serve;
 #[cfg(unix)]
 mod signal;
 #[cfg(windows)]
-mod winsock;
+mod win32;

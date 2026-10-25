@@ -13,11 +13,11 @@ keywords.workspace = true
 # docs/ holds planning and design notes. They belong in the repository, not in
 # a published .crate, which is permanent.
 exclude = ["/docs/"]
-# ADR-0012 never publishes a platform crate empty, and the Windows release
-# slice (#165) is what fills this one: it flips this flag and `release` in
-# `release-plz.toml` once the facade depends on the published crate. ADR-0015
-# settled that publishing it is allowed, because upstream's modules are
-# crate-private here and its internal API never reaches crates.io.
+# ADR-0012 never publishes a platform crate before it holds that platform's
+# sandbox, and this one holds it: the Windows release slice (#165) flips this
+# flag and `release` in `release-plz.toml`. ADR-0015 settled that publishing it
+# is allowed, because upstream's modules are crate-private here and its internal
+# API never reaches crates.io.
 publish = false
 
 # No test targets here, and a sync from upstream must not add any: the two

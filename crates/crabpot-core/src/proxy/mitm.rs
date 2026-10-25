@@ -409,6 +409,20 @@ mod tests {
         })
     }
 
+    /// Reads what [`serve_pipe`] sends with its answer, and has five bytes
+    /// echoed back, which is the exchange it waits for.
+    #[cfg(windows)]
+    async fn carry(tunnel: &mut Tunnel) {
+        let mut onward = [0u8; 6];
+        tunnel.read_exact(&mut onward).await.unwrap();
+        assert_eq!(&onward, b"onward");
+        tunnel.write_all(b"hello").await.unwrap();
+        tunnel.flush().await.unwrap();
+        let mut echoed = [0u8; 5];
+        tunnel.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(&echoed, b"hello");
+    }
+
     #[cfg(windows)]
     #[test]
     fn a_mitm_tunnel_carries_bytes_over_a_named_pipe() {
@@ -425,14 +439,7 @@ mod tests {
             let mut tunnel = open_tunnel(&name, "example.com", 443)
                 .await
                 .expect("a 2xx answer opens the relay");
-            let mut onward = [0u8; 6];
-            tunnel.read_exact(&mut onward).await.unwrap();
-            assert_eq!(&onward, b"onward");
-            tunnel.write_all(b"hello").await.unwrap();
-            tunnel.flush().await.unwrap();
-            let mut echoed = [0u8; 5];
-            tunnel.read_exact(&mut echoed).await.unwrap();
-            assert_eq!(&echoed, b"hello");
+            carry(&mut tunnel).await;
             drop(tunnel);
             seen.await.unwrap()
         });
@@ -461,15 +468,18 @@ mod tests {
 
             let dial = tokio::spawn({
                 let name = name.clone();
-                async move { open_tunnel(&name, "example.com", 443).await.map(drop) }
+                async move { open_tunnel(&name, "example.com", 443).await }
             });
             // The dial has been told the pipe is busy once this wait is over.
             tokio::time::sleep(PIPE_BUSY_RETRY * 2).await;
             let second = ServerOptions::new().create(&name).unwrap();
             let seen = serve_pipe(second);
-            dial.await
+            let mut tunnel = dial
+                .await
                 .unwrap()
                 .expect("the dial found the second instance");
+            carry(&mut tunnel).await;
+            drop(tunnel);
             seen.await.unwrap()
         });
 

@@ -38,21 +38,3 @@ publish_no_verify = false
 name = "crabpot-harness"
 release = false
 publish = false
-
-# The facade depends on the unpublished Windows crate on every host, so it
-# cannot be published either. The Windows release slice (#165) removes this
-# entry.
-[[package]]
-name = "crabpot"
-release = false
-
-# ADR-0015 settles that this crate is published: the facade depends on it on
-# every host, and crates.io refuses a path-only dependency. Upstream's modules
-# are private to the crate there, so publishing it puts none of upstream's
-# internal API on crates.io. Both flags stay here until the Windows release
-# slice (#165) flips them, which is also what answers ADR-0012's rule against
-# publishing a platform crate before it holds that platform's sandbox.
-[[package]]
-name = "crabpot-windows"
-release = false
-publish = false

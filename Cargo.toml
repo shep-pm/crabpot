@@ -14,18 +14,13 @@ keywords = ["sandbox", "security", "agents", "bubblewrap", "seatbelt"]
 
 [workspace.dependencies]
 # A requirement here is a second copy of the version, and release-plz keeps it
-# only for a crate it releases. `release-plz.toml` holds `crabpot-windows` at
-# `release = false`, so nothing rewrites its requirement, and a pinned one goes
-# stale on every bump: at the 0.2.0 workspace bump the old `^0.1.0` matched no
-# candidate and the release PR failed to resolve the workspace (issue #195). A
-# path dependency inside the workspace needs no requirement to resolve, so it
-# carries none.
+# only for a crate it releases. One that `release-plz.toml` holds back goes
+# stale on every bump (issue #195), so a crate that stops being released drops
+# its requirement here too.
 crabpot-core = { path = "crates/crabpot-core", version = "0.2.0" }
 crabpot-linux = { path = "crates/crabpot-linux", version = "0.2.0" }
 crabpot-macos = { path = "crates/crabpot-macos", version = "0.2.0" }
-# ADR-0015 publishes this crate, and the Windows release slice (#165) adds its
-# version back here when it flips `publish` and `release`.
-crabpot-windows = { path = "crates/crabpot-windows" }
+crabpot-windows = { path = "crates/crabpot-windows", version = "0.2.0" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 serde_path_to_error = { version = "0.1", default-features = false }

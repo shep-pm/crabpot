@@ -13,4 +13,6 @@ The one part taken in as it is: crates/crabpot-windows/srt-win/ holds upstream's
 `srt-win` crate, byte for byte at commit
 aceba124fd725f4a43d7016ed3f5651d61f83115, with the changes listed in
 crates/crabpot-windows/PATCHES.md. It carries the same Apache License, Version
-2.0, and ADR-0005 records why crabpot ships it under its own name.
+2.0, and ADR-0005 records why crabpot ships it under its own name. ADR-0015
+publishes it as the crate `crabpot-windows`, under that licence alone, with
+upstream's modules private to the crate.

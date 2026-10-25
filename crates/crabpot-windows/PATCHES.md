@@ -33,6 +33,15 @@ keeps upstream's crate name out of crabpot's published surface. The tests name
 `srt_win::acl` and friends, and the alias is one line each instead of a rewrite
 of every path in them.
 
+Where they run: ADR-0015 makes upstream's modules private to this crate, and a
+test crate built outside the library cannot name a private module. So
+`src/lib.rs` includes each file with `#[path]` as a `#[cfg(all(test, windows))]`
+module, and `Cargo.toml` carries no `[[test]]` entry for either. On Windows,
+`cargo test --locked -p crabpot-windows` runs both as unit tests of the library,
+which is the command CI's `windows` job runs, and the `extern crate self as
+crabpot_windows` in `src/lib.rs` is what makes the alias line resolve inside it.
+Nothing else in the two files changed.
+
 ## Not copied
 
 - `Cargo.lock`: the workspace has one.

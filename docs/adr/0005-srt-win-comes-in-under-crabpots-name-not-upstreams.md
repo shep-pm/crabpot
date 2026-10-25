@@ -7,5 +7,5 @@ crabpot takes its source into the `crabpot-windows` crate (ADR-0012), a Windows-
 ## Considered options
 
 - **Rewrite it.** Rejected: 30,000 lines of Windows security code that upstream already maintains.
-- **Publish it as a crate of its own.** Rejected because it would put upstream's internal API on crates.io under crabpot's name.
+- **Publish it as a crate of its own.** Rejected because it would put upstream's internal API on crates.io under crabpot's name. ADR-0015 later publishes the crate under crabpot's own name and keeps that API private to the crate, which is what the facade needs to be publishable at all.
 - **A git dependency on upstream.** Rejected because crabpot could no longer be published.

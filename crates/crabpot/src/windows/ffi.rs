@@ -9,9 +9,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::null_mut;
 
-use windows_sys::Win32::Foundation::{
-    ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, LocalFree,
-};
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     BuildTrusteeWithSidW, ConvertStringSidToSidW, GetEffectiveRightsFromAclW,
     GetNamedSecurityInfoW, SE_FILE_OBJECT, TRUSTEE_W,
@@ -74,6 +72,12 @@ pub(super) fn sandbox_can_read(path: &Path, sandbox: &[&str]) -> Option<bool> {
 
 /// Whether `dacl` grants the well-known group `group` read and execute.
 fn group_can_read(dacl: *const ACL, group: WELL_KNOWN_SID_TYPE) -> bool {
+    group_rights(dacl, group).is_some_and(read_exec)
+}
+
+/// The mask `dacl` answers for the well-known group `group`: `None` when the
+/// group has no SID on this machine, or the call gives no answer.
+fn group_rights(dacl: *const ACL, group: WELL_KNOWN_SID_TYPE) -> Option<u32> {
     // Words, not bytes: a SID is read as 4-byte aligned.
     let mut sid = [0u32; SECURITY_MAX_SID_SIZE.div_ceil(4) as usize];
     let mut size = SECURITY_MAX_SID_SIZE;
@@ -81,9 +85,9 @@ fn group_can_read(dacl: *const ACL, group: WELL_KNOWN_SID_TYPE) -> bool {
     // a null domain SID is what a machine-wide group takes.
     let made = unsafe { CreateWellKnownSid(group, null_mut(), sid.as_mut_ptr().cast(), &mut size) };
     if made == 0 {
-        return false;
+        return None;
     }
-    trustee_can_read(dacl, sid.as_mut_ptr().cast())
+    trustee_rights(dacl, sid.as_mut_ptr().cast())
 }
 
 /// Whether `dacl` grants the account or group whose SID string is `sid` read and
@@ -91,23 +95,30 @@ fn group_can_read(dacl: *const ACL, group: WELL_KNOWN_SID_TYPE) -> bool {
 /// and neither is one of the well-known groups, so a runner in a folder granted
 /// to the sandbox alone reads as unreadable without this.
 fn sid_can_read(dacl: *const ACL, sid: &str) -> bool {
+    sid_rights(dacl, sid).is_some_and(read_exec)
+}
+
+/// The mask `dacl` answers for the account or group whose SID string is `sid`:
+/// `None` when `sid` is no SID, or the call gives no answer.
+fn sid_rights(dacl: *const ACL, sid: &str) -> Option<u32> {
     let name: Vec<u16> = OsStr::new(sid).encode_wide().chain([0]).collect();
     let mut psid: PSID = null_mut();
     // SAFETY: `name` is NUL-terminated and outlives the call, and `psid` is a
     // live pointer the call writes an allocated SID into.
     let made = unsafe { ConvertStringSidToSidW(name.as_ptr(), &mut psid) };
     if made == 0 {
-        return false;
+        return None;
     }
-    let readable = trustee_can_read(dacl, psid);
+    let rights = trustee_rights(dacl, psid);
     // SAFETY: `psid` was allocated by `ConvertStringSidToSidW`, which asks for
     // `LocalFree`, and nothing reads it after this.
     unsafe { LocalFree(psid) };
-    readable
+    rights
 }
 
-/// Whether the account or group `psid` names can read and execute, by `dacl`.
-fn trustee_can_read(dacl: *const ACL, psid: PSID) -> bool {
+/// The mask `dacl` answers for the account or group `psid` names, `None` where
+/// the call gives no answer.
+fn trustee_rights(dacl: *const ACL, psid: PSID) -> Option<u32> {
     // SAFETY: `TRUSTEE_W` is plain data, which all-zero bytes are a valid
     // value of, and the call fills it in.
     let mut trustee: TRUSTEE_W = unsafe { core::mem::zeroed() };
@@ -118,27 +129,28 @@ fn trustee_can_read(dacl: *const ACL, psid: PSID) -> bool {
     // SAFETY: `dacl` is the DACL the caller read, still alive, `trustee` was
     // built above, and `rights` is a live `u32` the call writes through.
     let computed = unsafe { GetEffectiveRightsFromAclW(dacl, &trustee, &mut rights) };
-    computed == ERROR_SUCCESS && read_exec(rights)
+    (computed == ERROR_SUCCESS).then_some(rights)
 }
 
 /// Whether an access mask holds read and execute.
 ///
-/// `GetEffectiveRightsFromAclW` reports a mask as the ACE holds it and maps
-/// nothing, and an ACE written by something other than srt-win can name the
-/// generic rights, which stand for the specific ones of a file. srt-win's own
-/// grants name the specific ones: `FILE_GENERIC_READ` and `FILE_GENERIC_EXECUTE`
-/// are the mapped combinations, and between them hold `FILE_READ_DATA` and
-/// `FILE_EXECUTE`.
+/// `GetEffectiveRightsFromAclW` reports the mask of the ACEs that answer for the
+/// trustee and maps nothing back, and a Windows run of this module's tests shows
+/// that an ACE written in the generic rights answers as no rights at all. srt-win's
+/// own grants are safe: its `FILE_GENERIC_READ` and `FILE_GENERIC_EXECUTE` are
+/// already the mapped combinations, which hold `FILE_READ_DATA` and
+/// `FILE_EXECUTE`. A folder opened to crabpot by a tool that wrote generic rights
+/// reads as unreadable here, and the profile half of `Runner::readable` is what
+/// saves it.
 fn read_exec(rights: u32) -> bool {
-    let read = rights & (FILE_READ_DATA | GENERIC_READ | GENERIC_ALL) != 0;
-    let exec = rights & (FILE_EXECUTE | GENERIC_EXECUTE | GENERIC_ALL) != 0;
-    read && exec
+    rights & FILE_READ_DATA != 0 && rights & FILE_EXECUTE != 0
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
 
+    use windows_sys::Win32::Foundation::{GENERIC_EXECUTE, GENERIC_READ};
     use windows_sys::Win32::Security::{
         ACL_REVISION, AddAccessAllowedAceEx, AddAccessDeniedAceEx, InitializeAcl,
     };
@@ -187,6 +199,14 @@ mod tests {
         buf
     }
 
+    /// A mask as Windows wrote it, or `nothing` where the call gave no answer.
+    ///
+    /// Each assertion names the mask it was answered, because the mask is what
+    /// the call reports and a bare `false` says nothing about why.
+    fn shown(mask: Option<u32>) -> String {
+        mask.map_or("nothing".to_owned(), |m| format!("{m:#010x}"))
+    }
+
     /// The sandbox account and the group a grant for the sandbox names are not
     /// one of the well-known groups, and a folder granted to the sandbox alone
     /// has to answer for it.
@@ -194,52 +214,97 @@ mod tests {
     fn a_grant_for_one_account_answers_for_that_account() {
         let buf = dacl(&[(false, READ_EXEC, LOCAL_SERVICE)]);
         let dacl = buf.as_ptr().cast::<ACL>();
+        let account = sid_rights(dacl, LOCAL_SERVICE);
 
-        assert!(sid_can_read(dacl, LOCAL_SERVICE));
-        assert!(!group_can_read(dacl, WinBuiltinUsersSid));
-        assert!(!group_can_read(dacl, WinAuthenticatedUserSid));
-        assert!(!group_can_read(dacl, WinWorldSid));
+        assert!(
+            sid_can_read(dacl, LOCAL_SERVICE),
+            "{LOCAL_SERVICE} answered {}",
+            shown(account)
+        );
+        for group in [WinBuiltinUsersSid, WinAuthenticatedUserSid, WinWorldSid] {
+            let mask = group_rights(dacl, group);
+            assert!(
+                !group_can_read(dacl, group),
+                "{group:?} answered {}",
+                shown(mask)
+            );
+        }
     }
 
-    /// A group ACE answers for the group it names, and for no other trustee.
+    /// An ACE for Everyone answers for every trustee the check asks, an account
+    /// of its own included: Everyone is in every token, and a Windows run showed
+    /// the call reading it as a member of the trustee it was given. An ACE for
+    /// one account answers for that account and for no group, which is the other
+    /// half of this, and is what the test above holds.
     #[test]
-    fn a_grant_for_a_well_known_group_answers_for_that_group() {
+    fn a_grant_for_everyone_answers_for_every_trustee() {
         let buf = dacl(&[(false, READ_EXEC, EVERYONE)]);
         let dacl = buf.as_ptr().cast::<ACL>();
+        let world = group_rights(dacl, WinWorldSid);
+        let account = sid_rights(dacl, LOCAL_SERVICE);
 
-        assert!(group_can_read(dacl, WinWorldSid));
-        assert!(!sid_can_read(dacl, LOCAL_SERVICE));
+        assert!(
+            group_can_read(dacl, WinWorldSid),
+            "WinWorldSid answered {}",
+            shown(world)
+        );
+        assert!(
+            sid_can_read(dacl, LOCAL_SERVICE),
+            "{LOCAL_SERVICE} answered {}",
+            shown(account)
+        );
     }
 
-    /// A deny for a trustee takes its rights back, and the rights of no other.
+    /// A deny for the account takes its rights back, which is what a protected
+    /// path has to read as. The same run showed a deny ACE taking the rights
+    /// back for a trustee it does not name as well, so the check reads a deny as
+    /// an answer and never as noise, and a file carrying one for an account
+    /// nobody is asking about reads as unreadable.
     #[test]
     fn a_deny_for_the_account_takes_its_rights_back() {
         let buf = dacl(&[
             (false, READ_EXEC, LOCAL_SERVICE),
             (true, READ_EXEC, LOCAL_SERVICE),
-            (false, READ_EXEC, EVERYONE),
         ]);
         let dacl = buf.as_ptr().cast::<ACL>();
+        let account = sid_rights(dacl, LOCAL_SERVICE);
 
-        assert!(!sid_can_read(dacl, LOCAL_SERVICE));
-        assert!(group_can_read(dacl, WinWorldSid));
+        assert!(
+            !sid_can_read(dacl, LOCAL_SERVICE),
+            "{LOCAL_SERVICE} answered {}",
+            shown(account)
+        );
     }
 
-    /// An ACE written in generic rights stands for the specific ones, which is
-    /// what a grant made by something other than srt-win can look like.
+    /// An ACE written in the generic rights answers as no rights at all, which
+    /// is what `GetEffectiveRightsFromAclW` reports for a mask it does not map.
+    /// A folder opened to crabpot in generic rights is therefore refused, and
+    /// the profile half of `Runner::readable` is what saves it.
     #[test]
-    fn generic_rights_answer_for_the_specific_ones() {
+    fn generic_rights_answer_as_nothing() {
         let buf = dacl(&[(false, GENERIC_READ | GENERIC_EXECUTE, LOCAL_SERVICE)]);
+        let dacl = buf.as_ptr().cast::<ACL>();
+        let account = sid_rights(dacl, LOCAL_SERVICE);
 
-        assert!(sid_can_read(buf.as_ptr().cast(), LOCAL_SERVICE));
+        assert!(
+            !sid_can_read(dacl, LOCAL_SERVICE),
+            "{LOCAL_SERVICE} answered {}",
+            shown(account)
+        );
     }
 
     /// Reading a file is not running it.
     #[test]
     fn read_data_alone_is_not_read_and_execute() {
         let buf = dacl(&[(false, FILE_READ_DATA, LOCAL_SERVICE)]);
+        let dacl = buf.as_ptr().cast::<ACL>();
+        let account = sid_rights(dacl, LOCAL_SERVICE);
 
-        assert!(!sid_can_read(buf.as_ptr().cast(), LOCAL_SERVICE));
+        assert!(
+            !sid_can_read(dacl, LOCAL_SERVICE),
+            "{LOCAL_SERVICE} answered {}",
+            shown(account)
+        );
     }
 
     /// A SID the machine does not know answers as no grant, and not as a
@@ -247,7 +312,9 @@ mod tests {
     #[test]
     fn a_string_that_is_not_a_sid_grants_nothing() {
         let buf = dacl(&[(false, READ_EXEC, EVERYONE)]);
+        let dacl = buf.as_ptr().cast::<ACL>();
 
-        assert!(!sid_can_read(buf.as_ptr().cast(), "nonsense"));
+        assert!(!sid_can_read(dacl, "nonsense"));
+        assert!(sid_can_read(dacl, EVERYONE));
     }
 }

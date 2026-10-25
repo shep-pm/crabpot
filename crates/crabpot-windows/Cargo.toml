@@ -5,28 +5,25 @@ edition.workspace = true
 rust-version.workspace = true
 description = "The Windows half of crabpot: upstream's srt-win source, taken in under crabpot's name"
 repository.workspace = true
-license.workspace = true
+# `srt-win/` is upstream's Apache-2.0 source (ADR-0005), and it is nearly all
+# of this crate, so the crate carries that licence alone instead of the
+# workspace's `MIT OR Apache-2.0`. `NOTICE` keeps upstream's attribution.
+license = "Apache-2.0"
 keywords.workspace = true
 # docs/ holds planning and design notes. They belong in the repository, not in
 # a published .crate, which is permanent.
 exclude = ["/docs/"]
-# ADR-0012 never publishes a platform crate empty, and ADR-0005 keeps
-# upstream's internal API off crates.io entirely: this crate is never
-# published, empty or not. The Windows release slice flips `release` in
-# `release-plz.toml` only once the facade depends on it.
+# ADR-0012 never publishes a platform crate before it holds that platform's
+# sandbox, and this one holds it: the Windows release slice (#165) flips this
+# flag and `release` in `release-plz.toml`. ADR-0015 settled that publishing it
+# is allowed, because upstream's modules are crate-private here and its internal
+# API never reaches crates.io.
 publish = false
 
-# Upstream's two integration tests, kept where upstream keeps them. Each needs
-# the one-line `use crabpot_windows as srt_win;` alias at its head, because the
-# library here is `crabpot_windows` and not `srt_win` (ADR-0005). See
-# PATCHES.md.
-[[test]]
-name = "persistent_grant_access_check"
-path = "srt-win/tests/persistent_grant_access_check.rs"
-
-[[test]]
-name = "sd_access_check_matrix"
-path = "srt-win/tests/sd_access_check_matrix.rs"
+# No test targets here, and a sync from upstream must not add any: the two
+# access-check tests under `srt-win/tests/` are included from `src/lib.rs` as
+# test modules, because an integration test cannot name a `pub(crate)` module
+# (ADR-0015). See PATCHES.md.
 
 # The path rules (`fs_access`) compile on every host, so this is not
 # `cfg(windows)`: the pure string tests run on the macOS and Linux runners too.

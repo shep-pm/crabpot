@@ -25,7 +25,8 @@ crabpot-core = { path = "crates/crabpot-core", version = "0.2.0" }
 # version back here, where release-plz keeps it from then on.
 crabpot-linux = { path = "crates/crabpot-linux" }
 crabpot-macos = { path = "crates/crabpot-macos", version = "0.2.0" }
-# ADR-0005 never publishes this crate, so no slice adds a version back here.
+# ADR-0015 publishes this crate, and the Windows release slice (#165) adds its
+# version back here when it flips `publish` and `release`.
 crabpot-windows = { path = "crates/crabpot-windows" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }

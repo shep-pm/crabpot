@@ -1,22 +1,37 @@
 //! What upstream's Windows runner asks of the harness: a probe at a path with
-//! no backslash in it, folders the sandbox user can enter, and one command run
-//! before the first case.
+//! no backslash in it, folders the sandbox user can enter, one command run
+//! before the first case, and the count of sandboxes the install's proxy port
+//! range holds.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+use serde_json::Value;
 
 use crate::case::Probe;
 
 use super::wrapper::exit_code;
-use super::{Error, Upstream, spell_for_upstream};
+use super::{Error, Upstream, gated, sandboxes_in_range, spell_for_upstream};
 
 /// How many times the warm-up command is tried. `srt-win wfp verify` times out
 /// after 30 s, and has done so on the first run on a runner that had only just
 /// installed the filters.
 const ATTEMPTS: u32 = 3;
+
+/// The argument that hands a multicall binary's whole command line to srt-win,
+/// which is `crabpot_windows::SRT_WIN_DISPATCH_ARG1`. crabpot's own status read
+/// passes it the same way.
+const SRT_WIN_FLAG: &str = "--srt-win";
+
+/// The loopback ports `windows-install` leaves open for the proxy unless it is
+/// told another. It is what a sandbox binds in when its status reports no range
+/// at all, and so the same default `crabpot_core::proxy::PortRange::DEFAULT`
+/// and srt-win's `DEFAULT_PROXY_PORT_RANGE` hold.
+const DEFAULT_PROXY_PORT_RANGE: (u16, u16) = (60080, 60089);
 
 /// The folder every case root and staged probe goes under, on the system drive.
 ///
@@ -126,6 +141,61 @@ impl Drop for Staged {
     }
 }
 
+/// How many sandboxes this machine's install holds at once, which is what the
+/// harness's gate is set to before any probe runs. See `sandboxes_in_range`.
+///
+/// The count comes from the range `wfp status` reports, read once for the
+/// harness process by running `probe` as srt-win, which is how crabpot's own
+/// status reads the install. BFE's filter enum is admin-gated, and an
+/// unelevated `wfp status` answers `state:"cannot-read"` with no range at all:
+/// the harness then holds to the install's default, which is the range a sandbox
+/// binds in under that status too.
+pub(super) fn sandboxes_at_once(probe: &Path) -> usize {
+    static SANDBOXES: OnceLock<usize> = OnceLock::new();
+    *SANDBOXES.get_or_init(|| match read_port_range(probe) {
+        Some((first, last)) => sandboxes_in_range(first, last),
+        None => {
+            eprintln!(
+                "report: `wfp status` named no proxy port range, so the harness runs no more \
+                 than {} sandboxes at once: what the install's default {}-{} holds",
+                sandboxes_in_range(DEFAULT_PROXY_PORT_RANGE.0, DEFAULT_PROXY_PORT_RANGE.1),
+                DEFAULT_PROXY_PORT_RANGE.0,
+                DEFAULT_PROXY_PORT_RANGE.1,
+            );
+            sandboxes_in_range(DEFAULT_PROXY_PORT_RANGE.0, DEFAULT_PROXY_PORT_RANGE.1)
+        }
+    })
+}
+
+/// The range the installed filters permit the proxy to listen in, or `None` for
+/// a `wfp status` that did not run, answered what is not JSON, or named no
+/// range. An unelevated one names none: BFE's filter enum is admin-gated, and
+/// the query degrades to `state:"cannot-read"` rather than failing.
+fn read_port_range(probe: &Path) -> Option<(u16, u16)> {
+    let output = Command::new(probe)
+        .arg(SRT_WIN_FLAG)
+        .args(["wfp", "status"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let status: Value = serde_json::from_slice(&output.stdout).ok()?;
+    let range = status.get("port_range")?.as_array()?;
+    // A range that is not two ports is not the pair the fence was installed
+    // with, and a port that does not fit a `u16` is not a port.
+    let (Some(low), Some(high)) = (
+        range.first().and_then(Value::as_u64),
+        range.get(1).and_then(Value::as_u64),
+    ) else {
+        return None;
+    };
+    let (Ok(low), Ok(high)) = (u16::try_from(low), u16::try_from(high)) else {
+        return None;
+    };
+    (low <= high).then_some((low, high))
+}
+
 /// Runs one trivial probe under `upstream`, the first time any case in this
 /// process asks. It is the first sandboxed command since the install, so it
 /// pays for the filters coming up, and the cases that follow do not. Every
@@ -147,7 +217,7 @@ fn attempt(upstream: &Upstream, staged: &Staged) -> Result<(), String> {
     let probe = Probe::Read(staged.probe.display().to_string());
     let mut last = String::new();
     for attempt in 1..=ATTEMPTS {
-        match exit_code(upstream.command(staged.settings(), &probe), "upstream") {
+        match gated(|| exit_code(upstream.command(staged.settings(), &probe), "upstream")) {
             Ok(_) => return Ok(()),
             Err(error) => {
                 eprintln!("report: warm-up attempt {attempt} of {ATTEMPTS}: {error}");

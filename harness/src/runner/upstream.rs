@@ -26,7 +26,8 @@ impl Upstream {
     /// Finds Node and the installed package, to run the `probe` binary at `probe`.
     /// On Linux it also finds `bwrap`, which upstream's runner needs and a
     /// developer's machine may not have. On Windows it copies the probe to a
-    /// path upstream can pass on, and runs a warm-up command the first time.
+    /// path upstream can pass on, sets the harness's gate to what the install's
+    /// proxy port range holds, and runs a warm-up command the first time.
     ///
     /// # Errors
     ///
@@ -59,6 +60,11 @@ impl Upstream {
         #[cfg(windows)]
         {
             let staged = super::windows::Staged::new(&probe).map_err(Error::Io)?;
+            // Each sandbox takes two loopback ports from the range the installed
+            // filters permit, so no more sandboxes may run at once than that
+            // range holds. Set before the warm-up, which is the first sandbox
+            // this process starts.
+            super::set_gate(super::windows::sandboxes_at_once(&probe));
             let upstream = Self {
                 cli,
                 probe: staged.probe().to_path_buf(),

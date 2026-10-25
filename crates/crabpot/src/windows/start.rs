@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use super::command::{self, Params};
 use super::plan::Plan;
+use super::runner::Runner;
 use super::srt::{Call, Output, Srt};
 use super::status::{LoopbackMode, ProfileState, WindowsStatus};
 use crate::{StartError, WrapError};
@@ -167,54 +168,6 @@ pub(crate) struct Host {
     pub(crate) srt: Arc<dyn Srt>,
     pub(crate) holder: u32,
     pub(crate) runner: Runner,
-}
-
-/// What decides whether the sandbox user can read this binary, which it runs as
-/// the runner.
-#[derive(Debug)]
-pub(crate) struct Runner {
-    /// This binary.
-    pub(crate) exe: PathBuf,
-    /// The profile a current profile read grant opens to the sandbox user,
-    /// `None` when no such grant is in place.
-    pub(crate) granted_profile: Option<PathBuf>,
-    /// Whether a group the sandbox user is in can read `exe`. `None` for a
-    /// check the machine could not make, which refuses nothing.
-    pub(crate) groups_can_read: Option<bool>,
-}
-
-impl Runner {
-    /// The facts for `exe` on this machine, where `grant_is_current` says
-    /// whether a profile read grant is in place.
-    #[cfg(windows)]
-    pub(crate) fn of(exe: PathBuf, grant_is_current: bool) -> Self {
-        Self {
-            granted_profile: granted_profile(grant_is_current),
-            groups_can_read: super::ffi::groups_can_read(&exe),
-            exe,
-        }
-    }
-
-    /// Whether the sandbox user can read `exe`: a group it is in can, or `exe`
-    /// is under `granted_profile`, the profile a current read grant opens to
-    /// it.
-    pub(crate) fn readable(&self) -> bool {
-        self.groups_can_read.unwrap_or(true)
-            || self
-                .granted_profile
-                .as_deref()
-                .is_some_and(|profile| self.exe.starts_with(profile))
-    }
-}
-
-/// The profile a current profile read grant opens to the sandbox user, which is
-/// the form its path is compared in. `None` when no grant is in place, or the
-/// machine names no profile.
-#[cfg(windows)]
-fn granted_profile(grant_is_current: bool) -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .filter(|_| grant_is_current)
-        .and_then(|p| std::fs::canonicalize(p).ok())
 }
 
 /// A loopback listener a `wfp verify` attempt is aimed at, and what keeps it
@@ -765,14 +718,16 @@ mod tests {
             ..runner_under_the_profile()
         };
 
-        drop(start_under(
-            srt,
-            granted,
-            &Verified::new(),
-            &status(),
-            &Config::default(),
-        )
-        .unwrap());
+        drop(
+            start_under(
+                srt,
+                granted,
+                &Verified::new(),
+                &status(),
+                &Config::default(),
+            )
+            .unwrap(),
+        );
     }
 
     #[test]
@@ -783,14 +738,8 @@ mod tests {
             ..runner_under_the_profile()
         };
 
-        let error = start_under(
-            srt,
-            other,
-            &Verified::new(),
-            &status(),
-            &Config::default(),
-        )
-        .unwrap_err();
+        let error =
+            start_under(srt, other, &Verified::new(), &status(), &Config::default()).unwrap_err();
 
         assert_eq!(error, StartError::RunnerUnreadable);
         assert!(
@@ -808,14 +757,7 @@ mod tests {
             ..runner_under_the_profile()
         };
 
-        drop(start_under(
-            srt,
-            unread,
-            &Verified::new(),
-            &status(),
-            &Config::default(),
-        )
-        .unwrap());
+        drop(start_under(srt, unread, &Verified::new(), &status(), &Config::default()).unwrap());
     }
 
     #[test]

@@ -256,7 +256,7 @@ impl Host for Machine {
         let exe = current_exe()?;
         // Only a grant that is in place opens the profile.
         let granted = super::windows_status().is_ok_and(|s| s.profile == ProfileState::Current);
-        if super::start::Runner::of(exe.clone(), granted).readable() {
+        if super::runner::Runner::of(exe.clone(), granted).readable() {
             Ok(())
         } else {
             Err(InstallError::RunnerUnreadable(exe))
@@ -432,7 +432,14 @@ mod tests {
             host.ran,
             [
                 vec!["install"],
-                vec!["profile", "grant", "--exclude", r"C:\Users\me\.aws", "--exclude", ".ssh"],
+                vec![
+                    "profile",
+                    "grant",
+                    "--exclude",
+                    r"C:\Users\me\.aws",
+                    "--exclude",
+                    ".ssh"
+                ],
             ]
         );
     }

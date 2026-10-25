@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;
 
@@ -593,6 +594,60 @@ fn a_windows_path_is_spelled_with_forward_slashes_for_upstream() {
     ] {
         assert_eq!(spell_for_upstream(path), spelled, "{path}");
     }
+}
+
+/// Each sandbox's proxies take two loopback ports from the range the installed
+/// filters permit, so the range holds half as many sandboxes as it has ports.
+/// `cargo test` runs one case per logical CPU, and a machine with more CPUs than
+/// the range holds ports ran more sandboxes than the range could answer for.
+#[test]
+fn the_gate_holds_half_the_proxy_port_range() {
+    // The range `windows-install` leaves open unless it is told another.
+    assert_eq!(sandboxes_in_range(60080, 60089), 5);
+    // The odd port out holds no sandbox.
+    assert_eq!(sandboxes_in_range(60080, 60090), 5);
+    assert_eq!(sandboxes_in_range(60080, 60081), 1);
+    // The widest range an install may take is 65 ports.
+    assert_eq!(sandboxes_in_range(60001, 60065), 32);
+    // A range too narrow to pair holds no sandbox, and the gate still lets one
+    // through: the case gets the answer a sandbox that cannot bind gives, and
+    // not a harness that waits for a slot that never frees.
+    assert_eq!(sandboxes_in_range(60080, 60080), 1);
+}
+
+/// A slot is held for the whole probe run that took it, so a gate of `n` never
+/// has more than `n` runs inside it at once.
+#[test]
+fn a_gate_holds_no_more_than_its_capacity_at_once() {
+    let gate = Gate::new(2);
+    let live = AtomicUsize::new(0);
+    let peak = AtomicUsize::new(0);
+    let ran = AtomicUsize::new(0);
+
+    std::thread::scope(|scope| {
+        for _ in 0..6 {
+            scope.spawn(|| {
+                let _slot = gate.acquire();
+                let held = live.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(held, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                live.fetch_sub(1, Ordering::SeqCst);
+                ran.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+    });
+
+    assert_eq!(ran.load(Ordering::SeqCst), 6, "every run reached the gate");
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        0,
+        "every run gave its slot back"
+    );
+    assert!(
+        (1..=2).contains(&peak.load(Ordering::SeqCst)),
+        "the gate held {} at once, and its capacity is 2",
+        peak.load(Ordering::SeqCst)
+    );
 }
 
 #[test]

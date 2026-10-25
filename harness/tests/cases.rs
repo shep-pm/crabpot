@@ -745,11 +745,14 @@ fn kelpie_full_policy_windows() {
 /// job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and never touches it,
 /// so the probe starts a child inside the sandbox and asks whether the command
 /// and that child are held in a job, and whether that job ends its members when
-/// it closes, which is what ends the two together. A process holds no handle of
-/// the job it is in, so the probe cannot name that job, and both Windows runners
-/// hold the harness itself in a kill-on-close job (CI run 40171054663). The case
-/// pins that the two runners hold a command's tree in a job of the same shape,
-/// and says nothing on its own about a sandbox that stopped holding one.
+/// it closes, which is what ends the two together.
+///
+/// The case is the parity ADR-0007 asks for and no more. A process holds no
+/// handle of the job it is in, so the probe cannot name that job, and both
+/// Windows runners hold the harness itself in a kill-on-close job (CI run
+/// 40171054663). On a runner that holds its own children that way the case
+/// cannot catch a crabpot that dropped its own job, because the job the command
+/// inherited answers the probe's questions the same way.
 #[test]
 fn kelpie_group_signal_windows() {
     run(

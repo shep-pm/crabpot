@@ -91,10 +91,9 @@ fn start_child() -> Result<Child, Error> {
 /// holds it and cannot name that job. Both Windows runners hold the harness
 /// itself in a job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, which CI run
 /// 40171054663 measured by asking this probe's questions of a process running no
-/// sandbox. On those runners the answer is the same for a sandboxed command and
-/// for an unsandboxed one, so `kelpie_group_signal_windows` pins that the two
-/// runners hold a command's tree in a job of the same shape, and says nothing on
-/// its own about a sandbox that stopped holding one.
+/// sandbox. On such a runner the answer is the same for a sandboxed command and
+/// for one no sandbox holds, so `kelpie_group_signal_windows` is the parity
+/// ADR-0007 asks for, and it cannot catch a crabpot that dropped its own job.
 ///
 /// A job holds every child of a process it holds unless that process may break
 /// away, and `srt-win` gives the command a job that may not, so a child held in a

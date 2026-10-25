@@ -141,11 +141,23 @@ jobs:
       - name: crabpot windows-install and windows-uninstall round trip
         run: |
           cargo build --quiet --locked -p crabpot
+          # A crabpot under the profile is what `cargo install` puts there, and
+          # what kelpie's binary is. It is copied before the install so the
+          # profile read grant the install makes covers it: a top-level item
+          # that appears after a grant stays unreadable until it runs again.
+          $under = Join-Path $env:USERPROFILE 'crabpot-under-profile\crabpot.exe'
+          New-Item -ItemType Directory -Force -Path (Split-Path $under) | Out-Null
+          Copy-Item ./target/debug/crabpot.exe $under
           ./target/debug/crabpot.exe windows-install
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo test --locked -p crabpot --test windows_installed
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo test --locked -p crabpot --test windows_sandbox
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # The copied crabpot runs a command, which needs the sandbox user to
+          # read it as the runner. Only the grant opens it, and before #215
+          # there was no grant, which seclogon reported as "Access is denied".
+          & $under -- cmd /c echo crabpot-under-profile
           if ($LASTEXITCODE -ne 0) { exit 1 }
           ./target/debug/crabpot.exe windows-uninstall
           if ($LASTEXITCODE -ne 0) { exit 1 }

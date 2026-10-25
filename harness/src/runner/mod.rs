@@ -31,7 +31,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 use serde_json::Value;
 
-use crate::case::{self, Case, Platform, Probe};
+use crate::case::{self, Case, Endpoint, Platform, Probe};
 use crate::probe;
 use crate::serve;
 
@@ -693,7 +693,7 @@ impl Prepared {
             .case
             .serve
             .as_ref()
-            .map(|serve| serve::Served::start(Path::new(&serve.unix_socket), &serve.status))
+            .map(|serve| serve::Served::start(&serve.endpoint, &serve.status))
             .transpose()
             .map_err(Error::Io)?;
         Ok(())
@@ -707,11 +707,10 @@ impl Prepared {
 
     /// The closure that puts the fixture back as the case describes it.
     fn restore(&self) -> impl Fn() -> Result<(), Error> + '_ {
-        let keep = self
-            .case
-            .serve
-            .as_ref()
-            .map_or(Path::new(""), |serve| Path::new(&serve.unix_socket));
+        let keep = match self.case.serve.as_ref().map(|serve| &serve.endpoint) {
+            Some(Endpoint::UnixSocket(socket)) => Path::new(socket),
+            Some(Endpoint::NamedPipe(_)) | None => Path::new(""),
+        };
         let root = &self.root;
         let settings = &self.settings;
         move || {

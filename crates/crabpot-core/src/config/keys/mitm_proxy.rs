@@ -1,5 +1,6 @@
 //! `network.mitmProxy`: domains routed through an upstream proxy over a Unix
-//! socket. Both parts are required, and `domains` holds at least one.
+//! socket, or on Windows a named pipe. Both parts are required, and `domains`
+//! holds at least one.
 
 use serde::{Deserialize, Deserializer};
 
@@ -8,12 +9,15 @@ use crate::domain::DomainPattern;
 
 pub(crate) const PATH: &str = "network.mitmProxy";
 
-/// The Unix socket of an upstream proxy, and the domains sent to it.
+/// The Unix socket or Windows named pipe of an upstream proxy, and the domains
+/// sent to it.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct MitmProxy {
-    /// The Unix socket path of the proxy.
+    /// The Unix socket path of the proxy. On Windows a path under `\\.\pipe\`
+    /// or `\\?\pipe\` is a named pipe, as it is for upstream's
+    /// `net.connect({ path })`, and any other path is an AF_UNIX socket.
     #[serde(deserialize_with = "socket_path")]
     pub socket_path: String,
     /// The domains routed through it.

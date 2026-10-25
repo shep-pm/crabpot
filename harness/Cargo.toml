@@ -29,6 +29,9 @@ nix = { version = "0.31", default-features = false, features = ["sched", "socket
 # asks whether a sandboxed command is held in, which std has no form of on
 # Windows. Tokio already pulls the crate into the lock.
 [target.'cfg(windows)'.dependencies]
+# The named pipe a served case answers on, which std has no server for. Only
+# `serve` reads it.
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time"] }
 windows-sys = { version = "0.61", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Networking_WinSock",

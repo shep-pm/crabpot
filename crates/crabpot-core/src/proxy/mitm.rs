@@ -1,5 +1,6 @@
 //! `network.mitmProxy`: the domains sent to an upstream proxy over a Unix
-//! socket, as upstream's `getMitmSocketPath` (`src/sandbox/sandbox-manager.ts`)
+//! socket (on Windows, a named pipe when the path names one), as upstream's
+//! `getMitmSocketPath` (`src/sandbox/sandbox-manager.ts`)
 //! and `openConnectTunnel` (`src/sandbox/parent-proxy.ts`) route them.
 //!
 //! crabpot terminates no TLS here. A `CONNECT` is answered with a raw `CONNECT`
@@ -13,12 +14,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-// Windows carries an AF_UNIX stream in the socket type of its TCP one.
-#[cfg(windows)]
-use tokio::net::TcpStream as Stream;
-#[cfg(unix)]
-use tokio::net::UnixStream as Stream;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
 use crate::config::MitmProxy;
@@ -28,13 +24,36 @@ use crate::unix_socket::connect;
 #[cfg(windows)]
 use crate::win32::connect_unix as connect;
 
+/// What a `socketPath` opens: a Unix socket, or on Windows a named pipe.
+pub(super) trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+
+type Stream = Box<dyn Duplex>;
+
 /// How long a socket may take to open, and to answer the `CONNECT`, which is
 /// upstream's `CONNECT_TIMEOUT_MS`.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Whether `path` names a Windows named pipe, which lives under `\\.\pipe\` or
+/// `\\?\pipe\`.
+#[cfg(any(windows, test))]
+fn is_pipe_name(path: &str) -> bool {
+    let mut parts = path.split('\\');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(""), Some(""), Some("." | "?"), Some(pipe), Some(name))
+            if pipe.eq_ignore_ascii_case("pipe") && !name.is_empty()
+    )
+}
+
 /// How far a `CONNECT` answer may grow before the tunnel is refused, which is
 /// the cap Node's `openConnectTunnel` holds itself to.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
+
+/// How long a dial waits before it asks a busy pipe again.
+#[cfg(windows)]
+const PIPE_BUSY_RETRY: Duration = Duration::from_millis(50);
 
 /// The domains routed through a Unix socket, and the socket they go to.
 #[derive(Debug)]
@@ -82,7 +101,7 @@ type Socket = Stream;
 pub(super) async fn open_tunnel(path: &str, host: &str, port: u16) -> io::Result<Tunnel> {
     let authority = connect_authority(host, port);
     let handshake = async {
-        let mut upstream = BufReader::new(connect(Path::new(path)).await?);
+        let mut upstream = BufReader::new(dial(path).await?);
         upstream
             .write_all(
                 format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes(),
@@ -114,7 +133,7 @@ pub(super) async fn open_tunnel(path: &str, host: &str, port: u16) -> io::Result
 /// The [`io::Error`] of a socket that cannot be opened, or of one that does not
 /// open within [`CONNECT_TIMEOUT`].
 pub(super) async fn open_socket(path: &str) -> io::Result<Socket> {
-    match timeout(CONNECT_TIMEOUT, connect(Path::new(path))).await {
+    match timeout(CONNECT_TIMEOUT, dial(path)).await {
         Ok(outcome) => outcome,
         Err(_) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -123,8 +142,36 @@ pub(super) async fn open_socket(path: &str) -> io::Result<Socket> {
     }
 }
 
+/// Open what `path` names. On Windows a pipe name is a named pipe, as Node's
+/// `net.connect({ path })` reads it, and any other path is an AF_UNIX socket.
+async fn dial(path: &str) -> io::Result<Stream> {
+    #[cfg(windows)]
+    if is_pipe_name(path) {
+        return dial_pipe(path).await;
+    }
+    Ok(Box::new(connect(Path::new(path)).await?))
+}
+
+/// Open the named pipe at `path`, asking again while every instance of it is
+/// busy. The caller's timeout ends the asking.
+#[cfg(windows)]
+async fn dial_pipe(path: &str) -> io::Result<Stream> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+
+    loop {
+        match ClientOptions::new().open(path) {
+            Ok(pipe) => return Ok(Box::new(pipe)),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                tokio::time::sleep(PIPE_BUSY_RETRY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Read the answer up to its blank line, and return its status line.
-async fn read_status_line(upstream: &mut BufReader<Stream>) -> io::Result<String> {
+async fn read_status_line(upstream: &mut Tunnel) -> io::Result<String> {
     let mut head = Vec::new();
     while head.len() < MAX_HEAD_BYTES {
         if upstream.read_until(b'\n', &mut head).await? == 0 {
@@ -327,6 +374,118 @@ mod tests {
         );
     }
 
+    /// A pipe name no other test, and no other run of this one, serves.
+    #[cfg(windows)]
+    fn pipe_name(test: &str) -> String {
+        format!(r"\\.\pipe\crabpot-mitm-{}-{test}", std::process::id())
+    }
+
+    /// A pipe that answers one `CONNECT` with a 2xx and `onward`, echoes five
+    /// bytes, and hands back the head it saw once the client lets go.
+    #[cfg(windows)]
+    fn serve_pipe(
+        server: tokio::net::windows::named_pipe::NamedPipeServer,
+    ) -> tokio::task::JoinHandle<String> {
+        tokio::spawn(async move {
+            server.connect().await.unwrap();
+            let mut server = BufReader::new(server);
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                if server.read_until(b'\n', &mut head).await.unwrap() == 0 {
+                    break;
+                }
+            }
+            server
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nonward")
+                .await
+                .unwrap();
+            let mut echoed = [0u8; 5];
+            server.read_exact(&mut echoed).await.unwrap();
+            server.write_all(&echoed).await.unwrap();
+            server.flush().await.unwrap();
+            // The client's end closing is what lets the answer be read whole.
+            let _ = server.read(&mut echoed).await;
+            String::from_utf8_lossy(&head).into_owned()
+        })
+    }
+
+    /// Reads what [`serve_pipe`] sends with its answer, and has five bytes
+    /// echoed back, which is the exchange it waits for.
+    #[cfg(windows)]
+    async fn carry(tunnel: &mut Tunnel) {
+        let mut onward = [0u8; 6];
+        tunnel.read_exact(&mut onward).await.unwrap();
+        assert_eq!(&onward, b"onward");
+        tunnel.write_all(b"hello").await.unwrap();
+        tunnel.flush().await.unwrap();
+        let mut echoed = [0u8; 5];
+        tunnel.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(&echoed, b"hello");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_mitm_tunnel_carries_bytes_over_a_named_pipe() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let name = pipe_name("relay");
+        let seen = block(async {
+            let server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&name)
+                .unwrap();
+            let seen = serve_pipe(server);
+
+            let mut tunnel = open_tunnel(&name, "example.com", 443)
+                .await
+                .expect("a 2xx answer opens the relay");
+            carry(&mut tunnel).await;
+            drop(tunnel);
+            seen.await.unwrap()
+        });
+
+        assert_eq!(
+            seen,
+            "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
+        );
+    }
+
+    /// The only instance of a pipe is taken, so the dial is told it is busy and
+    /// asks again until a second instance is served.
+    #[cfg(windows)]
+    #[test]
+    fn a_busy_named_pipe_is_asked_again() {
+        use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+        let name = pipe_name("busy");
+        let seen = block(async {
+            let first = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&name)
+                .unwrap();
+            let _occupant = ClientOptions::new().open(&name).unwrap();
+            first.connect().await.unwrap();
+
+            let dial = tokio::spawn({
+                let name = name.clone();
+                async move { open_tunnel(&name, "example.com", 443).await }
+            });
+            // The dial has been told the pipe is busy once this wait is over.
+            tokio::time::sleep(PIPE_BUSY_RETRY * 2).await;
+            let second = ServerOptions::new().create(&name).unwrap();
+            let seen = serve_pipe(second);
+            let mut tunnel = dial
+                .await
+                .unwrap()
+                .expect("the dial found the second instance");
+            carry(&mut tunnel).await;
+            drop(tunnel);
+            seen.await.unwrap()
+        });
+
+        assert!(seen.starts_with("CONNECT example.com:443"));
+    }
+
     /// Past the 104 bytes of macOS's `sun_path`, where a socket path is the
     /// user's own choice and upstream's Node dials it.
     #[cfg(target_os = "macos")]
@@ -340,6 +499,27 @@ mod tests {
 
         assert!(outcome.is_ok(), "{:?}", outcome.err());
         assert!(seen.join().unwrap().starts_with("CONNECT example.com:443"));
+    }
+
+    #[test]
+    fn only_a_pipe_namespace_path_is_a_pipe_name() {
+        for name in [
+            r"\\.\pipe\kelpie-worker",
+            r"\\?\pipe\kelpie-worker",
+            r"\\.\PIPE\kelpie-worker",
+        ] {
+            assert!(is_pipe_name(name), "{name}");
+        }
+        for name in [
+            "/run/mitm.sock",
+            r"C:\run\mitm.sock",
+            r"\\.\pipe",
+            r"\\.\pipes\kelpie",
+            r"\\server\pipe\kelpie",
+            r"\\.\C:\pipe\kelpie",
+        ] {
+            assert!(!is_pipe_name(name), "{name}");
+        }
     }
 
     #[test]

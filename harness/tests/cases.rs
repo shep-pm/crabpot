@@ -138,9 +138,11 @@ const LINUX_READY: &[&str] = &[
 /// mitm socket with Node's `net.connect({ path })`, which reads a path on Windows
 /// as a named pipe and not an AF_UNIX socket, so its probe exits 1 where
 /// crabpot's tunnel through the served socket exits 0. It runs under upstream
-/// alone, and under crabpot alone, held to that 0 by `WINDOWS_CRABPOT_ALONE`.
-/// The other two mitm cases never dial the socket successfully, and pass under
-/// both.
+/// alone, and under crabpot alone, held to that 0 by `WINDOWS_CRABPOT_ALONE`,
+/// since an AF_UNIX `socketPath` is crabpot's own extension there.
+/// `mitm_named_pipe_reaches_the_pipe` is the same tunnel through the named pipe
+/// upstream dials, and runs under both. The other two mitm cases never dial the
+/// socket successfully, and pass under both.
 const WINDOWS_READY: &[&str] = &[
     "default_settings",
     "refused_invalid_json",
@@ -198,13 +200,14 @@ const WINDOWS_READY: &[&str] = &[
     "strict_allowlist_false",
     "mitm_other_domain_goes_direct",
     "mitm_bad_socket_path_is_502",
+    "mitm_named_pipe_reaches_the_pipe",
     "resolved_address_loopback_name",
     "resolved_address_listed_cidr",
     "windows_backslash_argument",
     // kelpie's whole settings shape, with a probe for each part of it that
     // means something there. The mitm leg stays with
-    // `mitm_matching_domain_reaches_the_socket`, which crabpot is held to on its
-    // own, and the `allowUnixSockets` leg is the `bind-unix` probe in `scratch`.
+    // `mitm_named_pipe_reaches_the_pipe`, and the `allowUnixSockets` leg is the
+    // `bind-unix` probe in `scratch`.
     // Its `denyRead` entries name the runner's profile, which is what `~` is for
     // both runners there. The settings set `allowLocalBinding`, so it runs under
     // the open install.
@@ -614,6 +617,13 @@ fn mitm_matching_domain_reaches_the_socket() {
     );
 }
 
+/// The mitm endpoint as a Windows named pipe, which is the `socketPath` upstream
+/// dials there. Both runners tunnel through it.
+#[test]
+fn mitm_named_pipe_reaches_the_pipe() {
+    run("mitm_named_pipe_reaches_the_pipe", "mitm-named-pipe.json");
+}
+
 #[test]
 fn mitm_other_domain_goes_direct() {
     run("mitm_other_domain_goes_direct", "mitm-other-domain.json");
@@ -729,9 +739,9 @@ fn kelpie_full_policy() {
 }
 
 /// The same settings as the `kelpie_full_policy` case, on the probes that mean
-/// something on Windows. It leaves out the mitm `connect`, which upstream cannot
-/// dial there, and holds the `allowUnixSockets` leg as a `bind-unix` probe in
-/// `scratch`.
+/// something on Windows. It leaves out the mitm `connect`, which upstream dials
+/// there only as a named pipe, and holds the `allowUnixSockets` leg as a
+/// `bind-unix` probe in `scratch`.
 #[test]
 fn kelpie_full_policy_windows() {
     run(

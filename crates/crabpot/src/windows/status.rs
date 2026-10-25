@@ -17,6 +17,14 @@ pub struct WindowsStatus {
     pub user: UserState,
     /// The sandbox user's SID, when it has an account.
     pub sandbox_sid: Option<String>,
+    /// The SID of the group the sandbox user is in, when it has one. A grant
+    /// made for the sandbox is made for this group or for the account above.
+    pub sandbox_group_sid: Option<String>,
+    /// The SID of the account this process runs as, when the machine names it.
+    pub real_user_sid: Option<String>,
+    /// The SID of the user who owns the session this process runs in, when the
+    /// machine names one.
+    pub session_user_sid: Option<String>,
     /// The install's setup version beside this build's.
     pub setup_version: SetupVersion,
     /// Whether the WFP fence leaves loopback open.
@@ -100,6 +108,19 @@ pub enum ProfileState {
     Unknown,
 }
 
+impl WindowsStatus {
+    /// The account and the group a sandbox command runs as, which is who a grant
+    /// made for the sandbox names. A machine with no install names neither, and
+    /// a check left with nothing but the well-known groups.
+    #[must_use]
+    pub fn sandbox_sids(&self) -> Vec<&str> {
+        let mut sids = Vec::new();
+        sids.extend(self.sandbox_sid.as_deref());
+        sids.extend(self.sandbox_group_sid.as_deref());
+        sids
+    }
+}
+
 /// The error a srt-win query that exits with `code` stands for, when it is one
 /// of the exits a host acts on: 15 for no usable install, 18 for seclogon.
 pub fn refusal_for_exit(code: i32) -> Option<StartError> {
@@ -126,6 +147,7 @@ struct UserJson {
 struct UserAccount {
     exists: bool,
     sid: Option<String>,
+    group_sid: Option<String>,
 }
 
 /// `wfp status`, as far as a status reads it.
@@ -159,6 +181,10 @@ pub(crate) fn read(
     let profile: ProfileJson = parse("profile status", &[], &run)?;
     let provisioned =
         user.user.exists && user.cred_present && user.marker_version == Some(user.setup_version);
+    // A session without an owner is session 0, which is refused by name before
+    // the status is read.
+    let in_desktop_session =
+        user.session_user_sid.is_some() && user.session_user_sid == user.real_user_sid;
     Ok(WindowsStatus {
         user: if provisioned {
             UserState::Provisioned
@@ -166,6 +192,9 @@ pub(crate) fn read(
             UserState::NotProvisioned
         },
         sandbox_sid: user.user.sid,
+        sandbox_group_sid: user.user.group_sid,
+        real_user_sid: user.real_user_sid,
+        session_user_sid: user.session_user_sid,
         setup_version: SetupVersion {
             installed: user.marker_version,
             expected: user.setup_version,
@@ -186,10 +215,7 @@ pub(crate) fn read(
         },
         profile_exclusions: profile.exclusions,
         seclogon_runs: !matches!(user.seclogon.as_str(), "disabled" | "missing"),
-        // A session without an owner is session 0, which is refused by name
-        // before the status is read.
-        in_desktop_session: user.session_user_sid.is_some()
-            && user.session_user_sid == user.real_user_sid,
+        in_desktop_session,
     })
 }
 
@@ -213,7 +239,8 @@ mod tests {
 
     const PROVISIONED: &str = r#"{
         "user": {"name": "crabpot-sandbox", "exists": true, "sid": "S-1-5-21-1",
-                 "group_exists": true, "in_builtin_users": true,
+                 "group_exists": true, "group_sid": "S-1-5-21-9",
+                 "in_builtin_users": true,
                  "in_sandbox_group": true, "hidden_from_logon": true},
         "cred_present": true, "marker_version": 3, "setup_version": 3,
         "real_user_sid": "S-1-5-21-2", "session_user_sid": "S-1-5-21-2",
@@ -222,6 +249,17 @@ mod tests {
     const WFP: &str =
         r#"{"state":"installed","filters":4,"port_range":[3128,3130],"allow_loopback":false}"#;
     const PROFILE: &str = r#"{"state":"current","record_version":1}"#;
+    /// An account with no group beside it, which is what a machine whose sandbox
+    /// group is missing reads as.
+    const NO_GROUP: &str = r#"{
+        "user": {"name": "crabpot-sandbox", "exists": true, "sid": "S-1-5-21-1",
+                 "group_exists": false, "group_sid": null,
+                 "in_builtin_users": true,
+                 "in_sandbox_group": false, "hidden_from_logon": true},
+        "cred_present": true, "marker_version": 3, "setup_version": 3,
+        "real_user_sid": "S-1-5-21-2", "session_user_sid": "S-1-5-21-2",
+        "profile_grant": {"state": "present"}, "seclogon": "ok"
+    }"#;
 
     /// A srt-win whose three queries print what it is given.
     fn fake(user: &str, wfp: &str) -> impl Fn(&'static str, &[&str]) -> Result<String, StartError> {
@@ -240,6 +278,10 @@ mod tests {
 
         assert_eq!(status.user, UserState::Provisioned);
         assert_eq!(status.sandbox_sid.as_deref(), Some("S-1-5-21-1"));
+        assert_eq!(status.sandbox_group_sid.as_deref(), Some("S-1-5-21-9"));
+        assert_eq!(status.sandbox_sids(), ["S-1-5-21-1", "S-1-5-21-9"]);
+        assert_eq!(status.real_user_sid.as_deref(), Some("S-1-5-21-2"));
+        assert_eq!(status.session_user_sid.as_deref(), Some("S-1-5-21-2"));
         assert_eq!(
             status.setup_version,
             SetupVersion {
@@ -251,6 +293,17 @@ mod tests {
         assert_eq!(status.profile, ProfileState::Current);
         assert!(status.seclogon_runs);
         assert!(status.in_desktop_session);
+    }
+
+    /// A grant made for the sandbox is made for its account or for the group it
+    /// is in, and a machine missing one of the two is asked about the other.
+    #[test]
+    fn the_sandbox_sids_are_who_a_grant_for_the_sandbox_names() {
+        let both = read(None, fake(PROVISIONED, WFP)).unwrap();
+        assert_eq!(both.sandbox_sids(), ["S-1-5-21-1", "S-1-5-21-9"]);
+
+        let no_group = read(None, fake(NO_GROUP, WFP)).unwrap();
+        assert_eq!(no_group.sandbox_sids(), ["S-1-5-21-1"]);
     }
 
     #[test]

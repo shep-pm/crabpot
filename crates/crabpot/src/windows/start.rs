@@ -4,20 +4,20 @@
 //! verified, and the proxy starts in the range the fence permits.
 
 use core::any::Any;
-use core::fmt;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crabpot_core::config::Config;
-use crabpot_core::proxy::{PortRange, Proxy};
-use serde::Deserialize;
+use crabpot_core::proxy::{PortRange, Proxy, RangeError};
 
 use super::command::{self, Params};
+use super::held::Held;
 use super::plan::Plan;
-use super::srt::{Call, Output, Srt};
+use super::runner::Runner;
+use super::srt::{Call, Srt};
 use super::status::{LoopbackMode, ProfileState, WindowsStatus};
 use crate::{StartError, WrapError};
 
@@ -82,90 +82,13 @@ impl Session {
     }
 }
 
-/// The grants one process holds for a sandbox user, released when it drops.
-struct Held {
-    srt: Arc<dyn Srt>,
-    sid: String,
-    holder: u32,
-}
-
-impl fmt::Debug for Held {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Held")
-            .field("sid", &self.sid)
-            .field("holder", &self.holder)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Held {
-    fn call(&self, verb: &str) -> Call {
-        Call::new([
-            "acl",
-            verb,
-            "--holder-pid",
-            &self.holder.to_string(),
-            "--sandbox-user-sid",
-            &self.sid,
-            "--json",
-        ])
-    }
-}
-
-impl Drop for Held {
-    /// Revokes the grants, then restores the denies. A revoke that did not
-    /// finish leaves the denies in place, since a grant may still be on disk.
-    fn drop(&mut self) {
-        if revoked(&self.srt.run(&self.call("revoke"))) {
-            let _ = self.srt.run(&self.call("restore"));
-        } else {
-            eprintln!(
-                "crabpot: the sandbox's grants could not all be revoked, so its denies stay in place; `crabpot --srt-win acl recover` clears them once this process has exited"
-            );
-        }
-    }
-}
-
-/// One path `acl revoke` reports on.
-#[derive(Deserialize)]
-struct Outcome {
-    path: String,
-    status: String,
-}
-
-impl Outcome {
-    /// Whether the grant is released. A status this build does not know is not.
-    fn released(&self) -> bool {
-        match self.status.as_str() {
-            "revoked" | "stillHeld" | "downgraded" | "relocated" | "mismatch" | "noRow"
-            | "gone" => true,
-            // An older srt-win says it of a path it could not open too, so it
-            // counts only when the path is gone.
-            "missing" => matches!(
-                Path::new(&self.path).symlink_metadata(),
-                Err(e) if e.kind() == io::ErrorKind::NotFound
-            ),
-            _ => false,
-        }
-    }
-}
-
-/// Whether an `acl revoke` ran to the end and released every grant.
-fn revoked(output: &io::Result<Output>) -> bool {
-    let Ok(output) = output else {
-        return false;
-    };
-    output.succeeded()
-        && serde_json::from_str::<Vec<Outcome>>(&output.stdout)
-            .is_ok_and(|outcomes| outcomes.iter().all(Outcome::released))
-}
-
-/// What a session is started from: the calls to srt-win, this binary, and the
-/// process the grants are held for.
+/// What a session is started from: the calls to srt-win, the binary the
+/// sandbox user has to be able to read, and the process the grants are held
+/// for.
 pub(crate) struct Host {
     pub(crate) srt: Arc<dyn Srt>,
-    pub(crate) exe: PathBuf,
     pub(crate) holder: u32,
+    pub(crate) runner: Runner,
 }
 
 /// A loopback listener a `wfp verify` attempt is aimed at, and what keeps it
@@ -191,8 +114,9 @@ struct Prepared {
 ///
 /// # Errors
 ///
-/// Those of [`prepare`], then [`StartError::Proxy`] when the proxy cannot
-/// start, which releases the grants.
+/// Those of [`prepare`], then [`StartError::ProxyRangeFull`] when every port of
+/// the proxy port range is taken, and [`StartError::Proxy`] for the other ways
+/// the proxy cannot start, which releases the grants.
 pub(crate) fn start_with(
     host: Host,
     verified: &Verified,
@@ -211,9 +135,12 @@ pub(crate) fn start_with(
 /// nor current, [`StartError::StatusFailed`] for a status with no sandbox user
 /// SID, [`StartError::LoopbackMismatch`] for a session whose
 /// `network.allowLocalBinding` is not the loopback mode the install made,
+/// [`StartError::RunnerUnreadable`] for a runner the sandbox user cannot read,
 /// [`StartError::ProfileConflicts`] for a grant that meets the profile read
 /// grant's exclusions, [`StartError::GrantBlocked`], [`StartError::ProfileBusy`]
-/// or [`StartError::GrantFailed`] when the grant call fails, and the errors of
+/// or [`StartError::GrantFailed`] when the grant call fails,
+/// [`StartError::ProxyRangeRefused`] for a proxy port range the install reports
+/// or the settings name that is no range at all, and the errors of
 /// [`wfp::interpret`](super::wfp::interpret) when the fence is not verified. A
 /// failure after the grant releases it.
 fn prepare(
@@ -240,19 +167,23 @@ fn prepare(
     if allow_loopback != (status.loopback == LoopbackMode::Open) {
         return Err(StartError::LoopbackMismatch);
     }
+    // Before anything is granted, and before anything runs as the sandbox user:
+    // seclogon answers an unreadable runner with a message about the service,
+    // and the grant that would open a runner under the profile is the install's
+    // to make.
+    if !host.runner.readable() {
+        return Err(StartError::RunnerUnreadable);
+    }
     let plan = Plan::build(config, &status.profile_exclusions)?;
     // The range the install's filters name, which the fence probe must stay
     // outside of, and the range the proxy binds: the configured one first, as
     // upstream binds its proxies, then the installed one.
     let installed = match &status.proxy_ports {
-        Some(ports) => PortRange::new(*ports.start(), *ports.end()),
-        None => Ok(PortRange::DEFAULT),
-    }
-    .map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?;
+        Some(ports) => named_range(*ports.start(), *ports.end())?,
+        None => PortRange::DEFAULT,
+    };
     let range = match config.windows.proxy_port_range {
-        Some([first, last]) => {
-            PortRange::new(first, last).map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?
-        }
+        Some([first, last]) => named_range(first, last)?,
         None => installed,
     };
 
@@ -269,7 +200,7 @@ fn prepare(
     }
     Ok(Prepared {
         held,
-        exe: host.exe,
+        exe: host.runner.exe,
         plan,
         allow_loopback,
         range,
@@ -277,6 +208,13 @@ fn prepare(
 }
 
 impl Prepared {
+    /// Starts the proxy in `self.range`, which releases the grants when it
+    /// cannot.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::ProxyRangeFull`] when every port of the range is taken, and
+    /// [`StartError::Proxy`] for the other ways the proxy cannot start.
     fn start_proxy(self, config: &Config) -> Result<Session, StartError> {
         let proxy = Proxy::start_in_range(
             &config.network.allowed_domains,
@@ -290,7 +228,13 @@ impl Prepared {
             config.network.mitm_proxy.as_ref(),
             self.range,
         )
-        .map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?;
+        .map_err(|e| match e {
+            RangeError::Full(range) => StartError::ProxyRangeFull {
+                first: range.first(),
+                last: range.last(),
+            },
+            other => StartError::Proxy(io::Error::from(other).kind()),
+        })?;
         Ok(Session {
             proxy,
             exe: self.exe,
@@ -335,6 +279,14 @@ fn verify(
     super::wfp::interpret(&output)
 }
 
+/// The range `first..=last`, or the [`StartError`] that names it as a range the
+/// proxy cannot bind in.
+fn named_range(first: u16, last: u16) -> Result<PortRange, StartError> {
+    // `RangeError` is `non_exhaustive`: a refusal this build does not know of
+    // is a range the proxy cannot bind in either.
+    PortRange::new(first, last).map_err(|_| StartError::ProxyRangeRefused { first, last })
+}
+
 /// A loopback listener on a port the fence does not permit, since a port it
 /// permits would connect even with the fence active.
 fn listener_outside(range: PortRange) -> io::Result<Probe> {
@@ -356,14 +308,24 @@ fn listener_outside(range: PortRange) -> io::Result<Probe> {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicU16, Ordering};
+    use std::net::Ipv4Addr;
+
     use super::*;
-    use crate::windows::srt::fake::{BLOCKED, Calls, Fake, exit};
+    use crate::windows::srt::fake::{Calls, Fake, exit};
     use crate::windows::status::{LoopbackMode, ProfileExclusions, SetupVersion, UserState};
+
+    /// Where the next window of ports to hold is looked for, so that tests
+    /// running together do not hold the same ports.
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(20_000);
 
     fn status() -> WindowsStatus {
         WindowsStatus {
             user: UserState::Provisioned,
             sandbox_sid: Some("S-1-5-21-7".to_owned()),
+            sandbox_group_sid: Some("S-1-5-21-9".to_owned()),
+            real_user_sid: Some("S-1-5-21-2".to_owned()),
+            session_user_sid: Some("S-1-5-21-2".to_owned()),
             setup_version: SetupVersion {
                 installed: Some(3),
                 expected: 3,
@@ -398,17 +360,46 @@ mod tests {
         status: &WindowsStatus,
         config: &Config,
     ) -> Result<Prepared, StartError> {
+        start_under(srt, runner(), verified, status, config)
+    }
+
+    fn start_under(
+        srt: Fake,
+        runner: Runner,
+        verified: &Verified,
+        status: &WindowsStatus,
+        config: &Config,
+    ) -> Result<Prepared, StartError> {
         prepare(
             Host {
                 srt: Arc::new(srt),
-                exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
                 holder: 4242,
+                runner,
             },
             verified,
             status,
             config,
             &no_listener,
         )
+    }
+
+    /// A runner the sandbox user can read on its own: its access list names the
+    /// sandbox account, its group, or one of the groups of its token as able to
+    /// read and execute it, and no profile grant is needed for it.
+    fn runner() -> Runner {
+        Runner {
+            exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
+            dacl_allows: Some(true),
+        }
+    }
+
+    /// A runner under the profile whose own access list carries nothing for the
+    /// sandbox: the grant has not reached it.
+    fn runner_the_grant_never_reached() -> Runner {
+        Runner {
+            exe: PathBuf::from(r"C:\Users\me\.cargo\bin\crabpot.exe"),
+            dacl_allows: Some(false),
+        }
     }
 
     /// A status whose install was made with `--allow-loopback`.
@@ -608,8 +599,8 @@ mod tests {
         prepare(
             Host {
                 srt: Arc::new(srt),
-                exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
                 holder: 4242,
+                runner: runner(),
             },
             &Verified::new(),
             &status(),
@@ -629,8 +620,77 @@ mod tests {
 
         let error = start(srt, &Verified::new(), &status(), &config).unwrap_err();
 
-        assert!(matches!(error, StartError::Proxy(_)), "{error:?}");
+        assert_eq!(error, StartError::ProxyRangeRefused { first: 1, last: 65 });
+        assert!(error.to_string().contains("1-65"), "{error}");
         assert!(calls.all().is_empty(), "nothing is granted");
+    }
+
+    /// An install whose filters name a range that starts at port 0 is no range
+    /// the proxy can bind in, and the session says so before it grants anything.
+    #[test]
+    fn an_installed_range_that_starts_at_port_0_is_an_error() {
+        let (srt, calls) = Fake::passing();
+        let zero = WindowsStatus {
+            proxy_ports: Some(0..=10),
+            ..status()
+        };
+
+        let error = start(srt, &Verified::new(), &zero, &Config::default()).unwrap_err();
+
+        assert_eq!(error, StartError::ProxyRangeRefused { first: 0, last: 10 });
+        assert!(error.to_string().contains("0-10"), "{error}");
+        assert!(calls.all().is_empty(), "nothing is granted");
+    }
+
+    /// A range of `width` ports, each one held by a listener this test opens, so
+    /// the proxy has none of them left to bind.
+    fn held_range(width: u16) -> (PortRange, Vec<TcpListener>) {
+        loop {
+            let first = NEXT_PORT.fetch_add(width, Ordering::Relaxed);
+            let last = first + width - 1;
+            let held: Result<Vec<TcpListener>, io::Error> = (first..=last)
+                .map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, port)))
+                .collect();
+            match held {
+                Ok(held) => return (PortRange::new(first, last).unwrap(), held),
+                Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
+                Err(error) => panic!("cannot hold {first}-{last}: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_range_names_the_range_and_the_flag() {
+        let (range, _held) = held_range(2);
+        let (srt, calls) = Fake::passing();
+        let mut config = Config::default();
+        config.windows.proxy_port_range = Some([range.first(), range.last()]);
+
+        let error = start_with(
+            Host {
+                srt: Arc::new(srt),
+                holder: 4242,
+                runner: runner(),
+            },
+            &Verified::new(),
+            &status(),
+            &config,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, StartError::ProxyRangeFull { first, last }
+                if first == range.first() && last == range.last()),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains(&range.to_string()), "{message}");
+        assert!(message.contains("--proxy-port-range"), "{message}");
+        assert_eq!(
+            verbs(&calls),
+            ["acl grant", "wfp verify", "acl revoke", "acl restore"],
+            "the grant is released once the proxy is refused"
+        );
     }
 
     #[test]
@@ -642,6 +702,62 @@ mod tests {
         };
 
         start(srt, &Verified::new(), &none, &Config::default()).unwrap();
+    }
+
+    /// A crabpot under the profile is what `cargo install` puts there, and what
+    /// kelpie's binary is. The sandbox user cannot read it without the profile
+    /// read grant, and seclogon answers that with a message about the service
+    /// instead of about the binary.
+    #[test]
+    fn an_unreadable_runner_is_refused_by_name() {
+        let (srt, calls) = Fake::passing();
+
+        let error = start_under(
+            srt,
+            runner_the_grant_never_reached(),
+            &Verified::new(),
+            &status(),
+            &Config::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, StartError::RunnerUnreadable);
+        assert!(
+            calls.all().is_empty(),
+            "nothing is granted: {:?}",
+            calls.all()
+        );
+    }
+
+    #[test]
+    fn a_runner_the_grant_reached_starts() {
+        let (srt, _) = Fake::passing();
+        let granted = Runner {
+            dacl_allows: Some(true),
+            ..runner_the_grant_never_reached()
+        };
+
+        drop(
+            start_under(
+                srt,
+                granted,
+                &Verified::new(),
+                &status(),
+                &Config::default(),
+            )
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn a_runner_check_the_machine_could_not_make_refuses_nothing() {
+        let (srt, _) = Fake::passing();
+        let unread = Runner {
+            dacl_allows: None,
+            ..runner_the_grant_never_reached()
+        };
+
+        drop(start_under(srt, unread, &Verified::new(), &status(), &Config::default()).unwrap());
     }
 
     #[test]
@@ -748,69 +864,5 @@ mod tests {
             !verified.holds("S-1-5-21-7", false),
             "a failure is not remembered"
         );
-    }
-
-    #[test]
-    fn dropping_a_session_revokes_then_restores() {
-        let (srt, calls) = Fake::passing();
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        let all = calls.all();
-        let [.., revoke, restore] = all.as_slice() else {
-            panic!("calls: {all:?}");
-        };
-        let release = |verb: &str| {
-            ["acl", verb, "--holder-pid", "4242"]
-                .into_iter()
-                .chain(["--sandbox-user-sid", "S-1-5-21-7", "--json"])
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(revoke.args, release("revoke"));
-        assert_eq!(restore.args, release("restore"));
-    }
-
-    #[test]
-    fn a_revoke_that_did_not_finish_leaves_the_denies_in_place() {
-        let (srt, calls) = Fake::answering(|call| match call.args[1].as_str() {
-            "revoke" => exit(1, r#"[{"path":"C:\\work","status":"pending"}]"#),
-            "verify" => exit(0, BLOCKED),
-            _ => exit(0, "[]"),
-        });
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        assert!(calls.starting(&["acl", "restore"]).is_empty());
-    }
-
-    #[test]
-    fn a_revoke_that_found_a_substituted_path_is_finished() {
-        let (srt, calls) = Fake::answering(|call| match call.args[1].as_str() {
-            "revoke" => exit(0, r#"[{"path":"C:\\work","status":"mismatch"}]"#),
-            "verify" => exit(0, BLOCKED),
-            _ => exit(0, "[]"),
-        });
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        assert_eq!(calls.starting(&["acl", "restore"]).len(), 1);
-    }
-
-    #[test]
-    fn a_revoke_that_printed_an_unknown_status_is_not_finished() {
-        let (srt, calls) = Fake::answering(|call| match call.args[1].as_str() {
-            "revoke" => exit(0, r#"[{"path":"C:\\work","status":"somethingNew"}]"#),
-            "verify" => exit(0, BLOCKED),
-            _ => exit(0, "[]"),
-        });
-        let session = start(srt, &Verified::new(), &status(), &Config::default()).unwrap();
-
-        drop(session);
-
-        assert!(calls.starting(&["acl", "restore"]).is_empty());
     }
 }

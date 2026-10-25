@@ -10,9 +10,6 @@ keywords.workspace = true
 # docs/ holds planning and design notes. They belong in the repository, not in
 # a published .crate, which is permanent.
 exclude = ["/docs/"]
-# ADR-0012 never publishes a platform crate empty. The Linux release slice
-# flips this, and `release-plz.toml` with it.
-publish = false
 
 [dependencies]
 crabpot-core.workspace = true

@@ -12,7 +12,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crabpot_core::config::Config;
-use crabpot_core::proxy::{PortRange, Proxy};
+use crabpot_core::proxy::{PortRange, Proxy, RangeError};
 use serde::Deserialize;
 
 use super::command::{self, Params};
@@ -193,8 +193,9 @@ struct Prepared {
 ///
 /// # Errors
 ///
-/// Those of [`prepare`], then [`StartError::Proxy`] when the proxy cannot
-/// start, which releases the grants.
+/// Those of [`prepare`], then [`StartError::ProxyRangeFull`] when every port of
+/// the proxy port range is taken, and [`StartError::Proxy`] for the other ways
+/// the proxy cannot start, which releases the grants.
 pub(crate) fn start_with(
     host: Host,
     verified: &Verified,
@@ -216,7 +217,9 @@ pub(crate) fn start_with(
 /// [`StartError::RunnerUnreadable`] for a runner the sandbox user cannot read,
 /// [`StartError::ProfileConflicts`] for a grant that meets the profile read
 /// grant's exclusions, [`StartError::GrantBlocked`], [`StartError::ProfileBusy`]
-/// or [`StartError::GrantFailed`] when the grant call fails, and the errors of
+/// or [`StartError::GrantFailed`] when the grant call fails,
+/// [`StartError::ProxyRangeRefused`] for a proxy port range the install reports
+/// or the settings name that is no range at all, and the errors of
 /// [`wfp::interpret`](super::wfp::interpret) when the fence is not verified. A
 /// failure after the grant releases it.
 fn prepare(
@@ -255,14 +258,11 @@ fn prepare(
     // outside of, and the range the proxy binds: the configured one first, as
     // upstream binds its proxies, then the installed one.
     let installed = match &status.proxy_ports {
-        Some(ports) => PortRange::new(*ports.start(), *ports.end()),
-        None => Ok(PortRange::DEFAULT),
-    }
-    .map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?;
+        Some(ports) => named_range(*ports.start(), *ports.end())?,
+        None => PortRange::DEFAULT,
+    };
     let range = match config.windows.proxy_port_range {
-        Some([first, last]) => {
-            PortRange::new(first, last).map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?
-        }
+        Some([first, last]) => named_range(first, last)?,
         None => installed,
     };
 
@@ -287,6 +287,13 @@ fn prepare(
 }
 
 impl Prepared {
+    /// Starts the proxy in `self.range`, which releases the grants when it
+    /// cannot.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::ProxyRangeFull`] when every port of the range is taken, and
+    /// [`StartError::Proxy`] for the other ways the proxy cannot start.
     fn start_proxy(self, config: &Config) -> Result<Session, StartError> {
         let proxy = Proxy::start_in_range(
             &config.network.allowed_domains,
@@ -300,7 +307,13 @@ impl Prepared {
             config.network.mitm_proxy.as_ref(),
             self.range,
         )
-        .map_err(|e| StartError::Proxy(io::Error::from(e).kind()))?;
+        .map_err(|e| match e {
+            RangeError::Full(range) => StartError::ProxyRangeFull {
+                first: range.first(),
+                last: range.last(),
+            },
+            other => StartError::Proxy(io::Error::from(other).kind()),
+        })?;
         Ok(Session {
             proxy,
             exe: self.exe,
@@ -345,6 +358,14 @@ fn verify(
     super::wfp::interpret(&output)
 }
 
+/// The range `first..=last`, or the [`StartError`] that names it as a range the
+/// proxy cannot bind in.
+fn named_range(first: u16, last: u16) -> Result<PortRange, StartError> {
+    // `RangeError` is `non_exhaustive`: a refusal this build does not know of
+    // is a range the proxy cannot bind in either.
+    PortRange::new(first, last).map_err(|_| StartError::ProxyRangeRefused { first, last })
+}
+
 /// A loopback listener on a port the fence does not permit, since a port it
 /// permits would connect even with the fence active.
 fn listener_outside(range: PortRange) -> io::Result<Probe> {
@@ -366,9 +387,16 @@ fn listener_outside(range: PortRange) -> io::Result<Probe> {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicU16, Ordering};
+    use std::net::Ipv4Addr;
+
     use super::*;
     use crate::windows::srt::fake::{BLOCKED, Calls, Fake, exit};
     use crate::windows::status::{LoopbackMode, ProfileExclusions, SetupVersion, UserState};
+
+    /// Where the next window of ports to hold is looked for, so that tests
+    /// running together do not hold the same ports.
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(20_000);
 
     fn status() -> WindowsStatus {
         WindowsStatus {
@@ -671,8 +699,77 @@ mod tests {
 
         let error = start(srt, &Verified::new(), &status(), &config).unwrap_err();
 
-        assert!(matches!(error, StartError::Proxy(_)), "{error:?}");
+        assert_eq!(error, StartError::ProxyRangeRefused { first: 1, last: 65 });
+        assert!(error.to_string().contains("1-65"), "{error}");
         assert!(calls.all().is_empty(), "nothing is granted");
+    }
+
+    /// An install whose filters name a range that starts at port 0 is no range
+    /// the proxy can bind in, and the session says so before it grants anything.
+    #[test]
+    fn an_installed_range_that_starts_at_port_0_is_an_error() {
+        let (srt, calls) = Fake::passing();
+        let zero = WindowsStatus {
+            proxy_ports: Some(0..=10),
+            ..status()
+        };
+
+        let error = start(srt, &Verified::new(), &zero, &Config::default()).unwrap_err();
+
+        assert_eq!(error, StartError::ProxyRangeRefused { first: 0, last: 10 });
+        assert!(error.to_string().contains("0-10"), "{error}");
+        assert!(calls.all().is_empty(), "nothing is granted");
+    }
+
+    /// A range of `width` ports, each one held by a listener this test opens, so
+    /// the proxy has none of them left to bind.
+    fn held_range(width: u16) -> (PortRange, Vec<TcpListener>) {
+        loop {
+            let first = NEXT_PORT.fetch_add(width, Ordering::Relaxed);
+            let last = first + width - 1;
+            let held: Result<Vec<TcpListener>, io::Error> = (first..=last)
+                .map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, port)))
+                .collect();
+            match held {
+                Ok(held) => return (PortRange::new(first, last).unwrap(), held),
+                Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
+                Err(error) => panic!("cannot hold {first}-{last}: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_range_names_the_range_and_the_flag() {
+        let (range, _held) = held_range(2);
+        let (srt, calls) = Fake::passing();
+        let mut config = Config::default();
+        config.windows.proxy_port_range = Some([range.first(), range.last()]);
+
+        let error = start_with(
+            Host {
+                srt: Arc::new(srt),
+                holder: 4242,
+                runner: runner(),
+            },
+            &Verified::new(),
+            &status(),
+            &config,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, StartError::ProxyRangeFull { first, last }
+                if first == range.first() && last == range.last()),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains(&range.to_string()), "{message}");
+        assert!(message.contains("--proxy-port-range"), "{message}");
+        assert_eq!(
+            verbs(&calls),
+            ["acl grant", "wfp verify", "acl revoke", "acl restore"],
+            "the grant is released once the proxy is refused"
+        );
     }
 
     #[test]

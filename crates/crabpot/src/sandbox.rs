@@ -14,6 +14,7 @@ use std::{
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
+use crabpot_core::proxy::PortRange;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::proxy::Proxy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -85,10 +86,12 @@ impl Sandbox {
     /// sandbox user cannot read this binary and so cannot run it as its runner,
     /// [`StartError::GrantBlocked`],
     /// [`StartError::ProfileBusy`] or [`StartError::GrantFailed`] when the
-    /// session's grants and denies cannot be made, and
+    /// session's grants and denies cannot be made,
     /// [`StartError::FenceInactive`] or [`StartError::FenceUnverified`] when the
-    /// firewall fence is not shown to be active. The grants are held until the
-    /// sandbox drops, which revokes them.
+    /// firewall fence is not shown to be active, and
+    /// [`StartError::ProxyRangeFull`] or [`StartError::ProxyRangeRefused`]
+    /// when the proxy has no port of its range to listen on. The grants are
+    /// held until the sandbox drops, which revokes them.
     pub fn start(config: &Config) -> Result<Self, StartError> {
         #[cfg(target_os = "linux")]
         let bwrap = crabpot_linux::deps::check_here()?;
@@ -338,8 +341,26 @@ pub enum StartError {
     /// relative and there is no working directory. A rule written for it would
     /// be dropped.
     UnresolvedPath(PathError),
-    /// The proxy could not start: no token, no port, or no thread to run on.
+    /// The proxy could not start for any other reason: no token, no port, or
+    /// no thread to run on.
     Proxy(io::ErrorKind),
+    /// Windows: every loopback port of the proxy port range is taken, so the
+    /// proxy has no port to listen on. Each sandbox takes two ports there.
+    ProxyRangeFull {
+        /// The range's first port.
+        first: u16,
+        /// The range's last port.
+        last: u16,
+    },
+    /// Windows: the proxy port range the install reports or the settings name
+    /// starts at port 0, ends before it starts, or holds more than
+    /// [`PortRange::MAX_WIDTH`] ports, so the proxy has no range to bind in.
+    ProxyRangeRefused {
+        /// The range's first port, as the install or the settings name it.
+        first: u16,
+        /// The range's last port, as the install or the settings name it.
+        last: u16,
+    },
     /// `tool` is not on `PATH`, or is there but not executable.
     Missing {
         /// The program's name.
@@ -465,6 +486,18 @@ impl fmt::Display for StartError {
             }
             Self::UnresolvedPath(error) => write!(f, "{error}"),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
+            Self::ProxyRangeFull { first, last } => write!(
+                f,
+                "no free loopback port in the proxy port range {first}-{last}: each sandbox \
+                 takes two, so widen it with --proxy-port-range or stop a sandbox"
+            ),
+            Self::ProxyRangeRefused { first, last } => write!(
+                f,
+                "the proxy port range {first}-{last} is no range the proxy can bind in: it \
+                 must start above port 0, end at or after its first port, and hold at most \
+                 {} ports",
+                PortRange::MAX_WIDTH
+            ),
             Self::Missing { tool } => write!(f, "{tool} is missing or not executable"),
             Self::Uid0WithoutSetfcap => write!(
                 f,

@@ -29,6 +29,12 @@ pub(crate) struct InstallOptions {
     pub(crate) sandbox_user: Option<OsString>,
     /// `--force`: replace an install that differs.
     pub(crate) force: bool,
+    /// `--profile-exclude <path>`: a path inside the profile the read grant
+    /// keeps out, on top of the list srt-win owns. Repeatable, and passed to
+    /// `profile grant` as `--exclude`.
+    pub(crate) profile_exclude: Vec<OsString>,
+    /// `--skip-profile-grant`: make no profile read grant at all.
+    pub(crate) skip_profile_grant: bool,
 }
 
 /// What `windows-uninstall` passes on to `srt-win uninstall` and `srt-win wfp
@@ -114,6 +120,8 @@ pub(crate) trait Host {
     /// Whether the sandbox user can read this binary, which it runs as the
     /// runner: [`InstallError::RunnerUnreadable`] when it cannot.
     fn check_runner(&self) -> Result<(), InstallError>;
+    /// The session this process runs in, `None` when the machine does not say.
+    fn session(&self) -> Option<u32>;
     /// Runs this binary as `srt-win <args>`, to the end, and returns its exit
     /// code.
     fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError>;
@@ -140,10 +148,73 @@ pub(crate) fn install_args(options: &InstallOptions) -> Vec<OsString> {
     args
 }
 
-/// Installs the sandbox, unless the sandbox user cannot read the runner.
+/// The arguments of `srt-win profile grant` for `options`: the exclusions
+/// `--profile-exclude` names, on top of the list srt-win owns.
+fn grant_args(options: &InstallOptions) -> Vec<OsString> {
+    let mut args = vec![OsString::from("profile"), OsString::from("grant")];
+    for path in &options.profile_exclude {
+        args.extend([OsString::from("--exclude"), path.clone()]);
+    }
+    args
+}
+
+/// Why `windows-install` makes no profile read grant, when it makes none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrantSkip {
+    /// `--skip-profile-grant` was given.
+    Flag,
+    /// This process runs in session 0, the services' session, whose account
+    /// runs no sandbox command that could read the profile a grant here opens.
+    SessionZero,
+}
+
+impl fmt::Display for GrantSkip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Flag => write!(f, "--skip-profile-grant"),
+            Self::SessionZero => write!(
+                f,
+                "this process is in session 0, and its account runs no sandbox command \
+                 that could read the profile a grant here would open"
+            ),
+        }
+    }
+}
+
+/// Why no profile read grant is made for `options`, if anything. A session the
+/// machine does not name is not session 0, and grants.
+fn grant_skip_reason(options: &InstallOptions, session: Option<u32>) -> Option<GrantSkip> {
+    if options.skip_profile_grant {
+        Some(GrantSkip::Flag)
+    } else if session == Some(0) {
+        Some(GrantSkip::SessionZero)
+    } else {
+        None
+    }
+}
+
+/// What `windows-install` prints once the grant is in place: what it opens, and
+/// what it keeps shut.
+fn grant_notice() -> &'static str {
+    "the profile read grant is in place: a sandbox command can read your profile, except \
+     the credential stores srt-win keeps out and what --profile-exclude names; a new \
+     top-level item of the profile stays unreadable until the grant runs again"
+}
+
+/// Installs the sandbox, makes the profile read grant unless a skip reason
+/// holds, and then checks that the sandbox user can read this binary, which is
+/// what it runs as the runner. The check comes last because the grant is often
+/// what makes a runner under the profile readable.
 pub(crate) fn install(host: &mut impl Host, options: &InstallOptions) -> Result<(), InstallError> {
-    host.check_runner()?;
-    run(host, "install", &install_args(options))
+    run(host, "install", &install_args(options))?;
+    match grant_skip_reason(options, host.session()) {
+        None => {
+            run(host, "profile grant", &grant_args(options))?;
+            eprintln!("crabpot: {}", grant_notice());
+        }
+        Some(skip) => eprintln!("crabpot: no profile read grant: {skip}"),
+    }
+    host.check_runner()
 }
 
 /// Removes the sandbox: `srt-win uninstall`, then `wfp uninstall` last. The
@@ -185,8 +256,7 @@ pub(crate) struct Machine;
 impl Host for Machine {
     fn check_runner(&self) -> Result<(), InstallError> {
         let exe = current_exe()?;
-        // Only a grant that is in place opens the profile: `profile grant` is
-        // opt-in, and `install` does not make it.
+        // Only a grant that is in place opens the profile.
         let granted = super::windows_status().is_ok_and(|s| s.profile == ProfileState::Current);
         let profile = std::env::var_os("USERPROFILE")
             .filter(|_| granted)
@@ -196,6 +266,10 @@ impl Host for Machine {
         } else {
             Err(InstallError::RunnerUnreadable(exe))
         }
+    }
+
+    fn session(&self) -> Option<u32> {
+        super::ffi::session_of(std::process::id())
     }
 
     fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError> {
@@ -212,6 +286,10 @@ impl Host for Machine {
 impl Host for Machine {
     fn check_runner(&self) -> Result<(), InstallError> {
         Err(InstallError::NotWindows)
+    }
+
+    fn session(&self) -> Option<u32> {
+        None
     }
 
     fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError> {
@@ -244,6 +322,7 @@ mod tests {
     /// `exit`.
     struct Fake {
         readable: bool,
+        session: Option<u32>,
         exit: Vec<Option<i32>>,
         ran: Vec<Vec<String>>,
     }
@@ -252,6 +331,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 readable: true,
+                session: Some(1),
                 exit: Vec::new(),
                 ran: Vec::new(),
             }
@@ -265,6 +345,10 @@ mod tests {
             } else {
                 Err(InstallError::RunnerUnreadable("crabpot.exe".into()))
             }
+        }
+
+        fn session(&self) -> Option<u32> {
+            self.session
         }
 
         fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError> {
@@ -295,6 +379,9 @@ mod tests {
             allow_loopback: true,
             sandbox_user: Some("ci-sandbox".into()),
             force: true,
+            // The two grant flags belong to `profile grant`, not to `install`.
+            profile_exclude: Vec::new(),
+            skip_profile_grant: false,
         };
         assert_eq!(
             strs(&install_args(&all)),
@@ -313,14 +400,69 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_runner_is_refused_before_the_install() {
+    fn install_makes_the_profile_grant_after_the_install() {
+        let mut host = Fake::new();
+
+        install(&mut host, &InstallOptions::default()).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"], vec!["profile", "grant"]]);
+    }
+
+    #[test]
+    fn skip_profile_grant_makes_no_grant() {
+        let mut host = Fake::new();
+        let options = InstallOptions {
+            skip_profile_grant: true,
+            ..InstallOptions::default()
+        };
+
+        install(&mut host, &options).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    #[test]
+    fn session_zero_makes_no_grant() {
+        let mut host = Fake::new();
+        host.session = Some(0);
+
+        install(&mut host, &InstallOptions::default()).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    #[test]
+    fn profile_exclude_passes_through_as_exclude() {
+        let mut host = Fake::new();
+        let options = InstallOptions {
+            profile_exclude: vec![r"C:\Users\me\.aws".into(), ".ssh".into()],
+            ..InstallOptions::default()
+        };
+
+        install(&mut host, &options).unwrap();
+
+        assert_eq!(
+            host.ran,
+            [
+                vec!["install"],
+                vec!["profile", "grant", "--exclude", r"C:\Users\me\.aws", "--exclude", ".ssh"],
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_runner_is_refused_after_the_grant_that_could_open_it() {
         let mut host = Fake::new();
         host.readable = false;
 
         let error = install(&mut host, &InstallOptions::default()).unwrap_err();
 
         assert_eq!(error, InstallError::RunnerUnreadable("crabpot.exe".into()));
-        assert!(host.ran.is_empty(), "srt-win was not started");
+        assert_eq!(
+            host.ran,
+            [vec!["install"], vec!["profile", "grant"]],
+            "the install and the grant both ran first: the grant is what makes a runner under the profile readable"
+        );
     }
 
     #[test]

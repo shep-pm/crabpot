@@ -156,6 +156,8 @@ fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<InstallOpti
             ("--sublayer-guid", Some(value)) => options.sublayer_guid = Some(value),
             ("--proxy-port-range", Some(value)) => options.proxy_port_range = Some(value),
             ("--sandbox-user", Some(value)) => options.sandbox_user = Some(value),
+            ("--profile-exclude", Some(value)) => options.profile_exclude.push(value),
+            ("--skip-profile-grant", None) => options.skip_profile_grant = true,
             _ => return Err(ArgsError::UnknownOption(arg)),
         }
     }
@@ -182,7 +184,12 @@ fn flag<'a>(
     arg: &'a OsString,
     rest: &mut impl Iterator<Item = OsString>,
 ) -> Result<(&'a str, Option<OsString>), ArgsError> {
-    const TAKES_VALUE: [&str; 3] = ["--sublayer-guid", "--proxy-port-range", "--sandbox-user"];
+    const TAKES_VALUE: [&str; 4] = [
+        "--sublayer-guid",
+        "--proxy-port-range",
+        "--sandbox-user",
+        "--profile-exclude",
+    ];
     let text = arg
         .to_str()
         .ok_or_else(|| ArgsError::UnknownOption(arg.clone()))?;
@@ -394,7 +401,30 @@ mod tests {
                 allow_loopback: true,
                 sandbox_user: Some("ci".into()),
                 force: true,
+                ..InstallOptions::default()
             })))
+        );
+    }
+
+    #[test]
+    fn windows_install_reads_the_profile_grant_flags() {
+        assert_eq!(
+            parse_subcommand(os(&[
+                "windows-install",
+                "--profile-exclude",
+                r"C:\Users\me\.aws",
+                "--profile-exclude=.ssh",
+                "--skip-profile-grant",
+            ])),
+            Some(Ok(Subcommand::WindowsInstall(InstallOptions {
+                profile_exclude: vec![r"C:\Users\me\.aws".into(), ".ssh".into()],
+                skip_profile_grant: true,
+                ..InstallOptions::default()
+            })))
+        );
+        assert_eq!(
+            parse_subcommand(os(&["windows-install", "--profile-exclude"])),
+            Some(Err(ArgsError::MissingValue("--profile-exclude")))
         );
     }
 

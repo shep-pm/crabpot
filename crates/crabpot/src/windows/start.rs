@@ -374,6 +374,7 @@ mod tests {
         WindowsStatus {
             user: UserState::Provisioned,
             sandbox_sid: Some("S-1-5-21-7".to_owned()),
+            sandbox_group_sid: Some("S-1-5-21-9".to_owned()),
             real_user_sid: Some("S-1-5-21-2".to_owned()),
             session_user_sid: Some("S-1-5-21-2".to_owned()),
             setup_version: SetupVersion {
@@ -433,13 +434,14 @@ mod tests {
         )
     }
 
-    /// A runner the sandbox user can read on its own: its folder is open to
-    /// Users, and no profile grant is needed for it.
+    /// A runner the sandbox user can read on its own: its folder names the
+    /// sandbox account, its group, or one of the groups of its token as able to
+    /// read and execute it, and no profile grant is needed for it.
     fn runner() -> Runner {
         Runner {
             exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
             granted_profile: None,
-            groups_can_read: Some(true),
+            dacl_allows: Some(true),
         }
     }
 
@@ -450,7 +452,7 @@ mod tests {
         Runner {
             exe: PathBuf::from(r"C:\Users\me\.cargo\bin\crabpot.exe"),
             granted_profile: None,
-            groups_can_read: Some(false),
+            dacl_allows: Some(false),
         }
     }
 
@@ -755,7 +757,7 @@ mod tests {
     fn a_runner_check_the_machine_could_not_make_refuses_nothing() {
         let (srt, _) = Fake::passing();
         let unread = Runner {
-            groups_can_read: None,
+            dacl_allows: None,
             ..runner_under_the_profile()
         };
 

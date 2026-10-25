@@ -11,9 +11,6 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[cfg(windows)]
-use super::ProfileState;
-
 /// What `windows-install` passes on to `srt-win install`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InstallOptions {
@@ -330,9 +327,11 @@ pub(crate) struct Machine;
 impl Host for Machine {
     fn check_runner(&self) -> Result<(), InstallError> {
         let exe = current_exe()?;
-        // Only a grant that is in place opens the profile.
-        let granted = super::windows_status().is_ok_and(|s| s.profile == ProfileState::Current);
-        if super::runner::Runner::of(exe.clone(), granted).readable() {
+        // The status is what names the grant, the account and the group. A
+        // machine that cannot read it names none of the three, and the check is
+        // left with the well-known groups alone.
+        let status = super::windows_status().ok();
+        if super::runner::Runner::of(exe.clone(), status.as_ref()).readable() {
             Ok(())
         } else {
             Err(InstallError::RunnerUnreadable(exe))

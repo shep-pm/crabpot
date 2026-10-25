@@ -155,7 +155,7 @@ pub(crate) fn start_session(config: &Config) -> Result<Session, StartError> {
         start::Host {
             srt: Arc::new(srt::Process),
             holder: std::process::id(),
-            runner: runner::Runner::of(exe, status.profile == ProfileState::Current),
+            runner: runner::Runner::of(exe, Some(&status)),
         },
         &VERIFIED,
         &status,
@@ -195,6 +195,7 @@ mod tests {
         WindowsStatus {
             user: UserState::Provisioned,
             sandbox_sid: Some("S-1-5-21-1".to_owned()),
+            sandbox_group_sid: Some("S-1-5-21-9".to_owned()),
             real_user_sid: Some("S-1-5-21-2".to_owned()),
             session_user_sid: Some("S-1-5-21-2".to_owned()),
             setup_version: SetupVersion {

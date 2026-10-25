@@ -81,7 +81,9 @@ impl Sandbox {
     /// none nor current, [`StartError::LoopbackMismatch`] for a session whose
     /// `network.allowLocalBinding` is not the install's loopback mode,
     /// [`StartError::ProfileConflicts`] when a grant meets what the profile
-    /// read grant keeps out of reach, [`StartError::GrantBlocked`],
+    /// read grant keeps out of reach, [`StartError::RunnerUnreadable`] when the
+    /// sandbox user cannot read this binary and so cannot run it as its runner,
+    /// [`StartError::GrantBlocked`],
     /// [`StartError::ProfileBusy`] or [`StartError::GrantFailed`] when the
     /// session's grants and denies cannot be made, and
     /// [`StartError::FenceInactive`] or [`StartError::FenceUnverified`] when the
@@ -363,7 +365,8 @@ pub enum StartError {
     /// so the install's grants were not made for it.
     NotDesktopSession,
     /// Windows: the sandbox user cannot read this binary, which it has to run
-    /// as the runner.
+    /// as the runner. The profile read grant `windows-install` makes, or a
+    /// binary in a folder every user can read, is the repair.
     RunnerUnreadable,
     /// Windows: `command`, one of the srt-win queries a status is read from,
     /// did not run, exited with `code`, or printed what this build cannot read
@@ -487,7 +490,9 @@ impl fmt::Display for StartError {
             Self::RunnerUnreadable => {
                 write!(
                     f,
-                    "the sandbox user cannot read this binary, which it runs as the runner"
+                    "the sandbox user cannot read this binary, which it runs as the runner; \
+                     run `crabpot windows-install` to make the profile read grant, or keep \
+                     crabpot in a folder every user can read"
                 )
             }
             Self::StatusFailed {

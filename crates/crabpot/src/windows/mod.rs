@@ -152,8 +152,8 @@ pub(crate) fn start_session(config: &Config) -> Result<Session, StartError> {
     start::start_with(
         start::Host {
             srt: Arc::new(srt::Process),
-            exe,
             holder: std::process::id(),
+            runner: start::Runner::of(exe, status.profile == ProfileState::Current),
         },
         &VERIFIED,
         &status,

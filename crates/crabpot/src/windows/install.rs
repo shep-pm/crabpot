@@ -9,8 +9,6 @@
 use core::fmt;
 use std::ffi::OsString;
 use std::io;
-#[cfg(any(windows, test))]
-use std::path::Path;
 use std::path::PathBuf;
 
 #[cfg(windows)]
@@ -75,9 +73,9 @@ impl fmt::Display for InstallError {
             Self::CurrentExe(kind) => write!(f, "cannot find this binary: {kind}"),
             Self::RunnerUnreadable(path) => write!(
                 f,
-                "the sandbox user cannot read {}, which it runs as the runner; \
-                 move crabpot to a folder every user can read, such as one under \
-                 Program Files, and run windows-install again",
+                "the sandbox user cannot read {}, which it runs as the runner; run \
+                 windows-install to make the profile read grant, or move crabpot to a folder \
+                 every user can read, such as one under Program Files",
                 path.display()
             ),
             Self::NotRun(kind) => write!(f, "cannot run srt-win: {kind}"),
@@ -258,10 +256,7 @@ impl Host for Machine {
         let exe = current_exe()?;
         // Only a grant that is in place opens the profile.
         let granted = super::windows_status().is_ok_and(|s| s.profile == ProfileState::Current);
-        let profile = std::env::var_os("USERPROFILE")
-            .filter(|_| granted)
-            .and_then(|p| std::fs::canonicalize(p).ok());
-        if readable(&exe, profile.as_deref(), super::ffi::groups_can_read(&exe)) {
+        if super::start::Runner::of(exe.clone(), granted).readable() {
             Ok(())
         } else {
             Err(InstallError::RunnerUnreadable(exe))
@@ -304,14 +299,6 @@ impl Host for Machine {
 fn current_exe() -> Result<PathBuf, InstallError> {
     let exe = std::env::current_exe().map_err(|e| InstallError::CurrentExe(e.kind()))?;
     Ok(std::fs::canonicalize(&exe).unwrap_or(exe))
-}
-
-/// Whether the sandbox user can read `exe`: a group it is in can, or `exe` is
-/// under `profile`, the profile a current read grant opens to it (`None` when
-/// there is no such grant). A check that could not be made (`groups_read` is `None`) does not refuse.
-#[cfg(any(windows, test))]
-fn readable(exe: &Path, profile: Option<&Path>, groups_read: Option<bool>) -> bool {
-    groups_read.unwrap_or(true) || profile.is_some_and(|profile| exe.starts_with(profile))
 }
 
 #[cfg(test)]
@@ -462,21 +449,6 @@ mod tests {
             host.ran,
             [vec!["install"], vec!["profile", "grant"]],
             "the install and the grant both ran first: the grant is what makes a runner under the profile readable"
-        );
-    }
-
-    #[test]
-    fn a_runner_under_the_profile_is_readable_only_through_a_profile_grant() {
-        let exe = Path::new("C:/Users/me/.cargo/bin/crabpot.exe");
-        let profile = Some(Path::new("C:/Users/me"));
-
-        assert!(readable(exe, profile, Some(false)));
-        assert!(!readable(exe, Some(Path::new("C:/Users/you")), Some(false)));
-        assert!(!readable(exe, None, Some(false)));
-        assert!(readable(exe, None, Some(true)));
-        assert!(
-            readable(exe, None, None),
-            "a check that failed refuses nothing"
         );
     }
 

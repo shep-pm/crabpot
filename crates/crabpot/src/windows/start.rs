@@ -160,12 +160,61 @@ fn revoked(output: &io::Result<Output>) -> bool {
             .is_ok_and(|outcomes| outcomes.iter().all(Outcome::released))
 }
 
-/// What a session is started from: the calls to srt-win, this binary, and the
-/// process the grants are held for.
+/// What a session is started from: the calls to srt-win, the binary the
+/// sandbox user has to be able to read, and the process the grants are held
+/// for.
 pub(crate) struct Host {
     pub(crate) srt: Arc<dyn Srt>,
-    pub(crate) exe: PathBuf,
     pub(crate) holder: u32,
+    pub(crate) runner: Runner,
+}
+
+/// What decides whether the sandbox user can read this binary, which it runs as
+/// the runner.
+#[derive(Debug)]
+pub(crate) struct Runner {
+    /// This binary.
+    pub(crate) exe: PathBuf,
+    /// The profile a current profile read grant opens to the sandbox user,
+    /// `None` when no such grant is in place.
+    pub(crate) granted_profile: Option<PathBuf>,
+    /// Whether a group the sandbox user is in can read `exe`. `None` for a
+    /// check the machine could not make, which refuses nothing.
+    pub(crate) groups_can_read: Option<bool>,
+}
+
+impl Runner {
+    /// The facts for `exe` on this machine, where `grant_is_current` says
+    /// whether a profile read grant is in place.
+    #[cfg(windows)]
+    pub(crate) fn of(exe: PathBuf, grant_is_current: bool) -> Self {
+        Self {
+            granted_profile: granted_profile(grant_is_current),
+            groups_can_read: super::ffi::groups_can_read(&exe),
+            exe,
+        }
+    }
+
+    /// Whether the sandbox user can read `exe`: a group it is in can, or `exe`
+    /// is under `granted_profile`, the profile a current read grant opens to
+    /// it.
+    pub(crate) fn readable(&self) -> bool {
+        self.groups_can_read.unwrap_or(true)
+            || self
+                .granted_profile
+                .as_deref()
+                .is_some_and(|profile| self.exe.starts_with(profile))
+    }
+}
+
+/// The profile a current profile read grant opens to the sandbox user, which is
+/// the form its path is compared in. `None` when no grant is in place, or the
+/// machine names no profile.
+#[cfg(windows)]
+fn granted_profile(grant_is_current: bool) -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .filter(|_| grant_is_current)
+        .and_then(|p| std::fs::canonicalize(p).ok())
 }
 
 /// A loopback listener a `wfp verify` attempt is aimed at, and what keeps it
@@ -211,6 +260,7 @@ pub(crate) fn start_with(
 /// nor current, [`StartError::StatusFailed`] for a status with no sandbox user
 /// SID, [`StartError::LoopbackMismatch`] for a session whose
 /// `network.allowLocalBinding` is not the loopback mode the install made,
+/// [`StartError::RunnerUnreadable`] for a runner the sandbox user cannot read,
 /// [`StartError::ProfileConflicts`] for a grant that meets the profile read
 /// grant's exclusions, [`StartError::GrantBlocked`], [`StartError::ProfileBusy`]
 /// or [`StartError::GrantFailed`] when the grant call fails, and the errors of
@@ -239,6 +289,13 @@ fn prepare(
     let allow_loopback = config.network.allow_local_binding == Some(true);
     if allow_loopback != (status.loopback == LoopbackMode::Open) {
         return Err(StartError::LoopbackMismatch);
+    }
+    // Before anything is granted, and before anything runs as the sandbox user:
+    // seclogon answers an unreadable runner with a message about the service,
+    // and the grant that would open a runner under the profile is the install's
+    // to make.
+    if !host.runner.readable() {
+        return Err(StartError::RunnerUnreadable);
     }
     let plan = Plan::build(config, &status.profile_exclusions)?;
     // The range the install's filters name, which the fence probe must stay
@@ -269,7 +326,7 @@ fn prepare(
     }
     Ok(Prepared {
         held,
-        exe: host.exe,
+        exe: host.runner.exe,
         plan,
         allow_loopback,
         range,
@@ -398,17 +455,48 @@ mod tests {
         status: &WindowsStatus,
         config: &Config,
     ) -> Result<Prepared, StartError> {
+        start_under(srt, runner(), verified, status, config)
+    }
+
+    fn start_under(
+        srt: Fake,
+        runner: Runner,
+        verified: &Verified,
+        status: &WindowsStatus,
+        config: &Config,
+    ) -> Result<Prepared, StartError> {
         prepare(
             Host {
                 srt: Arc::new(srt),
-                exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
                 holder: 4242,
+                runner,
             },
             verified,
             status,
             config,
             &no_listener,
         )
+    }
+
+    /// A runner the sandbox user can read on its own: its folder is open to
+    /// Users, and no profile grant is needed for it.
+    fn runner() -> Runner {
+        Runner {
+            exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
+            granted_profile: None,
+            groups_can_read: Some(true),
+        }
+    }
+
+    /// A runner under the profile, which only the profile read grant opens.
+    /// The slashes are `/` because `starts_with` compares components, and a
+    /// test off Windows has nothing else to split on.
+    fn runner_under_the_profile() -> Runner {
+        Runner {
+            exe: PathBuf::from("C:/Users/me/.cargo/bin/crabpot.exe"),
+            granted_profile: None,
+            groups_can_read: Some(false),
+        }
     }
 
     /// A status whose install was made with `--allow-loopback`.
@@ -608,8 +696,8 @@ mod tests {
         prepare(
             Host {
                 srt: Arc::new(srt),
-                exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
                 holder: 4242,
+                runner: runner(),
             },
             &Verified::new(),
             &status(),
@@ -642,6 +730,92 @@ mod tests {
         };
 
         start(srt, &Verified::new(), &none, &Config::default()).unwrap();
+    }
+
+    /// A crabpot under the profile is what `cargo install` puts there, and what
+    /// kelpie's binary is. The sandbox user cannot read it without the profile
+    /// read grant, and seclogon answers that with a message about the service
+    /// instead of about the binary.
+    #[test]
+    fn an_unreadable_runner_is_refused_by_name() {
+        let (srt, calls) = Fake::passing();
+
+        let error = start_under(
+            srt,
+            runner_under_the_profile(),
+            &Verified::new(),
+            &status(),
+            &Config::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, StartError::RunnerUnreadable);
+        assert!(
+            calls.all().is_empty(),
+            "nothing is granted: {:?}",
+            calls.all()
+        );
+    }
+
+    #[test]
+    fn a_runner_under_the_profile_starts_once_the_grant_is_in_place() {
+        let (srt, _) = Fake::passing();
+        let granted = Runner {
+            granted_profile: Some(PathBuf::from("C:/Users/me")),
+            ..runner_under_the_profile()
+        };
+
+        drop(start_under(
+            srt,
+            granted,
+            &Verified::new(),
+            &status(),
+            &Config::default(),
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn a_grant_on_another_users_profile_opens_nothing() {
+        let (srt, calls) = Fake::passing();
+        let other = Runner {
+            granted_profile: Some(PathBuf::from("C:/Users/you")),
+            ..runner_under_the_profile()
+        };
+
+        let error = start_under(
+            srt,
+            other,
+            &Verified::new(),
+            &status(),
+            &Config::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, StartError::RunnerUnreadable);
+        assert!(
+            calls.all().is_empty(),
+            "nothing is granted: {:?}",
+            calls.all()
+        );
+    }
+
+    #[test]
+    fn a_runner_check_the_machine_could_not_make_refuses_nothing() {
+        let (srt, _) = Fake::passing();
+        let unread = Runner {
+            groups_can_read: None,
+            ..runner_under_the_profile()
+        };
+
+        drop(start_under(
+            srt,
+            unread,
+            &Verified::new(),
+            &status(),
+            &Config::default(),
+        )
+        .unwrap());
     }
 
     #[test]

@@ -17,6 +17,11 @@ pub struct WindowsStatus {
     pub user: UserState,
     /// The sandbox user's SID, when it has an account.
     pub sandbox_sid: Option<String>,
+    /// The SID of the account this process runs as, when the machine names it.
+    pub real_user_sid: Option<String>,
+    /// The SID of the user who owns the session this process runs in, when the
+    /// machine names one.
+    pub session_user_sid: Option<String>,
     /// The install's setup version beside this build's.
     pub setup_version: SetupVersion,
     /// Whether the WFP fence leaves loopback open.
@@ -159,6 +164,10 @@ pub(crate) fn read(
     let profile: ProfileJson = parse("profile status", &[], &run)?;
     let provisioned =
         user.user.exists && user.cred_present && user.marker_version == Some(user.setup_version);
+    // A session without an owner is session 0, which is refused by name before
+    // the status is read.
+    let in_desktop_session =
+        user.session_user_sid.is_some() && user.session_user_sid == user.real_user_sid;
     Ok(WindowsStatus {
         user: if provisioned {
             UserState::Provisioned
@@ -166,6 +175,8 @@ pub(crate) fn read(
             UserState::NotProvisioned
         },
         sandbox_sid: user.user.sid,
+        real_user_sid: user.real_user_sid,
+        session_user_sid: user.session_user_sid,
         setup_version: SetupVersion {
             installed: user.marker_version,
             expected: user.setup_version,
@@ -186,10 +197,7 @@ pub(crate) fn read(
         },
         profile_exclusions: profile.exclusions,
         seclogon_runs: !matches!(user.seclogon.as_str(), "disabled" | "missing"),
-        // A session without an owner is session 0, which is refused by name
-        // before the status is read.
-        in_desktop_session: user.session_user_sid.is_some()
-            && user.session_user_sid == user.real_user_sid,
+        in_desktop_session,
     })
 }
 
@@ -240,6 +248,8 @@ mod tests {
 
         assert_eq!(status.user, UserState::Provisioned);
         assert_eq!(status.sandbox_sid.as_deref(), Some("S-1-5-21-1"));
+        assert_eq!(status.real_user_sid.as_deref(), Some("S-1-5-21-2"));
+        assert_eq!(status.session_user_sid.as_deref(), Some("S-1-5-21-2"));
         assert_eq!(
             status.setup_version,
             SetupVersion {

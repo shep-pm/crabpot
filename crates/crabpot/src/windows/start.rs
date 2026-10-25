@@ -374,6 +374,8 @@ mod tests {
         WindowsStatus {
             user: UserState::Provisioned,
             sandbox_sid: Some("S-1-5-21-7".to_owned()),
+            real_user_sid: Some("S-1-5-21-2".to_owned()),
+            session_user_sid: Some("S-1-5-21-2".to_owned()),
             setup_version: SetupVersion {
                 installed: Some(3),
                 expected: 3,

@@ -16,14 +16,19 @@ The Windows sandbox needs a one-time install: the sandbox user, the WFP network 
 ```
 crabpot windows-install [--allow-loopback] [--proxy-port-range LOW-HIGH]
                         [--sandbox-user NAME] [--sublayer-guid GUID] [--force]
+                        [--profile-exclude PATH] [--skip-profile-grant]
 crabpot windows-uninstall [--keep-user] [--sublayer-guid GUID]
 ```
 
 - `windows-install` asks for elevation itself, with one UAC prompt, and does the work in the elevated process.
-- Before it asks, it checks that the sandbox user can read the crabpot executable, which the sandbox runs as its runner. A binary the user cannot read is refused with a message naming it. A binary under your profile passes only when a profile read grant is already in place, so on a first install keep crabpot in a folder every user can read, such as one under Program Files.
+- After the install it makes the profile read grant, as upstream's install does: the sandbox user can then read your profile, except what srt-win keeps out on its own (`~\.ssh`, `~\.aws` and the other key dot-directories, Windows' own per-user secret stores, browser profiles and password managers, your registry hives) and anything `--profile-exclude` names. The grant runs as you and needs no elevation. Its first pass touches every file it grants, which takes minutes on a large profile, and a new top-level item of the profile stays unreadable until it runs again.
+- `--profile-exclude PATH` keeps one more path unreadable. Repeatable, and it reaches `srt-win profile grant` as `--exclude`: an exclusion once recorded stays in force.
+- `--skip-profile-grant` makes no grant. A crabpot under your profile, which is where `cargo install` puts one, then stays unreadable to the sandbox user.
+- The install ends by checking that the sandbox user can read the crabpot executable, which it runs as the runner. The grant is what makes a binary under your profile readable, and a binary in a folder every user can read, such as one under Program Files, needs no grant at all.
+- `Sandbox::start` refuses an unreadable runner by name (`StartError::RunnerUnreadable`) before it grants anything, so the binary is named instead of seclogon answering `CreateProcessWithLogonW: Access is denied`.
 - `--allow-loopback` opens every loopback port to the sandbox user, not only the proxy's. Every listener on localhost becomes reachable from the sandbox, including a forwarder that carries traffic off the machine. A session must use the loopback mode the install used, so changing it means running the install again with `--force`.
 - `--proxy-port-range` sets the loopback ports left open for the proxy (default `60080-60089`).
-- `windows-uninstall` removes the user, its credential and the filters. `--keep-user` keeps the user. It then removes any WFP filters left under the sublayer.
+- `windows-uninstall` removes the user, its credential and the filters, and with them the profile read grant (`--keep-user` keeps the user and the grant). It then removes any WFP filters left under the sublayer.
 - Both commands are for Windows and refuse on any other platform.
 
 ## License

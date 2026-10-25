@@ -1,0 +1,19 @@
+{
+  "files": {},
+  "settings": {
+    "network": {
+      "allowedDomains": ["mitm.example.com"],
+      "deniedDomains": [],
+      "mitmProxy": {
+        "socketPath": "$PIPE",
+        "domains": ["mitm.example.com"]
+      }
+    },
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "serve": {"namedPipe": "$PIPE", "status": "200 Connection Established"},
+  "platforms": ["windows"],
+  "probes": [
+    {"kind": "connect", "host": "mitm.example.com", "port": 443}
+  ]
+}

@@ -194,6 +194,7 @@ dependencies = [
  "libc",
  "nix",
  "serde_json",
+ "tokio",
  "windows-sys",
 ]
 

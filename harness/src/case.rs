@@ -134,11 +134,20 @@ impl Platform {
     }
 }
 
+/// Where the harness listens for a case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Endpoint {
+    /// The Unix socket at the path.
+    UnixSocket(String),
+    /// The Windows named pipe of the name, which is `\\.\pipe\` and a word.
+    NamedPipe(String),
+}
+
 /// A peer the harness serves while a case's probes run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Serve {
-    /// The Unix socket to listen on.
-    pub unix_socket: String,
+    /// What to listen on.
+    pub endpoint: Endpoint,
     /// The status line to answer its `CONNECT` with.
     pub status: String,
 }
@@ -198,7 +207,8 @@ impl core::error::Error for Error {}
 
 impl Case {
     /// Reads a case file's text, replacing `$ROOT` with `root` wherever it
-    /// appears in a string or a key. A file's path that stays relative is under `root`.
+    /// appears in a string or a key, and `$PIPE` with the name of a Windows
+    /// named pipe that is `root`'s own. A file's path that stays relative is under `root`.
     ///
     /// # Errors
     ///
@@ -210,7 +220,7 @@ impl Case {
     /// this harness does not run on.
     pub fn parse(text: &str, root: &str) -> Result<Self, Error> {
         let parsed: Value = serde_json::from_str(text).map_err(|e| Error::Json(e.to_string()))?;
-        let Value::Object(mut case) = expand(parsed, root) else {
+        let Value::Object(mut case) = expand(parsed, root, &pipe_for(root)) else {
             return Err(Error::Shape("a top level that is not an object".to_owned()));
         };
         let mut take = |field: &str| {
@@ -247,8 +257,18 @@ impl Case {
                         .map(str::to_owned)
                         .ok_or_else(|| Error::Shape(format!("a `serve` without a string `{name}`")))
                 };
+                let endpoint = match (field("unixSocket"), field("namedPipe")) {
+                    (Ok(path), Err(_)) => Endpoint::UnixSocket(path),
+                    (Err(_), Ok(name)) => Endpoint::NamedPipe(name),
+                    _ => {
+                        return Err(Error::Shape(
+                            "a `serve` without exactly one of `unixSocket` and `namedPipe`"
+                                .to_owned(),
+                        ));
+                    }
+                };
                 Some(Serve {
-                    unix_socket: field("unixSocket")?,
+                    endpoint,
                     status: field("status")?,
                 })
             }
@@ -297,17 +317,28 @@ impl Case {
     }
 }
 
-/// `value` with `$ROOT` replaced in every string and key.
-fn expand(value: Value, root: &str) -> Value {
+/// The named pipe a case may serve, which is named for its root's folder so
+/// that no two cases share one.
+fn pipe_for(root: &str) -> String {
+    let folder = root.rsplit(['/', '\\']).next().unwrap_or(root);
+    format!(r"\\.\pipe\crabpot-harness-{folder}")
+}
+
+/// `value` with `$ROOT` and `$PIPE` replaced in every string and key.
+fn expand(value: Value, root: &str, pipe: &str) -> Value {
+    let spell = |text: &str| text.replace("$ROOT", root).replace("$PIPE", pipe);
     match value {
-        Value::String(text) => Value::String(text.replace("$ROOT", root)),
-        Value::Array(items) => {
-            Value::Array(items.into_iter().map(|item| expand(item, root)).collect())
-        }
+        Value::String(text) => Value::String(spell(&text)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| expand(item, root, pipe))
+                .collect(),
+        ),
         Value::Object(members) => Value::Object(
             members
                 .into_iter()
-                .map(|(key, member)| (key.replace("$ROOT", root), expand(member, root)))
+                .map(|(key, member)| (spell(&key), expand(member, root, pipe)))
                 .collect(),
         ),
         other => other,
@@ -619,6 +650,29 @@ mod tests {
     }
 
     #[test]
+    fn a_case_may_serve_a_named_pipe_named_for_its_root() {
+        let text = r#"{
+            "files": {},
+            "settings": {"network": {"mitmProxy": {"socketPath": "$PIPE"}}},
+            "serve": {"namedPipe": "$PIPE", "status": "200 Connection Established"},
+            "probes": []
+        }"#;
+        let pipe = r"\\.\pipe\crabpot-harness-case";
+        for root in ["/tmp/case", r"C:\tmp\case"] {
+            let case = Case::parse(text, root).unwrap();
+
+            assert_eq!(
+                case.serve,
+                Some(Serve {
+                    endpoint: Endpoint::NamedPipe(pipe.to_owned()),
+                    status: "200 Connection Established".to_owned(),
+                })
+            );
+            assert_eq!(case.settings["network"]["mitmProxy"]["socketPath"], pipe);
+        }
+    }
+
+    #[test]
     fn a_case_may_serve_a_unix_socket() {
         let text = r#"{
             "files": {},
@@ -631,7 +685,7 @@ mod tests {
         assert_eq!(
             case.serve,
             Some(Serve {
-                unix_socket: "/r/mitm.sock".to_owned(),
+                endpoint: Endpoint::UnixSocket("/r/mitm.sock".to_owned()),
                 status: "403 Forbidden".to_owned(),
             })
         );
@@ -641,6 +695,7 @@ mod tests {
             r#"{"files": {}, "settings": {}, "serve": [], "probes": []}"#,
             r#"{"files": {}, "settings": {}, "serve": {}, "probes": []}"#,
             r#"{"files": {}, "settings": {}, "serve": {"unixSocket": 1}, "probes": []}"#,
+            r#"{"files": {}, "settings": {}, "serve": {"unixSocket": "/a", "namedPipe": "p", "status": "200 OK"}, "probes": []}"#,
         ] {
             assert!(
                 matches!(Case::parse(text, "/r"), Err(Error::Shape(_))),

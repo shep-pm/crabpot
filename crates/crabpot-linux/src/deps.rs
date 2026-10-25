@@ -231,8 +231,35 @@ mod tests {
             let bwrap = dir.join("bwrap");
             fs::write(&bwrap, format!("#!/bin/sh\n{script}\n")).expect("a script");
             fs::set_permissions(&bwrap, fs::Permissions::from_mode(mode)).expect("a mode");
+            exec_past_etxtbsy(&bwrap);
         }
         dir
+    }
+
+    /// Run `bwrap` until the spawn stops failing with `ETXTBSY`.
+    ///
+    /// Another test thread can fork while this test's `fs::write` still holds
+    /// the script's write fd open, and the child keeps that fd open until its
+    /// own exec. Linux refuses to exec a script another process holds open for
+    /// writing with `ETXTBSY` until that child is gone, and `probe_version`
+    /// reads the failed spawn as a version-less bwrap. Production never writes
+    /// the binary it runs, so only this helper waits. A spawn error that is
+    /// not `ETXTBSY`, like a mode that denies the exec, is not retried.
+    fn exec_past_etxtbsy(bwrap: &Path) {
+        for _ in 0..20 {
+            match Command::new(bwrap)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                _ => return,
+            }
+        }
     }
 
     fn run(dir: &Path, status: Option<&str>) -> (Result<PathBuf, DepsError>, String) {
@@ -294,6 +321,7 @@ mod tests {
         let bwrap = dir.join("bwrap");
         fs::write(&bwrap, format!("#!/bin/sh\n{MODERN}\n")).expect("a script");
         fs::set_permissions(&bwrap, fs::Permissions::from_mode(0o755)).expect("a mode");
+        exec_past_etxtbsy(&bwrap);
         let result = check(OsStr::new(&name), Some(NOT_ROOT), &mut Vec::new());
         fs::remove_dir_all(&dir).expect("removed");
         assert_eq!(result, Ok(bwrap));

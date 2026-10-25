@@ -36,8 +36,9 @@
 //! keep their `macos` and `linux` forms, and each has a case of its own for
 //! Windows, where the probe binary has a form of the action too: `signal-group`
 //! asks whether the sandbox holds a command and a child it started in one job
-//! object (`crates/crabpot-windows/srt-win/src/job.rs`), which is what ends a
-//! command's whole tree in place of the group a host signals; `ps` asks
+//! object, and whether that job ends its members when it closes
+//! (`crates/crabpot-windows/srt-win/src/job.rs`), which is what ends a command's
+//! whole tree in place of the group a host signals; `ps` asks
 //! `tasklist` for the probe's own process; and `bind-unix` binds an `AF_UNIX`
 //! socket through Winsock, where `sun_path` carries 107 bytes of path. Each new
 //! case names `windows` alone, and each old one is skipped there as before.
@@ -210,9 +211,9 @@ const WINDOWS_READY: &[&str] = &[
     "kelpie_full_policy_windows",
     // The three probes that name a process group, a process and a Unix socket,
     // each on the form the platform has: the job object that holds a sandboxed
-    // command and every child it starts, `tasklist`, and an `AF_UNIX` socket
-    // bound through Winsock. The `macos` and `linux` cases of the same three
-    // probes are unchanged, and stay out of this list.
+    // command and every child it starts and ends them when it closes, `tasklist`,
+    // and an `AF_UNIX` socket bound through Winsock. The `macos` and `linux`
+    // cases of the same three probes are unchanged, and stay out of this list.
     "kelpie_group_signal_windows",
     "kelpie_ps_windows",
     "kelpie_socket_path_windows",
@@ -743,8 +744,11 @@ fn kelpie_full_policy_windows() {
 /// signalling the wrapper's group. `srt-win` holds each sandboxed command in a
 /// job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and never touches it,
 /// so the probe starts a child inside the sandbox and asks whether the sandbox
-/// holds it in a job the way it holds the command, which is what ends the two
-/// together.
+/// holds the command and that child in a job, and whether that job ends its
+/// members when it closes, which is what ends the two together. Being held in a
+/// job is not the containment: a host can hold its own children in one, so
+/// `a_probe_outside_a_sandbox_is_not_held_in_a_kill_on_close_job` holds that the
+/// host running the harness is no such job.
 #[test]
 fn kelpie_group_signal_windows() {
     run(

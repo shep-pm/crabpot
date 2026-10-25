@@ -8,6 +8,7 @@
 
 #![allow(unsafe_code)]
 
+use core::ffi::c_void;
 use core::mem::offset_of;
 use core::ptr;
 use std::io;
@@ -23,7 +24,10 @@ use windows_sys::Win32::Networking::WinSock::{
     WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSADATA, WSAGetLastError, WSASocketW,
     WSAStartup, accept, bind, connect, listen,
 };
-use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+use windows_sys::Win32::System::JobObjects::{
+    IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject,
+};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 /// The longest path a `sockaddr_un` carries, with the terminator after it.
@@ -249,4 +253,41 @@ fn held_or_error(answered: i32, held: i32) -> io::Result<bool> {
         return Err(io::Error::from_raw_os_error(code as i32));
     }
     Ok(held != 0)
+}
+
+/// Whether the job that holds this process ends every process it holds as soon
+/// as the job closes, which is the containment the `signal-group` probe measures.
+///
+/// A process holds no handle of the job it is in, so a null job handle is the
+/// only form the question takes: it asks about the job containing the calling
+/// process.
+///
+/// # Errors
+///
+/// The error of the call, which is what a job that answers nothing gives. Ask
+/// [`this_process_is_held`] first, so that a process held in no job is read as
+/// no containment rather than as a call that answered nothing.
+pub(crate) fn this_job_kills_on_close() -> io::Result<bool> {
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    let mut read = 0u32;
+    let limits_ptr = &raw mut limits;
+    // SAFETY: the null job handle asks for the job containing this process;
+    // `limits` is a `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` and `read` a `u32`,
+    // both live, and the length given is the size of the first.
+    let answered = unsafe {
+        QueryInformationJobObject(
+            ptr::null_mut(),
+            JobObjectExtendedLimitInformation,
+            limits_ptr.cast::<c_void>(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            &raw mut read,
+        )
+    };
+    if answered == 0 {
+        // SAFETY: the call that just failed set this thread's last error, and
+        // nothing has run since.
+        let code = unsafe { GetLastError() };
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    Ok(limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0)
 }

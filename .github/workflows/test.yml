@@ -158,7 +158,12 @@ jobs:
           # read it as the runner. Only the grant opens it, and before #215
           # there was no grant, which seclogon reported as "Access is denied".
           & $under -- cmd /c echo crabpot-under-profile
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($LASTEXITCODE -ne 0) {
+            # The refusal names the refusal. The ACL names the reason, and the
+            # refusal itself carries no path.
+            icacls $under
+            exit 1
+          }
           ./target/debug/crabpot.exe windows-uninstall
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo test --locked -p crabpot --test windows_status

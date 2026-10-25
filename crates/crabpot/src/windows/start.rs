@@ -443,12 +443,12 @@ mod tests {
         }
     }
 
-    /// A runner under the profile, which only the profile read grant opens.
-    /// The slashes are `/` because `starts_with` compares components, and a
-    /// test off Windows has nothing else to split on.
+    /// A runner under the profile, which only the profile read grant opens. The
+    /// two paths are in the forms a Windows host answers with: `current_exe`
+    /// gives `exe` none, and `canonicalize` gives the profile a `\\?\` prefix.
     fn runner_under_the_profile() -> Runner {
         Runner {
-            exe: PathBuf::from("C:/Users/me/.cargo/bin/crabpot.exe"),
+            exe: PathBuf::from(r"C:\Users\me\.cargo\bin\crabpot.exe"),
             granted_profile: None,
             groups_can_read: Some(false),
         }
@@ -716,7 +716,7 @@ mod tests {
     fn a_runner_under_the_profile_starts_once_the_grant_is_in_place() {
         let (srt, _) = Fake::passing();
         let granted = Runner {
-            granted_profile: Some(PathBuf::from("C:/Users/me")),
+            granted_profile: Some(PathBuf::from(r"\\?\C:\Users\me")),
             ..runner_under_the_profile()
         };
 
@@ -736,7 +736,7 @@ mod tests {
     fn a_grant_on_another_users_profile_opens_nothing() {
         let (srt, calls) = Fake::passing();
         let other = Runner {
-            granted_profile: Some(PathBuf::from("C:/Users/you")),
+            granted_profile: Some(PathBuf::from(r"\\?\C:\Users\you")),
             ..runner_under_the_profile()
         };
 

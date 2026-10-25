@@ -9,12 +9,7 @@
 use core::fmt;
 use std::ffi::OsString;
 use std::io;
-#[cfg(any(windows, test))]
-use std::path::Path;
-use std::path::PathBuf;
-
-#[cfg(windows)]
-use super::ProfileState;
+use std::path::{Path, PathBuf};
 
 /// What `windows-install` passes on to `srt-win install`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -29,6 +24,12 @@ pub(crate) struct InstallOptions {
     pub(crate) sandbox_user: Option<OsString>,
     /// `--force`: replace an install that differs.
     pub(crate) force: bool,
+    /// `--profile-exclude <path>`: a path inside the profile the read grant
+    /// keeps out, on top of the list srt-win owns. Repeatable, and passed to
+    /// `profile grant` as `--exclude`.
+    pub(crate) profile_exclude: Vec<OsString>,
+    /// `--skip-profile-grant`: make no profile read grant at all.
+    pub(crate) skip_profile_grant: bool,
 }
 
 /// What `windows-uninstall` passes on to `srt-win uninstall` and `srt-win wfp
@@ -53,6 +54,9 @@ pub(crate) enum InstallError {
     /// The sandbox user cannot read this binary, so seclogon would refuse to
     /// launch it as the runner with a misleading message.
     RunnerUnreadable(PathBuf),
+    /// `user status` named no account for this process, so no profile read
+    /// grant can be decided for it.
+    StatusUnreadable,
     /// srt-win could not be started.
     NotRun(io::ErrorKind),
     /// srt-win's `command` exited with `code`, or was ended with none.
@@ -69,12 +73,17 @@ impl fmt::Display for InstallError {
             Self::CurrentExe(kind) => write!(f, "cannot find this binary: {kind}"),
             Self::RunnerUnreadable(path) => write!(
                 f,
-                "the sandbox user cannot read {}, which it runs as the runner; \
-                 move crabpot to a folder every user can read, such as one under \
-                 Program Files, and run windows-install again",
+                "the sandbox user cannot read {}, which it runs as the runner; run \
+                 windows-install to make the profile read grant, or move crabpot to a folder \
+                 every user can read, such as one under Program Files",
                 path.display()
             ),
             Self::NotRun(kind) => write!(f, "cannot run srt-win: {kind}"),
+            Self::StatusUnreadable => write!(
+                f,
+                "cannot read which account and session this install ran as, so no profile \
+                 read grant is decided",
+            ),
             Self::Exited {
                 command: "install",
                 code: Some(10),
@@ -114,6 +123,12 @@ pub(crate) trait Host {
     /// Whether the sandbox user can read this binary, which it runs as the
     /// runner: [`InstallError::RunnerUnreadable`] when it cannot.
     fn check_runner(&self) -> Result<(), InstallError>;
+    /// The account this install ran as, and the owner of the session it ran in,
+    /// which decide whether a profile read grant is made for it.
+    fn grant_ids(&self) -> Result<GrantIds, InstallError>;
+    /// The profile directory a grant here would open, `None` when the machine
+    /// does not name one.
+    fn profile_dir(&self) -> Option<PathBuf>;
     /// Runs this binary as `srt-win <args>`, to the end, and returns its exit
     /// code.
     fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError>;
@@ -140,10 +155,157 @@ pub(crate) fn install_args(options: &InstallOptions) -> Vec<OsString> {
     args
 }
 
-/// Installs the sandbox, unless the sandbox user cannot read the runner.
+/// The arguments of `srt-win profile grant` for `options`: the exclusions
+/// `--profile-exclude` names, on top of the list srt-win owns.
+fn grant_args(options: &InstallOptions) -> Vec<OsString> {
+    let mut args = vec![OsString::from("profile"), OsString::from("grant")];
+    for path in &options.profile_exclude {
+        args.extend([OsString::from("--exclude"), path.clone()]);
+    }
+    args
+}
+
+/// LocalSystem, LocalService, NetworkService: accounts no one runs sessions as.
+const WINDOWS_SERVICE_ACCOUNT_SIDS: [&str; 3] = ["S-1-5-18", "S-1-5-19", "S-1-5-20"];
+
+/// Who an install is asked to grant for: the account that ran it, and the owner
+/// of the session it ran in. What `user status` reports as `real_user_sid` and
+/// `session_user_sid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GrantIds {
+    pub(crate) real_user_sid: String,
+    pub(crate) session_user_sid: Option<String>,
+}
+
+/// What every skip reason but the flag's tells the person at the keyboard to do
+/// instead.
+const GRANT_HOW: &str = "run the install, or `crabpot --srt-win profile grant`, as the user \
+                         whose sessions are to read their profile";
+
+/// Why an install leaves the profile read grant unapplied: asked to skip, a
+/// service account, or not running as the owner of the interactive session,
+/// whose profile it would open instead. Upstream's four reasons, in upstream's
+/// order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GrantSkip {
+    /// `--skip-profile-grant` was given.
+    Flag,
+    /// The install ran as LocalSystem, LocalService or NetworkService.
+    ServiceAccount { real_user_sid: String },
+    /// The owner of the session the install ran in could not be read.
+    SessionOwnerUnknown { real_user_sid: String },
+    /// The install ran in a session that belongs to another account.
+    SessionOwnerDiffers {
+        real_user_sid: String,
+        session_user_sid: String,
+    },
+}
+
+impl fmt::Display for GrantSkip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Flag => write!(f, "--skip-profile-grant was set"),
+            Self::ServiceAccount { real_user_sid } => write!(
+                f,
+                "the install ran as the service account {real_user_sid}, which runs no \
+                 sessions; {GRANT_HOW}"
+            ),
+            Self::SessionOwnerUnknown { real_user_sid } => write!(
+                f,
+                "the owner of the session this install ran in could not be determined, so \
+                 it is not known whose profile {real_user_sid} is; {GRANT_HOW}"
+            ),
+            Self::SessionOwnerDiffers {
+                real_user_sid,
+                session_user_sid,
+            } => write!(
+                f,
+                "the install ran as {real_user_sid} in a session that belongs to \
+                 {session_user_sid}; granting would open the installing account's profile, \
+                 not the session owner's; {GRANT_HOW}"
+            ),
+        }
+    }
+}
+
+/// Why no profile read grant is made for `options` run as `ids`, if anything.
+/// SIDs are compared without case, as upstream compares them.
+fn grant_skip_reason(options: &InstallOptions, ids: &GrantIds) -> Option<GrantSkip> {
+    if options.skip_profile_grant {
+        return Some(GrantSkip::Flag);
+    }
+    if WINDOWS_SERVICE_ACCOUNT_SIDS.contains(&ids.real_user_sid.as_str()) {
+        return Some(GrantSkip::ServiceAccount {
+            real_user_sid: ids.real_user_sid.clone(),
+        });
+    }
+    let Some(session_user_sid) = &ids.session_user_sid else {
+        return Some(GrantSkip::SessionOwnerUnknown {
+            real_user_sid: ids.real_user_sid.clone(),
+        });
+    };
+    if !session_user_sid.eq_ignore_ascii_case(&ids.real_user_sid) {
+        return Some(GrantSkip::SessionOwnerDiffers {
+            real_user_sid: ids.real_user_sid.clone(),
+            session_user_sid: session_user_sid.clone(),
+        });
+    }
+    None
+}
+
+/// What the profile read grant is about to do, in one line, for the person at
+/// the keyboard. `profile_dir` is the profile it opens, `None` when the machine
+/// does not name one.
+fn grant_notice(profile_dir: Option<&Path>) -> String {
+    let dir = match profile_dir {
+        Some(dir) => dir.display().to_string(),
+        None => "your profile".to_owned(),
+    };
+    format!(
+        "Making {dir} readable to sandboxed commands on this machine, except the excluded \
+         credential stores (SSH and GPG keys, cloud and browser sign-ins, password managers, \
+         registry hives). Readable files include package-manager configuration that can hold \
+         feed tokens: .npmrc, pip.ini, NuGet.Config, Maven settings.xml, gradle.properties, \
+         .gitconfig. Skip with --skip-profile-grant; undo with `crabpot --srt-win profile \
+         forget`."
+    )
+}
+
+/// Installs the sandbox, makes the profile read grant unless one of the skip
+/// reasons holds, and then checks that the sandbox user can read this binary,
+/// which is what it runs as the runner. The check comes last because the grant
+/// is what makes a runner under the profile readable. After a grant the install
+/// was asked to skip, an unreadable runner is a notice and not a failure: the
+/// install did what it was asked to do, and the repair it names is not the
+/// command that was just run.
 pub(crate) fn install(host: &mut impl Host, options: &InstallOptions) -> Result<(), InstallError> {
-    host.check_runner()?;
-    run(host, "install", &install_args(options))
+    run(host, "install", &install_args(options))?;
+    let ids = host.grant_ids()?;
+    let Some(skip) = grant_skip_reason(options, &ids) else {
+        eprintln!("crabpot: {}", grant_notice(host.profile_dir().as_deref()));
+        run(host, "profile grant", &grant_args(options))?;
+        return host.check_runner();
+    };
+    eprintln!("crabpot: no profile read grant: {skip}");
+    match host.check_runner() {
+        Ok(()) => Ok(()),
+        Err(InstallError::RunnerUnreadable(path)) => {
+            eprintln!("crabpot: {}", unreadable_without_grant(&path));
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// What an install that made no grant says about a runner the sandbox user
+/// cannot read.
+fn unreadable_without_grant(path: &Path) -> String {
+    format!(
+        "the sandbox user cannot read {}, which it runs as the runner; run `crabpot --srt-win \
+         profile grant` as the user whose sessions read their profile, or move crabpot to a \
+         folder every user can read, such as one under Program Files",
+        path.display()
+    )
 }
 
 /// Removes the sandbox: `srt-win uninstall`, then `wfp uninstall` last. The
@@ -185,17 +347,30 @@ pub(crate) struct Machine;
 impl Host for Machine {
     fn check_runner(&self) -> Result<(), InstallError> {
         let exe = current_exe()?;
-        // Only a grant that is in place opens the profile: `profile grant` is
-        // opt-in, and `install` does not make it.
-        let granted = super::windows_status().is_ok_and(|s| s.profile == ProfileState::Current);
-        let profile = std::env::var_os("USERPROFILE")
-            .filter(|_| granted)
-            .and_then(|p| std::fs::canonicalize(p).ok());
-        if readable(&exe, profile.as_deref(), super::ffi::groups_can_read(&exe)) {
+        // The status names the account and the group a grant for the sandbox was
+        // made for. A machine that cannot read it names neither, and the check is
+        // left with the well-known groups alone.
+        let status = super::windows_status().ok();
+        if super::runner::Runner::of(exe.clone(), status.as_ref()).readable() {
             Ok(())
         } else {
             Err(InstallError::RunnerUnreadable(exe))
         }
+    }
+
+    fn grant_ids(&self) -> Result<GrantIds, InstallError> {
+        let status = super::windows_status().map_err(|_| InstallError::StatusUnreadable)?;
+        let Some(real_user_sid) = status.real_user_sid else {
+            return Err(InstallError::StatusUnreadable);
+        };
+        Ok(GrantIds {
+            real_user_sid,
+            session_user_sid: status.session_user_sid,
+        })
+    }
+
+    fn profile_dir(&self) -> Option<PathBuf> {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
     }
 
     fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError> {
@@ -214,6 +389,14 @@ impl Host for Machine {
         Err(InstallError::NotWindows)
     }
 
+    fn grant_ids(&self) -> Result<GrantIds, InstallError> {
+        Err(InstallError::NotWindows)
+    }
+
+    fn profile_dir(&self) -> Option<PathBuf> {
+        None
+    }
+
     fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError> {
         let _ = args;
         Err(InstallError::NotWindows)
@@ -228,14 +411,6 @@ fn current_exe() -> Result<PathBuf, InstallError> {
     Ok(std::fs::canonicalize(&exe).unwrap_or(exe))
 }
 
-/// Whether the sandbox user can read `exe`: a group it is in can, or `exe` is
-/// under `profile`, the profile a current read grant opens to it (`None` when
-/// there is no such grant). A check that could not be made (`groups_read` is `None`) does not refuse.
-#[cfg(any(windows, test))]
-fn readable(exe: &Path, profile: Option<&Path>, groups_read: Option<bool>) -> bool {
-    groups_read.unwrap_or(true) || profile.is_some_and(|profile| exe.starts_with(profile))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +419,8 @@ mod tests {
     /// `exit`.
     struct Fake {
         readable: bool,
+        ids: GrantIds,
+        profile_dir: Option<PathBuf>,
         exit: Vec<Option<i32>>,
         ran: Vec<Vec<String>>,
     }
@@ -252,6 +429,13 @@ mod tests {
         fn new() -> Self {
             Self {
                 readable: true,
+                // An install that ran as the owner of its own session: the case
+                // that grants.
+                ids: GrantIds {
+                    real_user_sid: "S-1-5-21-1-2-3-1001".to_owned(),
+                    session_user_sid: Some("S-1-5-21-1-2-3-1001".to_owned()),
+                },
+                profile_dir: Some(r"C:\Users\me".into()),
                 exit: Vec::new(),
                 ran: Vec::new(),
             }
@@ -265,6 +449,14 @@ mod tests {
             } else {
                 Err(InstallError::RunnerUnreadable("crabpot.exe".into()))
             }
+        }
+
+        fn grant_ids(&self) -> Result<GrantIds, InstallError> {
+            Ok(self.ids.clone())
+        }
+
+        fn profile_dir(&self) -> Option<PathBuf> {
+            self.profile_dir.clone()
         }
 
         fn run_srt_win(&mut self, args: &[OsString]) -> Result<Option<i32>, InstallError> {
@@ -295,6 +487,9 @@ mod tests {
             allow_loopback: true,
             sandbox_user: Some("ci-sandbox".into()),
             force: true,
+            // The two grant flags belong to `profile grant`, not to `install`.
+            profile_exclude: Vec::new(),
+            skip_profile_grant: false,
         };
         assert_eq!(
             strs(&install_args(&all)),
@@ -313,28 +508,203 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_runner_is_refused_before_the_install() {
+    fn install_makes_the_profile_grant_after_the_install() {
+        let mut host = Fake::new();
+
+        install(&mut host, &InstallOptions::default()).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"], vec!["profile", "grant"]]);
+    }
+
+    #[test]
+    fn skip_profile_grant_makes_no_grant() {
+        let mut host = Fake::new();
+        let options = InstallOptions {
+            skip_profile_grant: true,
+            ..InstallOptions::default()
+        };
+
+        install(&mut host, &options).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    /// A service account runs no sessions, so a grant it made would open the
+    /// profile of an account no one signs in as.
+    #[test]
+    fn a_service_account_install_makes_no_grant() {
+        let mut host = Fake::new();
+        host.ids.real_user_sid = "S-1-5-19".to_owned();
+
+        install(&mut host, &InstallOptions::default()).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    #[test]
+    fn an_install_whose_session_owner_is_unknown_makes_no_grant() {
+        let mut host = Fake::new();
+        host.ids.session_user_sid = None;
+
+        install(&mut host, &InstallOptions::default()).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    /// Granting here would open the installing account's profile, which is not
+    /// the one the sessions in that session read.
+    #[test]
+    fn an_install_in_another_accounts_session_makes_no_grant() {
+        let mut host = Fake::new();
+        host.ids.session_user_sid = Some("S-1-5-21-1-2-3-1002".to_owned());
+
+        install(&mut host, &InstallOptions::default()).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    #[test]
+    fn the_two_sids_are_compared_without_case() {
+        let mut host = Fake::new();
+        host.ids.session_user_sid = Some("s-1-5-21-1-2-3-1001".to_owned());
+
+        install(&mut host, &InstallOptions::default()).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"], vec!["profile", "grant"]]);
+    }
+
+    /// Every reason names the account it turned on and what to run instead.
+    #[test]
+    fn each_skip_reason_names_the_account_and_the_repair() {
+        let ids = GrantIds {
+            real_user_sid: "S-1-5-19".to_owned(),
+            session_user_sid: Some("S-1-5-21-1-2-3-1001".to_owned()),
+        };
+        let reasons = [
+            grant_skip_reason(
+                &InstallOptions {
+                    skip_profile_grant: true,
+                    ..InstallOptions::default()
+                },
+                &ids,
+            )
+            .unwrap(),
+            grant_skip_reason(&InstallOptions::default(), &ids).unwrap(),
+            grant_skip_reason(
+                &InstallOptions::default(),
+                &GrantIds {
+                    real_user_sid: "S-1-5-21-1-2-3-1001".to_owned(),
+                    session_user_sid: None,
+                },
+            )
+            .unwrap(),
+            grant_skip_reason(
+                &InstallOptions::default(),
+                &GrantIds {
+                    real_user_sid: "S-1-5-21-1-2-3-1001".to_owned(),
+                    session_user_sid: Some("S-1-5-21-1-2-3-1002".to_owned()),
+                },
+            )
+            .unwrap(),
+        ];
+        let said: Vec<String> = reasons.iter().map(|reason| reason.to_string()).collect();
+
+        assert_eq!(said[0], "--skip-profile-grant was set");
+        assert!(said[1].starts_with("the install ran as the service account S-1-5-19"));
+        assert!(said[2].starts_with("the owner of the session this install ran in could not be"));
+        assert!(said[2].contains("whose profile S-1-5-21-1-2-3-1001 is"));
+        assert!(said[3].starts_with("the install ran as S-1-5-21-1-2-3-1001 in a session"));
+        assert!(said[3].contains("belongs to S-1-5-21-1-2-3-1002"));
+        for reason in &said[1..] {
+            assert!(reason.ends_with("as the user whose sessions are to read their profile"));
+        }
+    }
+
+    /// The notice is what the grant is about to do, in the words upstream puts
+    /// in front of the person at the keyboard.
+    #[test]
+    fn the_notice_names_the_profile_and_the_way_back_out() {
+        let notice = grant_notice(Some(Path::new(r"C:\Users\me")));
+
+        assert!(notice.starts_with(r"Making C:\Users\me readable to sandboxed commands"));
+        assert!(notice.contains("SSH and GPG keys, cloud and browser sign-ins"));
+        assert!(notice.contains(".npmrc, pip.ini, NuGet.Config"));
+        assert!(notice.contains("Skip with --skip-profile-grant"));
+        assert!(notice.contains("undo with `crabpot --srt-win profile forget`"));
+        assert!(
+            grant_notice(None).starts_with("Making your profile readable to sandboxed commands"),
+            "a machine that names no profile still says what is opened"
+        );
+    }
+
+    #[test]
+    fn profile_exclude_passes_through_as_exclude() {
+        let mut host = Fake::new();
+        let options = InstallOptions {
+            profile_exclude: vec![r"C:\Users\me\.aws".into(), ".ssh".into()],
+            ..InstallOptions::default()
+        };
+
+        install(&mut host, &options).unwrap();
+
+        assert_eq!(
+            host.ran,
+            [
+                vec!["install"],
+                vec![
+                    "profile",
+                    "grant",
+                    "--exclude",
+                    r"C:\Users\me\.aws",
+                    "--exclude",
+                    ".ssh"
+                ],
+            ]
+        );
+    }
+
+    /// A crabpot under the profile with the grant asked off: the install did what
+    /// it was asked to do, so this is a notice and not a failure.
+    #[test]
+    fn a_skipped_grant_notices_an_unreadable_runner_and_exits_clean() {
+        let mut host = Fake::new();
+        host.readable = false;
+        let options = InstallOptions {
+            skip_profile_grant: true,
+            ..InstallOptions::default()
+        };
+
+        install(&mut host, &options).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    /// An install run with `--skip-profile-grant` skips the grant again, so it is
+    /// not the repair to name for the runner it left unreadable.
+    #[test]
+    fn the_repair_after_a_skipped_grant_is_not_the_install_just_run() {
+        let said = unreadable_without_grant(Path::new(r"C:\Users\me\.cargo\bin\crabpot.exe"));
+
+        assert!(said.contains(r"C:\Users\me\.cargo\bin\crabpot.exe"));
+        assert!(said.contains("profile grant"));
+        assert!(
+            !said.contains("windows-install"),
+            "the named repair loops: {said}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_runner_is_refused_after_the_grant_that_could_open_it() {
         let mut host = Fake::new();
         host.readable = false;
 
         let error = install(&mut host, &InstallOptions::default()).unwrap_err();
 
         assert_eq!(error, InstallError::RunnerUnreadable("crabpot.exe".into()));
-        assert!(host.ran.is_empty(), "srt-win was not started");
-    }
-
-    #[test]
-    fn a_runner_under_the_profile_is_readable_only_through_a_profile_grant() {
-        let exe = Path::new("C:/Users/me/.cargo/bin/crabpot.exe");
-        let profile = Some(Path::new("C:/Users/me"));
-
-        assert!(readable(exe, profile, Some(false)));
-        assert!(!readable(exe, Some(Path::new("C:/Users/you")), Some(false)));
-        assert!(!readable(exe, None, Some(false)));
-        assert!(readable(exe, None, Some(true)));
-        assert!(
-            readable(exe, None, None),
-            "a check that failed refuses nothing"
+        assert_eq!(
+            host.ran,
+            [vec!["install"], vec!["profile", "grant"]],
+            "the install and the grant both ran first: the grant is what makes a runner under the profile readable"
         );
     }
 

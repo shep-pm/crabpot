@@ -10,6 +10,8 @@ pub(crate) mod install;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod plan;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod runner;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod srt;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod start;
@@ -152,8 +154,8 @@ pub(crate) fn start_session(config: &Config) -> Result<Session, StartError> {
     start::start_with(
         start::Host {
             srt: Arc::new(srt::Process),
-            exe,
             holder: std::process::id(),
+            runner: runner::Runner::of(exe, Some(&status)),
         },
         &VERIFIED,
         &status,
@@ -193,6 +195,9 @@ mod tests {
         WindowsStatus {
             user: UserState::Provisioned,
             sandbox_sid: Some("S-1-5-21-1".to_owned()),
+            sandbox_group_sid: Some("S-1-5-21-9".to_owned()),
+            real_user_sid: Some("S-1-5-21-2".to_owned()),
+            session_user_sid: Some("S-1-5-21-2".to_owned()),
             setup_version: SetupVersion {
                 installed: Some(3),
                 expected: 3,

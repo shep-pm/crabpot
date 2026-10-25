@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use super::command::{self, Params};
 use super::plan::Plan;
+use super::runner::Runner;
 use super::srt::{Call, Output, Srt};
 use super::status::{LoopbackMode, ProfileState, WindowsStatus};
 use crate::{StartError, WrapError};
@@ -160,12 +161,13 @@ fn revoked(output: &io::Result<Output>) -> bool {
             .is_ok_and(|outcomes| outcomes.iter().all(Outcome::released))
 }
 
-/// What a session is started from: the calls to srt-win, this binary, and the
-/// process the grants are held for.
+/// What a session is started from: the calls to srt-win, the binary the
+/// sandbox user has to be able to read, and the process the grants are held
+/// for.
 pub(crate) struct Host {
     pub(crate) srt: Arc<dyn Srt>,
-    pub(crate) exe: PathBuf,
     pub(crate) holder: u32,
+    pub(crate) runner: Runner,
 }
 
 /// A loopback listener a `wfp verify` attempt is aimed at, and what keeps it
@@ -211,6 +213,7 @@ pub(crate) fn start_with(
 /// nor current, [`StartError::StatusFailed`] for a status with no sandbox user
 /// SID, [`StartError::LoopbackMismatch`] for a session whose
 /// `network.allowLocalBinding` is not the loopback mode the install made,
+/// [`StartError::RunnerUnreadable`] for a runner the sandbox user cannot read,
 /// [`StartError::ProfileConflicts`] for a grant that meets the profile read
 /// grant's exclusions, [`StartError::GrantBlocked`], [`StartError::ProfileBusy`]
 /// or [`StartError::GrantFailed`] when the grant call fails, and the errors of
@@ -239,6 +242,13 @@ fn prepare(
     let allow_loopback = config.network.allow_local_binding == Some(true);
     if allow_loopback != (status.loopback == LoopbackMode::Open) {
         return Err(StartError::LoopbackMismatch);
+    }
+    // Before anything is granted, and before anything runs as the sandbox user:
+    // seclogon answers an unreadable runner with a message about the service,
+    // and the grant that would open a runner under the profile is the install's
+    // to make.
+    if !host.runner.readable() {
+        return Err(StartError::RunnerUnreadable);
     }
     let plan = Plan::build(config, &status.profile_exclusions)?;
     // The range the install's filters name, which the fence probe must stay
@@ -269,7 +279,7 @@ fn prepare(
     }
     Ok(Prepared {
         held,
-        exe: host.exe,
+        exe: host.runner.exe,
         plan,
         allow_loopback,
         range,
@@ -364,6 +374,9 @@ mod tests {
         WindowsStatus {
             user: UserState::Provisioned,
             sandbox_sid: Some("S-1-5-21-7".to_owned()),
+            sandbox_group_sid: Some("S-1-5-21-9".to_owned()),
+            real_user_sid: Some("S-1-5-21-2".to_owned()),
+            session_user_sid: Some("S-1-5-21-2".to_owned()),
             setup_version: SetupVersion {
                 installed: Some(3),
                 expected: 3,
@@ -398,17 +411,46 @@ mod tests {
         status: &WindowsStatus,
         config: &Config,
     ) -> Result<Prepared, StartError> {
+        start_under(srt, runner(), verified, status, config)
+    }
+
+    fn start_under(
+        srt: Fake,
+        runner: Runner,
+        verified: &Verified,
+        status: &WindowsStatus,
+        config: &Config,
+    ) -> Result<Prepared, StartError> {
         prepare(
             Host {
                 srt: Arc::new(srt),
-                exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
                 holder: 4242,
+                runner,
             },
             verified,
             status,
             config,
             &no_listener,
         )
+    }
+
+    /// A runner the sandbox user can read on its own: its access list names the
+    /// sandbox account, its group, or one of the groups of its token as able to
+    /// read and execute it, and no profile grant is needed for it.
+    fn runner() -> Runner {
+        Runner {
+            exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
+            dacl_allows: Some(true),
+        }
+    }
+
+    /// A runner under the profile whose own access list carries nothing for the
+    /// sandbox: the grant has not reached it.
+    fn runner_the_grant_never_reached() -> Runner {
+        Runner {
+            exe: PathBuf::from(r"C:\Users\me\.cargo\bin\crabpot.exe"),
+            dacl_allows: Some(false),
+        }
     }
 
     /// A status whose install was made with `--allow-loopback`.
@@ -608,8 +650,8 @@ mod tests {
         prepare(
             Host {
                 srt: Arc::new(srt),
-                exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
                 holder: 4242,
+                runner: runner(),
             },
             &Verified::new(),
             &status(),
@@ -642,6 +684,62 @@ mod tests {
         };
 
         start(srt, &Verified::new(), &none, &Config::default()).unwrap();
+    }
+
+    /// A crabpot under the profile is what `cargo install` puts there, and what
+    /// kelpie's binary is. The sandbox user cannot read it without the profile
+    /// read grant, and seclogon answers that with a message about the service
+    /// instead of about the binary.
+    #[test]
+    fn an_unreadable_runner_is_refused_by_name() {
+        let (srt, calls) = Fake::passing();
+
+        let error = start_under(
+            srt,
+            runner_the_grant_never_reached(),
+            &Verified::new(),
+            &status(),
+            &Config::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, StartError::RunnerUnreadable);
+        assert!(
+            calls.all().is_empty(),
+            "nothing is granted: {:?}",
+            calls.all()
+        );
+    }
+
+    #[test]
+    fn a_runner_the_grant_reached_starts() {
+        let (srt, _) = Fake::passing();
+        let granted = Runner {
+            dacl_allows: Some(true),
+            ..runner_the_grant_never_reached()
+        };
+
+        drop(
+            start_under(
+                srt,
+                granted,
+                &Verified::new(),
+                &status(),
+                &Config::default(),
+            )
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn a_runner_check_the_machine_could_not_make_refuses_nothing() {
+        let (srt, _) = Fake::passing();
+        let unread = Runner {
+            dacl_allows: None,
+            ..runner_the_grant_never_reached()
+        };
+
+        drop(start_under(srt, unread, &Verified::new(), &status(), &Config::default()).unwrap());
     }
 
     #[test]

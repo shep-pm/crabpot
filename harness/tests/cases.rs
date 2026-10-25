@@ -35,10 +35,10 @@
 //! kelpie's three cases that name a process group, a process or a Unix socket
 //! keep their `macos` and `linux` forms, and each has a case of its own for
 //! Windows, where the probe binary has a form of the action too: `signal-group`
-//! asks whether the sandbox holds a command and a child it started in one job
-//! object, and whether that job ends its members when it closes
-//! (`crates/crabpot-windows/srt-win/src/job.rs`), which is what ends a command's
-//! whole tree in place of the group a host signals; `ps` asks
+//! asks whether a command and a child it started are held in one job object that
+//! ends its members when it closes (`crates/crabpot-windows/srt-win/src/job.rs`),
+//! which is what ends a command's whole tree in place of the group a host
+//! signals; `ps` asks
 //! `tasklist` for the probe's own process; and `bind-unix` binds an `AF_UNIX`
 //! socket through Winsock, where `sun_path` carries 107 bytes of path. Each new
 //! case names `windows` alone, and each old one is skipped there as before.
@@ -743,12 +743,13 @@ fn kelpie_full_policy_windows() {
 /// Windows has no process groups, and kelpie ends a worker's command by
 /// signalling the wrapper's group. `srt-win` holds each sandboxed command in a
 /// job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and never touches it,
-/// so the probe starts a child inside the sandbox and asks whether the sandbox
-/// holds the command and that child in a job, and whether that job ends its
-/// members when it closes, which is what ends the two together. Being held in a
-/// job is not the containment: a host can hold its own children in one, so
-/// `a_probe_outside_a_sandbox_is_not_held_in_a_kill_on_close_job` holds that the
-/// host running the harness is no such job.
+/// so the probe starts a child inside the sandbox and asks whether the command
+/// and that child are held in a job, and whether that job ends its members when
+/// it closes, which is what ends the two together. A process holds no handle of
+/// the job it is in, so the probe cannot name that job, and both Windows runners
+/// hold the harness itself in a kill-on-close job (CI run 40171054663). The case
+/// pins that the two runners hold a command's tree in a job of the same shape,
+/// and says nothing on its own about a sandbox that stopped holding one.
 #[test]
 fn kelpie_group_signal_windows() {
     run(

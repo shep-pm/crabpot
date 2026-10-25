@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="32 33 448 448" width="512" height="512">
+  <title>crabpot</title>
+  <defs>
+    <style>
+      .ink { stroke: #3B2620; stroke-width: 7; stroke-linejoin: round; stroke-linecap: round; }
+      .ferris { fill: #F74C00; }
+      .sand { fill: #F4D49B; }
+      .rope { fill: none; stroke: #D8B47A; stroke-width: 5; stroke-linecap: round; }
+      .ring-ink { fill: none; stroke: #3B2620; stroke-width: 15; stroke-linecap: round; }
+      .ring { fill: none; stroke: #2D5DA8; stroke-width: 8; stroke-linecap: round; }
+    </style>
+    <!-- a king crab pot: a cone cut off at the top, like a lampshade -->
+    <path id="cone" d="M146 170 L 56 420 A 200 40 0 0 0 456 420 L 366 170 A 110 26 0 0 0 146 170 Z"/>
+    <clipPath id="inside"><use href="#cone"/></clipPath>
+    <clipPath id="buoy"><rect x="376" y="54" width="58" height="44" rx="22"/></clipPath>
+  </defs>
+
+  <!-- bridle up to a knot, and the line out to the buoy -->
+  <path class="ink" fill="none" d="M164 166 L 256 92 L 348 166 M 256 92 C 300 92, 330 70, 374 74"/>
+  <path class="rope" d="M164 166 L 256 92 L 348 166 M 256 92 C 300 92, 330 70, 374 74"/>
+  <circle class="ink" cx="256" cy="92" r="7" fill="#D8B47A"/>
+  <g transform="rotate(-20 404 76)">
+    <rect x="376" y="54" width="58" height="44" rx="22" fill="#FFFFFF"/>
+    <g clip-path="url(#buoy)" fill="#E94F37"><rect x="376" y="54" width="19" height="44"/><rect x="415" y="54" width="19" height="44"/></g>
+    <rect class="ink" x="376" y="54" width="58" height="44" rx="22" fill="none"/>
+  </g>
+
+  <!-- inside the pot: net, the far side of the rings and struts -->
+  <use href="#cone" fill="#DDF3EE"/>
+  <g clip-path="url(#inside)">
+    <g stroke="#A6DACF" stroke-width="5">
+      <path d="M0 150 L 340 490 M 0 90 L 400 490 M 30 60 L 460 490 M 90 60 L 520 490 M 150 60 L 520 430 M 210 60 L 520 370 M 270 60 L 520 310 M 330 60 L 520 250 M 0 210 L 280 490 M 0 270 L 220 490 M 0 330 L 160 490"/>
+      <path d="M512 150 L 172 490 M 512 90 L 112 490 M 482 60 L 52 490 M 422 60 L -8 490 M 362 60 L -8 430 M 302 60 L -8 370 M 242 60 L -8 310 M 182 60 L -8 250 M 512 210 L 232 490 M 512 270 L 292 490 M 512 330 L 352 490"/>
+    </g>
+    <ellipse cx="256" cy="300" rx="157" ry="33" fill="none" stroke="#2D5DA8" stroke-width="7" opacity="0.55"/>
+    <path fill="#EBC587" d="M40 380 C 80 356, 140 354, 180 376 C 210 392, 236 384, 268 380 C 310 374, 340 392, 372 380 C 404 366, 440 368, 470 384 L 470 470 L 40 470 Z"/>
+  </g>
+
+  <!-- the red funnel that hangs from the top ring -->
+  <path class="ink" fill="#E94F37" d="M164 170 L 186 226 A 70 16 0 0 0 326 226 L 348 170 Z"/>
+  <ellipse class="ink" cx="256" cy="170" rx="92" ry="20" fill="#B8352A"/>
+  <ellipse cx="256" cy="176" rx="70" ry="12" fill="#8E2A22"/>
+
+  <!-- Ferris -->
+  <g transform="translate(256 400) scale(0.82) translate(-256 -372)">
+    <g class="ink" fill="none" style="stroke-width:20">
+      <path d="M172 358 L 146 378 M 180 364 L 162 388 M 340 358 L 366 378 M 332 364 L 350 388"/>
+      <path d="M182 318 Q 150 302 146 262 M 330 318 Q 362 302 366 262"/>
+    </g>
+    <g fill="none" stroke="#F74C00" stroke-width="10" stroke-linecap="round">
+      <path d="M172 358 L 146 378 M 180 364 L 162 388 M 340 358 L 366 378 M 332 364 L 350 388"/>
+      <path d="M182 318 Q 150 302 146 262 M 330 318 Q 362 302 366 262"/>
+    </g>
+    <path class="ferris ink" d="M146 268 C 118 268, 108 238, 120 216 L 138 230 L 138 202 C 168 200, 182 238, 168 256 C 162 264, 154 268, 146 268 Z"/>
+    <path class="ferris ink" d="M366 268 C 394 268, 404 238, 392 216 L 374 230 L 374 202 C 344 200, 330 238, 344 256 C 350 264, 358 268, 366 268 Z"/>
+    <path class="ferris ink" d="M158 364 C 150 326, 164 298, 186 288 Q 186.2 273.8, 194 262 Q 205.5 265.8, 212 276 Q 215.6 262.9, 226 254 Q 236.8 259.2, 242 270 Q 245.6 256.9, 256 248 Q 266.4 256.9, 270 270 Q 275.2 259.2, 286 254 Q 296.4 262.9, 300 276 Q 306.5 265.8, 318 262 Q 325.8 273.8, 326 288 C 348 298, 362 326, 354 364 C 326 384, 186 384, 158 364 Z"/>
+    <ellipse cx="228" cy="314" rx="13" ry="15" fill="#2A1A16"/>
+    <ellipse cx="284" cy="314" rx="13" ry="15" fill="#2A1A16"/>
+    <circle cx="233" cy="308" r="5" fill="#FFFFFF"/>
+    <circle cx="289" cy="308" r="5" fill="#FFFFFF"/>
+    <ellipse cx="204" cy="338" rx="14" ry="8" fill="#FFB0A0" opacity="0.7"/>
+    <ellipse cx="308" cy="338" rx="14" ry="8" fill="#FFB0A0" opacity="0.7"/>
+    <path class="ink" fill="none" stroke-width="5" d="M244 336 Q 256 348 268 336"/>
+  </g>
+
+  <!-- sand in front, and the sandcastle -->
+  <g clip-path="url(#inside)">
+    <path class="sand" d="M40 414 C 80 398, 130 396, 172 408 C 204 418, 226 402, 260 400 C 296 398, 318 414, 352 412 C 390 410, 424 392, 470 402 L 470 470 L 40 470 Z"/>
+    <g fill="none" stroke="#E3BB72" stroke-width="3" stroke-linecap="round">
+      <path d="M196 432 Q 214 426 232 432 M 300 440 Q 320 434 340 440 M 380 426 Q 396 420 412 426"/>
+    </g>
+    <g fill="#E3BB72">
+      <circle cx="150" cy="436" r="3"/><circle cx="236" cy="446" r="3"/><circle cx="300" cy="432" r="3"/>
+      <circle cx="352" cy="444" r="3"/><circle cx="96" cy="430" r="3"/><circle cx="410" cy="428" r="3"/>
+    </g>
+  </g>
+  <g transform="translate(-30 4)">
+    <path class="ink" fill="#E9BE78" d="M114 424 L 114 384 L 124 384 L 124 374 L 134 374 L 134 384 L 152 384 L 152 374 L 162 374 L 162 384 L 172 384 L 172 424 Z"/>
+    <path class="ink" fill="#E9BE78" d="M131 386 L 131 358 L 137 358 L 137 352 L 143 352 L 143 358 L 149 358 L 149 352 L 155 352 L 155 386 Z"/>
+    <path class="ink" fill="none" stroke-width="4" d="M143 352 L 143 326"/>
+    <path class="ink" fill="#E94F37" stroke-width="4" d="M145 326 L 163 333 L 145 340 Z"/>
+    <path fill="#3B2620" d="M135 424 L 135 408 Q 143 398 151 408 L 151 424 Z"/>
+  </g>
+
+  <!-- front struts, in front of Ferris -->
+  <path class="ring-ink" style="stroke-width:13" d="M201 192 L 156 455 M 311 192 L 356 455"/>
+  <path class="ring" style="stroke-width:6" d="M201 192 L 156 455 M 311 192 L 356 455"/>
+  <!-- the middle ring's near half, in front of Ferris (its far half is drawn faint behind him) -->
+  <path class="ring-ink" style="stroke-width:13" d="M99 300 A 157 33 0 0 0 413 300"/>
+  <path class="ring" style="stroke-width:6" d="M99 300 A 157 33 0 0 0 413 300"/>
+  <!-- the frame: side struts, bottom ring's near half, top ring -->
+  <path class="ring-ink" d="M146 170 L 56 420 M 366 170 L 456 420"/>
+  <path class="ring" d="M146 170 L 56 420 M 366 170 L 456 420"/>
+  <path class="ring-ink" d="M56 420 A 200 40 0 0 0 456 420"/>
+  <path class="ring" d="M56 420 A 200 40 0 0 0 456 420"/>
+  <ellipse class="ring-ink" cx="256" cy="170" rx="110" ry="26"/>
+  <ellipse class="ring" cx="256" cy="170" rx="110" ry="26"/>
+
+  <!-- rope lashed round the top ring -->
+  <g class="ink" fill="none" stroke-width="4">
+    <path d="M158 182 L 166 192 M 168 180 L 176 190 M 344 180 L 336 190 M 354 182 L 346 192"/>
+  </g>
+  <g class="rope" stroke-width="3">
+    <path d="M158 182 L 166 192 M 168 180 L 176 190 M 344 180 L 336 190 M 354 182 L 346 192"/>
+  </g>
+</svg>

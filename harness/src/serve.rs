@@ -37,7 +37,7 @@ mod peer {
 
     pub(super) use std::net::TcpStream as Stream;
 
-    pub(super) use crate::winsock::Listener;
+    pub(super) use crate::win32::Listener;
 
     pub(super) fn bind(path: &Path) -> io::Result<Listener> {
         Listener::bind(path)
@@ -48,7 +48,7 @@ mod peer {
     }
 
     pub(super) fn connect(path: &Path) -> io::Result<Stream> {
-        crate::winsock::connect_unix(path)
+        crate::win32::connect_unix(path)
     }
 }
 

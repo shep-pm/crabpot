@@ -25,10 +25,16 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 libc = { version = "0.2", default-features = false }
 nix = { version = "0.31", default-features = false, features = ["sched", "socket"] }
 
-# The AF_UNIX listener a served case answers on, which std has no form of on
+# The AF_UNIX listener a served case answers on, and the job object a probe
+# asks whether a sandboxed command is held in, which std has no form of on
 # Windows. Tokio already pulls the crate into the lock.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Networking_WinSock"] }
+windows-sys = { version = "0.61", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

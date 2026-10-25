@@ -27,6 +27,7 @@ pub(crate) mod argument;
 #[cfg(target_os = "linux")]
 mod kernel;
 mod socks;
+pub mod tasklist;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

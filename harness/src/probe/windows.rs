@@ -11,17 +11,15 @@
 //!
 //! `ps` names a process with `tasklist`, and `bind-unix` with the `AF_UNIX`
 //! family Windows 10 and later carries, which `std` has no form of: see
-//! [`crate::win32`].
+//! [`crate::win32`]. What `tasklist` answers is read in [`super::tasklist`],
+//! which holds no Windows call and so is testable on any host.
 
 use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
+use super::tasklist::{TASKLIST, names_the_pid};
 use super::{Error, Outcome, judge, socket_path_too_long};
-
-/// The program that names a process and how it runs, which a host asks when it
-/// decides whether a session it attached to still holds.
-const TASKLIST: &str = "tasklist";
 
 /// The mode a probe child runs: this same binary, asleep for the seconds it is
 /// given. Windows has no `/bin/sleep`, and the child has to be a program the
@@ -128,38 +126,9 @@ pub(super) fn ps() -> Outcome {
     }
 }
 
-/// Whether `tasklist`'s output names `pid`.
-///
-/// `/FO CSV /NH` gives one line per process with every field quoted, and the pid
-/// is the second of them: `"probe.exe","1234","Console","1","3,072 K"`. A quoted
-/// pid between two commas is what no other column can spell: the memory column
-/// ends in ` K"`, and the session number carries no quotes. Where nothing
-/// matches its filter, `tasklist` prints `INFO: No tasks are running which match
-/// the specified criteria.`, which names no pid.
-fn names_the_pid(stdout: &[u8], pid: u32) -> bool {
-    let needle = format!(",\"{pid}\",");
-    stdout
-        .windows(needle.len())
-        .any(|window| window == needle.as_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The line `tasklist` gives for a match, with a memory column that holds a
-    /// comma of its own, and the line it gives for none.
-    #[test]
-    fn tasklist_output_names_the_pid_and_no_other_number_in_it() {
-        let line = b"\"probe.exe\",\"1234\",\"Console\",\"1\",\"3,072 K\"\r\n";
-        assert!(names_the_pid(line, 1234));
-        assert!(!names_the_pid(line, 3072));
-        assert!(!names_the_pid(line, 1));
-        assert!(!names_the_pid(
-            b"INFO: No tasks are running which match the specified criteria.\r\n",
-            1234
-        ));
-    }
 
     /// `--hold` is what the probe's child runs as, and it ends on its own after
     /// the seconds it is given.

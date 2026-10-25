@@ -27,6 +27,10 @@
 //! not the loopback mode the filters were installed with, so a case that opens
 //! loopback runs only after `windows-install --allow-loopback --force` and with
 //! `CRABPOT_HARNESS_LOOPBACK=open`, and every other case runs only without them.
+//! Each sandbox takes two loopback ports from the range the installed filters
+//! permit, so the harness gates every probe run to what that range holds: see
+//! `GATE` in `harness/src/runner/mod.rs`. `cargo test` needs no `--test-threads`
+//! cap on a machine with more logical CPUs than the range holds ports.
 //!
 //! kelpie's three cases that name a process group, a process or a Unix socket
 //! keep their `macos` and `linux` forms, and each has a case of its own for

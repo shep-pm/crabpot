@@ -7,6 +7,9 @@
 //! what running one of them reported. `windows` holds what upstream's Windows
 //! runner needs set up first. They are separate files because the
 //! comparison and both wrappers together passed 1000 lines (IR-48).
+//!
+//! Every probe run goes through `gated`, which holds one slot of the gate that
+//! caps how many sandboxes the harness runs at once. See `GATE`.
 
 mod crabpot;
 mod upstream;
@@ -24,6 +27,7 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 use serde_json::Value;
 
@@ -206,6 +210,121 @@ impl core::error::Error for Error {
     }
 }
 
+/// The gate on how many sandboxes this harness process runs at once.
+///
+/// On Windows every sandbox takes two loopback ports from the range the
+/// installed filters permit, and a sandbox whose proxies find none left fails
+/// its probe for want of a port. `cargo test` runs one case per logical CPU, so
+/// a machine with more CPUs than the range holds ports runs more sandboxes than
+/// the range answers for. Every probe run holds one slot of this gate for as
+/// long as its wrapper lives, and a run that finds none waits for one to free.
+///
+/// The capacity is what the install's range holds, which `windows` reads from
+/// `wfp status` once and hands to `set_gate` before any probe runs. Off Windows
+/// no shared port range bounds the sandboxes, and the gate is never set: it
+/// holds [`UNLIMITED`] of them, and a slot costs one lock.
+static GATE: OnceLock<Gate> = OnceLock::new();
+
+/// The capacity of a gate nothing set: every platform but Windows has no port
+/// range for the sandboxes to share.
+const UNLIMITED: usize = usize::MAX;
+
+/// The loopback ports one sandbox's proxies take from the install's range: the
+/// mux's front end and its HTTP backend.
+const PORTS_PER_SANDBOX: u16 = 2;
+
+/// A counting semaphore over the sandboxes this harness process runs at once.
+#[derive(Debug)]
+struct Gate {
+    /// The slots still free, which `waiting` guards: every waiter sleeps on
+    /// this same lock.
+    free: Mutex<usize>,
+    /// Woken by every slot given back.
+    waiting: Condvar,
+}
+
+impl Gate {
+    /// A gate that holds `slots` sandboxes at once.
+    fn new(slots: usize) -> Self {
+        Self {
+            free: Mutex::new(slots),
+            waiting: Condvar::new(),
+        }
+    }
+
+    /// Takes a slot, waiting for one to free when every slot is held. The slot
+    /// goes back when the returned guard is dropped, which is on every way out
+    /// of the run that took it, a panic's unwinding included.
+    fn acquire(&self) -> Slot<'_> {
+        let mut free = self.lock();
+        while *free == 0 {
+            free = self
+                .waiting
+                .wait(free)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *free -= 1;
+        drop(free);
+        Slot { gate: self }
+    }
+
+    /// The slots, taken back from a panic that poisoned the lock rather than
+    /// failing a run for it.
+    fn lock(&self) -> MutexGuard<'_, usize> {
+        self.free
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// One slot of the harness's gate, held for as long as the run that took it
+/// lives.
+#[derive(Debug)]
+struct Slot<'gate> {
+    gate: &'gate Gate,
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        let mut free = self.gate.lock();
+        *free += 1;
+        self.gate.waiting.notify_one();
+    }
+}
+
+/// Sets the harness's gate to `slots` sandboxes at once, once per process: a
+/// gate a run has already reached keeps the capacity that run found.
+///
+/// The Windows leg of `Upstream::find` is the only caller: off Windows nothing
+/// bounds the sandboxes, and the gate keeps its [`UNLIMITED`] capacity.
+#[cfg(windows)]
+fn set_gate(slots: usize) {
+    GATE.get_or_init(|| Gate::new(slots));
+}
+
+/// Runs `run` with one slot of the harness's gate held. See [`GATE`].
+fn gated<T>(run: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    let _slot = GATE.get_or_init(|| Gate::new(UNLIMITED)).acquire();
+    run()
+}
+
+/// How many sandboxes a proxy port range from `first` to `last`, both included,
+/// holds at once: each sandbox takes [`PORTS_PER_SANDBOX`] ports, so the range
+/// holds half as many sandboxes as it has ports, and the odd port out holds
+/// none.
+///
+/// A range too narrow to pair holds no sandbox, and this still answers one: a
+/// case run under such a range then gets the answer a proxy that could not bind
+/// gives, and not a harness waiting on a slot that never frees.
+///
+/// `windows` is the only caller, for the range it reads from `wfp status`, so
+/// off Windows this is used by its tests alone.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sandboxes_in_range(first: u16, last: u16) -> usize {
+    let ports = usize::from(last) - usize::from(first) + 1;
+    (ports / usize::from(PORTS_PER_SANDBOX)).max(1)
+}
+
 /// Runs every probe of `case` under both runners.
 ///
 /// `restore` puts the fixture back as the case describes it. It runs before
@@ -269,6 +388,9 @@ pub fn expect(
 /// A probe that records the code upstream gives, where crabpot differs on
 /// purpose, passes a comparison only if upstream gives that code and crabpot
 /// gives another.
+///
+/// Each run goes through [`gated`], so the sandboxes live at once never
+/// outnumber what the install's proxy port range holds.
 ///
 /// A probe that reported a code and still could not tell what the sandbox did
 /// ([`probe::ERROR`]) fails a comparison, which is what a code is for. The
@@ -399,7 +521,8 @@ pub fn compare_refused(
 
 /// Runs every probe of `case` under each runner in `runners`, which must all
 /// refuse the settings before any probe runs. A `write` probe is the marker:
-/// its file must not be there afterwards.
+/// its file must not be there afterwards. Each refusal is a wrapper run, and
+/// each goes through [`gated`] like every other probe run.
 fn run_refusals(
     case: &Case,
     settings: &Path,
@@ -409,7 +532,7 @@ fn run_refusals(
     for probe in &case.probes {
         for runner in runners {
             restore()?;
-            if !runner.refuses(settings, probe)? || written(probe) {
+            if !gated(|| runner.refuses(settings, probe))? || written(probe) {
                 return Err(Error::NotRefused {
                     runner: runner.name(),
                     probe: probe.clone(),
@@ -432,12 +555,13 @@ fn hidden_by_a_deny(case: &Case, probe: &Probe) -> bool {
     matches!(probe, Probe::Read(path) if case.files.iter().any(|(made, _)| made == Path::new(path)))
 }
 
-/// The code `runner`'s probe reported. A probe that could not tell is an error
-/// only where `strict`: where its answer is compared with another runner's and
-/// is not one a read deny gives. Otherwise the code is the answer, and a runner
-/// that gave another still differs.
+/// The code `runner`'s probe reported, with one slot of the harness's gate held
+/// for the whole run. A probe that could not tell is an error only where
+/// `strict`: where its answer is compared with another runner's and is not one a
+/// read deny gives. Otherwise the code is the answer, and a runner that gave
+/// another still differs.
 fn code(runner: &dyn Runner, settings: &Path, probe: &Probe, strict: bool) -> Result<u8, Error> {
-    let outcome = runner.run(settings, probe)?;
+    let outcome = gated(|| runner.run(settings, probe))?;
     if strict && outcome == probe::ERROR {
         return Err(Error::Erred {
             runner: runner.name(),

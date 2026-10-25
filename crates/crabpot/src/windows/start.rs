@@ -434,24 +434,21 @@ mod tests {
         )
     }
 
-    /// A runner the sandbox user can read on its own: its folder names the
+    /// A runner the sandbox user can read on its own: its access list names the
     /// sandbox account, its group, or one of the groups of its token as able to
     /// read and execute it, and no profile grant is needed for it.
     fn runner() -> Runner {
         Runner {
             exe: PathBuf::from(r"C:\crabpot\crabpot.exe"),
-            granted_profile: None,
             dacl_allows: Some(true),
         }
     }
 
-    /// A runner under the profile, which only the profile read grant opens. The
-    /// two paths are in the forms a Windows host answers with: `current_exe`
-    /// gives `exe` none, and `canonicalize` gives the profile a `\\?\` prefix.
-    fn runner_under_the_profile() -> Runner {
+    /// A runner under the profile whose own access list carries nothing for the
+    /// sandbox: the grant has not reached it.
+    fn runner_the_grant_never_reached() -> Runner {
         Runner {
             exe: PathBuf::from(r"C:\Users\me\.cargo\bin\crabpot.exe"),
-            granted_profile: None,
             dacl_allows: Some(false),
         }
     }
@@ -699,7 +696,7 @@ mod tests {
 
         let error = start_under(
             srt,
-            runner_under_the_profile(),
+            runner_the_grant_never_reached(),
             &Verified::new(),
             &status(),
             &Config::default(),
@@ -715,11 +712,11 @@ mod tests {
     }
 
     #[test]
-    fn a_runner_under_the_profile_starts_once_the_grant_is_in_place() {
+    fn a_runner_the_grant_reached_starts() {
         let (srt, _) = Fake::passing();
         let granted = Runner {
-            granted_profile: Some(PathBuf::from(r"\\?\C:\Users\me")),
-            ..runner_under_the_profile()
+            dacl_allows: Some(true),
+            ..runner_the_grant_never_reached()
         };
 
         drop(
@@ -735,30 +732,11 @@ mod tests {
     }
 
     #[test]
-    fn a_grant_on_another_users_profile_opens_nothing() {
-        let (srt, calls) = Fake::passing();
-        let other = Runner {
-            granted_profile: Some(PathBuf::from(r"\\?\C:\Users\you")),
-            ..runner_under_the_profile()
-        };
-
-        let error =
-            start_under(srt, other, &Verified::new(), &status(), &Config::default()).unwrap_err();
-
-        assert_eq!(error, StartError::RunnerUnreadable);
-        assert!(
-            calls.all().is_empty(),
-            "nothing is granted: {:?}",
-            calls.all()
-        );
-    }
-
-    #[test]
     fn a_runner_check_the_machine_could_not_make_refuses_nothing() {
         let (srt, _) = Fake::passing();
         let unread = Runner {
             dacl_allows: None,
-            ..runner_under_the_profile()
+            ..runner_the_grant_never_reached()
         };
 
         drop(start_under(srt, unread, &Verified::new(), &status(), &Config::default()).unwrap());

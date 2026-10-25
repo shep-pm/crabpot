@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="crabpot">
+  <defs><style>
+      .ink { stroke: #3B2620; stroke-width: 7; stroke-linejoin: round; stroke-linecap: round; }
+      .ferris { fill: #F74C00; }
+      .sand { fill: #F4D49B; }
+      .rope { fill: none; stroke: #D8B47A; stroke-width: 5; stroke-linecap: round; }
+      .ring-ink { fill: none; stroke: #3B2620; stroke-width: 15; stroke-linecap: round; }
+      .ring { fill: none; stroke: #2D5DA8; stroke-width: 8; stroke-linecap: round; }
+    </style><clipPath id="tile"><rect width="128" height="128" rx="24"/></clipPath></defs>
+  <rect width="128" height="128" rx="24" fill="#2D5DA8"/>
+  <path clip-path="url(#tile)" fill="#F4D49B" stroke="#3B2620" stroke-width="3" d="M-4 98 C 30 90, 60 96, 90 92 C 110 90, 122 92, 132 96 L 132 132 L -4 132 Z"/>
+  <g transform="translate(64 68) scale(0.38) translate(-256 -334)"><!-- Ferris -->
+  <g transform="translate(256 400) scale(0.82) translate(-256 -372)">
+    <g class="ink" fill="none" style="stroke-width:20">
+      <path d="M172 358 L 146 378 M 180 364 L 162 388 M 340 358 L 366 378 M 332 364 L 350 388"/>
+      <path d="M182 318 Q 150 302 146 262 M 330 318 Q 362 302 366 262"/>
+    </g>
+    <g fill="none" stroke="#F74C00" stroke-width="10" stroke-linecap="round">
+      <path d="M172 358 L 146 378 M 180 364 L 162 388 M 340 358 L 366 378 M 332 364 L 350 388"/>
+      <path d="M182 318 Q 150 302 146 262 M 330 318 Q 362 302 366 262"/>
+    </g>
+    <path class="ferris ink" d="M146 268 C 118 268, 108 238, 120 216 L 138 230 L 138 202 C 168 200, 182 238, 168 256 C 162 264, 154 268, 146 268 Z"/>
+    <path class="ferris ink" d="M366 268 C 394 268, 404 238, 392 216 L 374 230 L 374 202 C 344 200, 330 238, 344 256 C 350 264, 358 268, 366 268 Z"/>
+    <path class="ferris ink" d="M158 364 C 150 326, 164 298, 186 288 Q 186.2 273.8, 194 262 Q 205.5 265.8, 212 276 Q 215.6 262.9, 226 254 Q 236.8 259.2, 242 270 Q 245.6 256.9, 256 248 Q 266.4 256.9, 270 270 Q 275.2 259.2, 286 254 Q 296.4 262.9, 300 276 Q 306.5 265.8, 318 262 Q 325.8 273.8, 326 288 C 348 298, 362 326, 354 364 C 326 384, 186 384, 158 364 Z"/>
+    <ellipse cx="228" cy="314" rx="13" ry="15" fill="#2A1A16"/>
+    <ellipse cx="284" cy="314" rx="13" ry="15" fill="#2A1A16"/>
+    <circle cx="233" cy="308" r="5" fill="#FFFFFF"/>
+    <circle cx="289" cy="308" r="5" fill="#FFFFFF"/>
+    <ellipse cx="204" cy="338" rx="14" ry="8" fill="#FFB0A0" opacity="0.7"/>
+    <ellipse cx="308" cy="338" rx="14" ry="8" fill="#FFB0A0" opacity="0.7"/>
+    <path class="ink" fill="none" stroke-width="5" d="M244 336 Q 256 348 268 336"/>
+  </g>
+
+  </g>
+</svg>

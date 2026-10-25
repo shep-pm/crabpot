@@ -274,18 +274,38 @@ fn grant_notice(profile_dir: Option<&Path>) -> String {
 /// Installs the sandbox, makes the profile read grant unless one of the skip
 /// reasons holds, and then checks that the sandbox user can read this binary,
 /// which is what it runs as the runner. The check comes last because the grant
-/// is often what makes a runner under the profile readable.
+/// is what makes a runner under the profile readable. After a grant the install
+/// was asked to skip, an unreadable runner is a notice and not a failure: the
+/// install did what it was asked to do, and the repair it names is not the
+/// command that was just run.
 pub(crate) fn install(host: &mut impl Host, options: &InstallOptions) -> Result<(), InstallError> {
     run(host, "install", &install_args(options))?;
     let ids = host.grant_ids()?;
-    match grant_skip_reason(options, &ids) {
-        None => {
-            eprintln!("crabpot: {}", grant_notice(host.profile_dir().as_deref()));
-            run(host, "profile grant", &grant_args(options))?
+    let Some(skip) = grant_skip_reason(options, &ids) else {
+        eprintln!("crabpot: {}", grant_notice(host.profile_dir().as_deref()));
+        run(host, "profile grant", &grant_args(options))?;
+        return host.check_runner();
+    };
+    eprintln!("crabpot: no profile read grant: {skip}");
+    match host.check_runner() {
+        Ok(()) => Ok(()),
+        Err(InstallError::RunnerUnreadable(path)) => {
+            eprintln!("crabpot: {}", unreadable_without_grant(&path));
+            Ok(())
         }
-        Some(skip) => eprintln!("crabpot: no profile read grant: {skip}"),
+        Err(error) => Err(error),
     }
-    host.check_runner()
+}
+
+/// What an install that made no grant says about a runner the sandbox user
+/// cannot read.
+fn unreadable_without_grant(path: &Path) -> String {
+    format!(
+        "the sandbox user cannot read {}, which it runs as the runner; run `crabpot --srt-win \
+         profile grant` as the user whose sessions read their profile, or move crabpot to a \
+         folder every user can read, such as one under Program Files",
+        path.display()
+    )
 }
 
 /// Removes the sandbox: `srt-win uninstall`, then `wfp uninstall` last. The
@@ -327,8 +347,8 @@ pub(crate) struct Machine;
 impl Host for Machine {
     fn check_runner(&self) -> Result<(), InstallError> {
         let exe = current_exe()?;
-        // The status is what names the grant, the account and the group. A
-        // machine that cannot read it names none of the three, and the check is
+        // The status names the account and the group a grant for the sandbox was
+        // made for. A machine that cannot read it names neither, and the check is
         // left with the well-known groups alone.
         let status = super::windows_status().ok();
         if super::runner::Runner::of(exe.clone(), status.as_ref()).readable() {
@@ -640,6 +660,36 @@ mod tests {
                     ".ssh"
                 ],
             ]
+        );
+    }
+
+    /// A crabpot under the profile with the grant asked off: the install did what
+    /// it was asked to do, so this is a notice and not a failure.
+    #[test]
+    fn a_skipped_grant_notices_an_unreadable_runner_and_exits_clean() {
+        let mut host = Fake::new();
+        host.readable = false;
+        let options = InstallOptions {
+            skip_profile_grant: true,
+            ..InstallOptions::default()
+        };
+
+        install(&mut host, &options).unwrap();
+
+        assert_eq!(host.ran, [vec!["install"]]);
+    }
+
+    /// An install run with `--skip-profile-grant` skips the grant again, so it is
+    /// not the repair to name for the runner it left unreadable.
+    #[test]
+    fn the_repair_after_a_skipped_grant_is_not_the_install_just_run() {
+        let said = unreadable_without_grant(Path::new(r"C:\Users\me\.cargo\bin\crabpot.exe"));
+
+        assert!(said.contains(r"C:\Users\me\.cargo\bin\crabpot.exe"));
+        assert!(said.contains("profile grant"));
+        assert!(
+            !said.contains("windows-install"),
+            "the named repair loops: {said}"
         );
     }
 

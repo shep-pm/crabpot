@@ -175,8 +175,10 @@ impl Sandbox {
     /// [`env_clear`](Command::env_clear).
     ///
     /// On Windows, this binary runs again as `srt-win exec` in front of the
-    /// command, which it launches as the sandbox user in two hops, with
-    /// `cmd.exe /d /s /c` running the words of `command` as one line, a word
+    /// command, which it launches as the sandbox user in two hops. A program
+    /// that resolves to a `.exe` or `.com` file runs as itself, with its
+    /// arguments as given. Any other program, such as a batch file or a
+    /// `cmd.exe` builtin, runs through `cmd.exe /d /s /c` as one line, a word
     /// `cmd.exe` would act on in quotes. A host
     /// must call [`run_from_args`](crate::run_from_args) first thing in `main`
     /// for that too.
@@ -192,7 +194,8 @@ impl Sandbox {
     ///
     /// [`WrapError::Missing`] when the machine has no `sandbox-exec`,
     /// [`WrapError::Bwrap`] when the command cannot be put in a bwrap line,
-    /// [`WrapError::Cmd`] when a word of it cannot be put on a `cmd.exe` line,
+    /// [`WrapError::Cmd`] when it runs through `cmd.exe` and a word of it
+    /// cannot be put on the line,
     /// and [`WrapError::UnsupportedPlatform`] off macOS, Linux and Windows.
     pub fn command(&self, command: &Command) -> Result<Command, WrapError> {
         #[cfg(target_os = "macos")]
@@ -629,8 +632,9 @@ pub enum WrapError {
     /// bytes, a word holds a NUL byte, or the file the flags move to when the
     /// line is long could not be opened.
     Bwrap(String),
-    /// Windows: a word of the command has a double quote, a percent sign or a
-    /// line break, which `cmd.exe` would act on instead of passing on.
+    /// Windows: the command runs through `cmd.exe`, because its program is not
+    /// a `.exe` or `.com` file, and a word of it has a double quote, a percent
+    /// sign or a line break, which `cmd.exe` would act on instead of passing on.
     Cmd(String),
     /// The platform has no sandbox yet: only macOS, Linux and Windows have one.
     UnsupportedPlatform,

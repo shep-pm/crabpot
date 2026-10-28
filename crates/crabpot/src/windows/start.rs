@@ -65,8 +65,9 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`WrapError::Cmd`] when a word of `command` cannot be put on a `cmd.exe`
-    /// line as itself.
+    /// [`WrapError::Cmd`] when `command` runs through `cmd.exe`, because its
+    /// program is not a `.exe` or `.com` file, and a word of it cannot be put
+    /// on the line as itself.
     pub(crate) fn command(&self, command: &Command) -> Result<Command, WrapError> {
         command::wrap(
             &Params {

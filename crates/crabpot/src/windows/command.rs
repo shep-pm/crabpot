@@ -13,6 +13,7 @@ use crabpot_windows::env::{Facts, vars};
 
 use crate::args::SRT_WIN_FLAG;
 use crate::sandbox::{WrapError, command_line};
+use crate::windows::resolve::executable;
 
 /// What a session tells every command it wraps.
 #[derive(Debug, Clone, Copy)]
@@ -33,16 +34,28 @@ pub(crate) struct Params<'a> {
 
 /// `command`, wrapped to run through `srt-win exec`.
 ///
-/// The command runs as `cmd.exe /d /s /c <line>`: srt-win puts the line in the
-/// one pair of quotes `/s` strips and passes it on as written. The sandbox
-/// user's own profile environment is the command's, with the overlay of
-/// `--env` pairs on it: the caller's changes, then the sandbox's own, which win.
+/// A program that resolves to a `.exe` or `.com` file runs as itself, with its
+/// arguments as given: srt-win quotes them so the program reads them back
+/// unchanged. Any other program runs as `cmd.exe /d /s /c <line>`: srt-win puts
+/// the line in the one pair of quotes `/s` strips and passes it on as written.
+/// The sandbox user's own profile environment is the command's, with the
+/// overlay of `--env` pairs on it: the caller's changes, then the sandbox's own,
+/// which win.
 ///
 /// # Errors
 ///
-/// [`WrapError::Cmd`] when a word of `command` cannot be put on a `cmd.exe`
-/// line as itself.
+/// [`WrapError::Cmd`] when `command` runs through `cmd.exe` and a word of it
+/// cannot be put on the line as itself.
 pub(crate) fn wrap(params: &Params<'_>, command: &Command) -> Result<Command, WrapError> {
+    wrap_with(params, command, &|path| path.is_file())
+}
+
+/// [`wrap`] with `is_file` as the lookup of a file on disk.
+fn wrap_with(
+    params: &Params<'_>,
+    command: &Command,
+    is_file: &dyn Fn(&Path) -> bool,
+) -> Result<Command, WrapError> {
     let mut wrapped = Command::new(params.exe);
     wrapped
         .arg(SRT_WIN_FLAG)
@@ -58,7 +71,16 @@ pub(crate) fn wrap(params: &Params<'_>, command: &Command) -> Result<Command, Wr
     for (name, value) in overlay(params, command) {
         wrapped.arg("--env").arg(format!("{name}={value}"));
     }
-    wrapped.args(["--", &shell(), "/d", "/s", "/c", &line_of(command)?]);
+    let program = command.get_program().to_str();
+    let path = carried(command, "PATH");
+    match program.and_then(|program| executable(program, path.as_deref(), is_file)) {
+        Some(program) => {
+            wrapped.arg("--").arg(program).args(command.get_args());
+        }
+        None => {
+            wrapped.args(["--", &shell(), "/d", "/s", "/c", &line_of(command)?]);
+        }
+    }
     if let Some(dir) = command.get_current_dir() {
         wrapped.current_dir(dir);
     }
@@ -176,6 +198,27 @@ mod tests {
         }
     }
 
+    fn wrap_over(
+        is_file: &dyn Fn(&str) -> bool,
+        params: &Params<'_>,
+        command: &Command,
+    ) -> Result<Command, WrapError> {
+        wrap_with(params, command, &|path| {
+            path.to_str()
+                .is_some_and(|path| is_file(&path.to_lowercase()))
+        })
+    }
+
+    fn wrap_bare(params: &Params<'_>, command: &Command) -> Result<Command, WrapError> {
+        wrap_over(&|_| false, params, command)
+    }
+
+    fn after_separator(wrapped: &Command) -> Vec<String> {
+        let args = args_of(wrapped);
+        let split = args.iter().position(|arg| arg == "--").unwrap();
+        args[split + 1..].to_vec()
+    }
+
     fn args_of(command: &Command) -> Vec<String> {
         command
             .get_args()
@@ -191,7 +234,7 @@ mod tests {
 
     #[test]
     fn the_command_line_carries_held_by_and_the_restricted_token() {
-        let wrapped = wrap(&params(&[], false), &echo()).unwrap();
+        let wrapped = wrap_bare(&params(&[], false), &echo()).unwrap();
         let args = args_of(&wrapped);
 
         assert_eq!(wrapped.get_program(), EXE);
@@ -222,7 +265,7 @@ mod tests {
     fn every_command_carries_the_write_restricted_token() {
         let roots = [r"C:\work".to_owned()];
         for (roots, allow_loopback) in [(&[][..], false), (&roots[..], false), (&roots[..], true)] {
-            let args = args_of(&wrap(&params(roots, allow_loopback), &echo()).unwrap());
+            let args = args_of(&wrap_bare(&params(roots, allow_loopback), &echo()).unwrap());
 
             let split = args.iter().position(|arg| arg == "--").unwrap();
             let count = args[..split]
@@ -235,8 +278,8 @@ mod tests {
 
     #[test]
     fn loopback_adds_allow_loopback() {
-        let closed = args_of(&wrap(&params(&[], false), &echo()).unwrap());
-        let open = args_of(&wrap(&params(&[], true), &echo()).unwrap());
+        let closed = args_of(&wrap_bare(&params(&[], false), &echo()).unwrap());
+        let open = args_of(&wrap_bare(&params(&[], true), &echo()).unwrap());
 
         assert!(!closed.iter().any(|arg| arg == "--allow-loopback"));
         assert!(open.iter().any(|arg| arg == "--allow-loopback"));
@@ -245,7 +288,7 @@ mod tests {
     #[test]
     fn each_write_root_is_a_flag_of_its_own() {
         let roots = [r"C:\work".to_owned(), r"D:\scratch".to_owned()];
-        let args = args_of(&wrap(&params(&roots, false), &echo()).unwrap());
+        let args = args_of(&wrap_bare(&params(&roots, false), &echo()).unwrap());
 
         let at = args.iter().position(|arg| arg == "--write-root").unwrap();
         assert_eq!(
@@ -258,7 +301,7 @@ mod tests {
     fn the_overlay_points_the_command_at_the_proxy_and_carries_its_own_variables() {
         let mut command = echo();
         command.env("CALLER", "kept");
-        let args = args_of(&wrap(&params(&[], false), &command).unwrap());
+        let args = args_of(&wrap_bare(&params(&[], false), &command).unwrap());
 
         let overlay: Vec<&str> = args
             .windows(2)
@@ -277,7 +320,7 @@ mod tests {
     fn a_word_with_a_space_is_quoted_in_the_line() {
         let mut command = Command::new(r"C:\Program Files\tool.exe");
         command.arg("plain").arg("two words");
-        let args = args_of(&wrap(&params(&[], false), &command).unwrap());
+        let args = args_of(&wrap_bare(&params(&[], false), &command).unwrap());
 
         assert_eq!(
             args.last().unwrap(),
@@ -288,7 +331,7 @@ mod tests {
     fn last_arg(words: &[&str]) -> String {
         let mut command = Command::new(words[0]);
         command.args(&words[1..]);
-        args_of(&wrap(&params(&[], false), &command).unwrap())
+        args_of(&wrap_bare(&params(&[], false), &command).unwrap())
             .pop()
             .unwrap()
     }
@@ -314,7 +357,7 @@ mod tests {
         let mut command = echo();
         command.current_dir(r"C:\work");
 
-        let wrapped = wrap(&params(&[], false), &command).unwrap();
+        let wrapped = wrap_bare(&params(&[], false), &command).unwrap();
 
         assert_eq!(wrapped.get_current_dir(), Some(Path::new(r"C:\work")));
     }
@@ -371,7 +414,7 @@ mod tests {
     fn a_callers_path_and_pathext_win_over_this_processs() {
         let mut command = echo();
         command.env("Path", r"C:\tools").env_remove("PATHEXT");
-        let args = args_of(&wrap(&params(&[], false), &command).unwrap());
+        let args = args_of(&wrap_bare(&params(&[], false), &command).unwrap());
 
         let paths: Vec<&String> = args
             .iter()
@@ -387,5 +430,116 @@ mod tests {
                 .iter()
                 .any(|arg| arg.to_lowercase().starts_with("pathext="))
         );
+    }
+
+    #[test]
+    fn an_executable_runs_without_cmd_and_keeps_every_argument() {
+        let mut command = Command::new(r"C:\tools\env.exe");
+        command.arg("a\nb \"c\" %PATH%");
+
+        let wrapped = wrap_over(
+            &|path| path == r"c:\tools\env.exe",
+            &params(&[], false),
+            &command,
+        )
+        .unwrap();
+
+        assert_eq!(
+            after_separator(&wrapped),
+            [r"C:\tools\env.exe", "a\nb \"c\" %PATH%"]
+        );
+    }
+
+    #[test]
+    fn a_bare_name_on_the_commands_path_runs_as_that_executable() {
+        let mut command = Command::new("env");
+        command.env("Path", r"C:\mine;C:\other").arg("a\nb");
+
+        let wrapped = wrap_over(
+            &|path| path.ends_with(r"\env.exe"),
+            &params(&[], false),
+            &command,
+        )
+        .unwrap();
+
+        assert_eq!(after_separator(&wrapped), [r"C:\mine\env.exe", "a\nb"]);
+    }
+
+    #[test]
+    fn a_command_without_a_path_is_not_looked_up_on_this_processs() {
+        let mut command = Command::new("env");
+        command.env_remove("PATH").arg("a\nb");
+
+        let error = wrap_over(
+            &|path| path.ends_with(r"\env.exe"),
+            &params(&[], false),
+            &command,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, WrapError::Cmd(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_batch_file_still_runs_through_cmd_and_refuses_a_line_break() {
+        let on_disk = |path: &str| path == r"c:\tools\run.bat";
+        let plain = wrap_over(
+            &on_disk,
+            &params(&[], false),
+            Command::new(r"C:\tools\run.bat").arg("one"),
+        )
+        .unwrap();
+        let broken = wrap_over(
+            &on_disk,
+            &params(&[], false),
+            Command::new(r"C:\tools\run.bat").arg("a\nb"),
+        );
+
+        let [shell, flags @ .., line] = &after_separator(&plain)[..] else {
+            panic!("the shell and its line follow the separator");
+        };
+        assert!(
+            shell.to_lowercase().ends_with(r"system32\cmd.exe"),
+            "{shell}"
+        );
+        assert_eq!(flags, ["/d", "/s", "/c"]);
+        assert_eq!(line, r"C:\tools\run.bat one");
+        assert!(matches!(broken, Err(WrapError::Cmd(_))), "{broken:?}");
+    }
+
+    #[test]
+    fn cmd_itself_keeps_its_words_quoted_on_the_line() {
+        let mut command = Command::new("cmd");
+        command
+            .env("PATH", r"C:\Windows\System32")
+            .args(["/c", "echo", "x&y"]);
+
+        let wrapped = wrap_over(
+            &|path| path == r"c:\windows\system32\cmd.exe",
+            &params(&[], false),
+            &command,
+        )
+        .unwrap();
+
+        let after = after_separator(&wrapped);
+        assert_eq!(after[1..], ["/d", "/s", "/c", r#"cmd /c echo "x&y""#]);
+    }
+
+    #[test]
+    fn a_name_that_resolves_to_nothing_still_runs_through_cmd() {
+        let mut echo = Command::new("echo");
+        echo.arg("hi there");
+        let mut broken = Command::new("echo");
+        broken.arg("100%");
+
+        let wrapped = wrap_bare(&params(&[], false), &echo).unwrap();
+
+        let after = after_separator(&wrapped);
+        assert!(after[0].to_lowercase().ends_with(r"system32\cmd.exe"));
+        assert_eq!(after[1..], ["/d", "/s", "/c", r#"echo "hi there""#]);
+        assert!(matches!(
+            wrap_bare(&params(&[], false), &broken),
+            Err(WrapError::Cmd(_))
+        ));
     }
 }

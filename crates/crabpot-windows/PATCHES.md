@@ -42,6 +42,25 @@ which is the command CI's `windows` job runs, and the `extern crate self as
 crabpot_windows` in `src/lib.rs` is what makes the alias line resolve inside it.
 Nothing else in the two files changed.
 
+## `srt-win/src/acl.rs` and `srt-win/src/cli.rs`: a metadata grant
+
+The first change to upstream's behaviour (ADR-0016). A read deny is one
+inheritable `FILE_ALL` deny ACE, so the folders between it and a grant beneath
+it cannot be stat'd, which upstream's macOS profile avoids with
+`file-read-metadata` on every directory.
+
+- `acl.rs`: `GrantMask::Metadata`, `FILE_READ_ATTRIBUTES | SYNCHRONIZE`
+  (`0x0010_0080`), written with `NO_INHERIT` where the other grants are `OICI`
+  (`GrantMask::flags`). `SbAce::as_str` and `SbAce::parse` call it
+  `"metadata"`, and `SbAce::max` ranks it below `ReadOnly`. Two unit tests pin
+  the bits, the flags, the round trip and the rank.
+- `cli.rs`: `AclGrantInput` gains a `metadata` list, applied per session for the
+  sandbox user SID as `read` is, and left out of `check_session_grants`, since
+  it reads no content.
+
+Reason: kelpie denies the home folder and grants paths beneath `~\.shep`, and
+claude refuses a file whose path has a component it cannot examine.
+
 ## Not copied
 
 - `Cargo.lock`: the workspace has one.

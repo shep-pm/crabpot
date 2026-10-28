@@ -80,6 +80,7 @@ fn a_deny_write_over_an_allow_write_downgrades_it_to_read() {
             write: strings(&[r"C:\Proj"]),
             deny_read: vec![],
             deny_write,
+            metadata: vec![],
         }
     );
 }
@@ -101,6 +102,7 @@ fn a_credential_deny_drops_the_grants_beneath_it() {
             write: strings(&[r"C:\Proj"]),
             deny_read: credential,
             deny_write: vec![],
+            metadata: vec![],
         }
     );
 }

@@ -98,6 +98,7 @@ impl Mask {
     // File/dir-specific.
     pub const FILE_DELETE_CHILD: Self = Self(0x0000_0040);
     pub const FILE_ALL: Self = Self(FILE_ALL_ACCESS.0);
+    pub const FILE_READ_ATTRIBUTES: Self = Self(0x0000_0080);
     pub const FILE_WRITE_ATTRIBUTES: Self = Self(0x0000_0100);
     pub const FILE_GENERIC_READ: Self = Self(FILE_GENERIC_READ.0);
     pub const FILE_GENERIC_WRITE: Self =
@@ -948,9 +949,13 @@ pub fn set_handle_dacl_from_sddl(
 /// `FILE_DELETE_CHILD`, so a denied file inside the granted tree
 /// cannot be deleted via parent-FDC even where the only sb-user
 /// access comes from this grant). `ReadOnly` is
-/// [`Mask::FILE_READ_EXEC`].
+/// [`Mask::FILE_READ_EXEC`]. `Metadata` is `FILE_READ_ATTRIBUTES |
+/// SYNCHRONIZE` written `NO_INHERIT`: it lets a program stat the folder
+/// and nothing beneath it, for the folders between a read deny and a
+/// grant under it (the deny's inherited `FILE_ALL` would hide them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrantMask {
+    Metadata,
     ReadOnly,
     Modify,
 }
@@ -992,8 +997,17 @@ pub enum SbAce {
 impl GrantMask {
     fn bits(self) -> u32 {
         match self {
+            GrantMask::Metadata => Mask::FILE_READ_ATTRIBUTES.with(Mask::SYNCHRONIZE).bits(),
             GrantMask::ReadOnly => Mask::FILE_READ_EXEC.bits(),
             GrantMask::Modify => Mask::MODIFY_NO_FDC.bits(),
+        }
+    }
+
+    /// Whether the ACE reaches what is beneath the path.
+    fn flags(self) -> ACE_FLAGS {
+        match self {
+            GrantMask::Metadata => NO_INHERIT,
+            GrantMask::ReadOnly | GrantMask::Modify => OICI,
         }
     }
 }
@@ -1028,11 +1042,12 @@ impl SbAce {
             SbAce::DenyDelete => "deny_delete",
         }
     }
-    /// `'read' | 'modify' | 'denyRead' | 'denyWrite' | 'fdc'` — the
+    /// `'metadata' | 'read' | 'modify' | 'denyRead' | 'denyWrite' | 'fdc'` — the
     /// row's `mask` / holder's `want_mask` column. Round-trips via
     /// [`SbAce::parse`].
     pub fn as_str(self) -> &'static str {
         match self {
+            SbAce::Grant(GrantMask::Metadata) => "metadata",
             SbAce::Grant(GrantMask::ReadOnly) => "read",
             SbAce::Grant(GrantMask::Modify) => "modify",
             SbAce::Deny(DenyMask::ReadDeny) => "denyRead",
@@ -1043,6 +1058,7 @@ impl SbAce {
     }
     pub fn parse(kind: &str, mask: &str) -> Result<Self> {
         Ok(match (kind, mask) {
+            ("grant", "metadata") => SbAce::Grant(GrantMask::Metadata),
             ("grant", "read") => SbAce::Grant(GrantMask::ReadOnly),
             ("grant", "modify") => SbAce::Grant(GrantMask::Modify),
             ("deny", "denyRead") => SbAce::Deny(DenyMask::ReadDeny),
@@ -1052,15 +1068,16 @@ impl SbAce {
             (k, m) => bail!("unknown SbAce kind={k:?} mask={m:?}"),
         })
     }
-    /// Widening within one kind: `Modify ⊃ ReadOnly`, `ReadDeny ⊃
-    /// WriteDeny`, `DenyFdc` is unit. Cross-kind is meaningless (a
+    /// Widening within one kind: `Modify ⊃ ReadOnly ⊃ Metadata`,
+    /// `ReadDeny ⊃ WriteDeny`, `DenyFdc` is unit. Cross-kind is meaningless (a
     /// path can hold one `Grant` row AND one `Deny` row; never
     /// merged).
     pub fn max(self, other: Self) -> Self {
         use DenyMask::ReadDeny as Dr;
-        use GrantMask::Modify as Gm;
+        use GrantMask::{Modify as Gm, ReadOnly as Gr};
         match (self, other) {
             (SbAce::Grant(Gm), _) | (_, SbAce::Grant(Gm)) => SbAce::Grant(Gm),
+            (SbAce::Grant(Gr), _) | (_, SbAce::Grant(Gr)) => SbAce::Grant(Gr),
             (SbAce::Grant(_), _) | (_, SbAce::Grant(_)) => self,
             (SbAce::Deny(Dr), _) | (_, SbAce::Deny(Dr)) => SbAce::Deny(Dr),
             _ => self,
@@ -1097,7 +1114,7 @@ impl SbAceSet {
         }
         let allow = self
             .grant
-            .map(|m| NewAce::Allow(sid, m.bits(), OICI))
+            .map(|m| NewAce::Allow(sid, m.bits(), m.flags()))
             .into_iter()
             .collect();
         (v, allow)
@@ -3038,5 +3055,31 @@ mod tests {
         assert_eq!(ow.bits(), Mask::READ_CONTROL.bits());
         assert_ne!(ow.bits(), 0);
         assert_eq!(ow.bits() & Mask::WRITE_DAC.bits(), 0);
+    }
+
+    /// A metadata grant reads attributes only and reaches nothing beneath the
+    /// folder; the other grants are inherited.
+    #[test]
+    fn metadata_grant_is_attributes_only_and_not_inherited() {
+        let m = GrantMask::Metadata;
+        assert_eq!(m.bits(), 0x0010_0080);
+        assert_eq!(m.flags().0, NO_INHERIT.0);
+        assert_eq!(GrantMask::ReadOnly.flags().0, OICI.0);
+        assert_eq!(GrantMask::Modify.flags().0, OICI.0);
+
+        let ace = SbAce::Grant(m);
+        assert_eq!(ace.as_str(), "metadata");
+        assert_eq!(SbAce::parse(ace.kind(), ace.as_str()).unwrap(), ace);
+    }
+
+    #[test]
+    fn metadata_grant_ranks_below_read() {
+        let metadata = SbAce::Grant(GrantMask::Metadata);
+        let read = SbAce::Grant(GrantMask::ReadOnly);
+        let modify = SbAce::Grant(GrantMask::Modify);
+        assert_eq!(metadata.max(read), read);
+        assert_eq!(read.max(metadata), read);
+        assert_eq!(metadata.max(modify), modify);
+        assert_eq!(modify.max(metadata), modify);
     }
 }

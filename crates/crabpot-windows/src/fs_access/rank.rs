@@ -4,8 +4,8 @@
 use crabpot_core::config::PathEntry;
 
 use super::expand::{ExpandError, Mode, expand_paths};
-use super::spelling::is_at_or_under;
-use super::{Access, Disk, Host, Ordered};
+use super::spelling::{is_at_or_under, is_unprobed, key_of, win32_normalize};
+use super::{Access, Disk, Host, Look, Ordered};
 
 /// The expanded lists, as concrete paths ([`expand_paths`]).
 #[derive(Clone, Copy, Debug)]
@@ -126,6 +126,7 @@ pub fn rank<D: Disk>(host: &Host<D>, lists: &Lists<'_>) -> Access {
         write: write.into_vec(),
         deny_read: deny_read.into_vec(),
         deny_write: deny_write.into_vec(),
+        metadata: Vec::new(),
     }
 }
 
@@ -157,6 +158,53 @@ pub fn grants_beneath_denies<D: Disk>(
         }
     }
     out.into_iter().map(|(_, path)| path.clone()).collect()
+}
+
+/// The existing folders strictly beneath one of `denies` that lie above one of
+/// `grants`, topmost first. A deny is inherited by everything beneath it, so
+/// these keep it where a grant does not override it, and a program that checks
+/// each component of a grant's path cannot examine them. They are given
+/// `FILE_READ_ATTRIBUTES` alone, which is `file-read-metadata` of upstream's
+/// macOS profile.
+pub fn folders_above_grants_in_denies<D: Disk>(
+    host: &Host<D>,
+    grants: &[String],
+    denies: &[String],
+) -> Vec<String> {
+    let deny_keys: Vec<String> = denies.iter().map(|deny| host.key(deny)).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    if deny_keys.is_empty() {
+        return out;
+    }
+    for grant in grants {
+        let real = match host.look(grant) {
+            Look::Resolved(real) => real,
+            _ => grant.clone(),
+        };
+        let mut above = Vec::new();
+        let mut rest = win32_normalize(&real);
+        while let Some((parent, _)) = rest.rsplit_once('\\') {
+            above.push(parent.to_owned());
+            rest = parent.to_owned();
+        }
+        for folder in above.into_iter().rev() {
+            let key = key_of(&folder);
+            let beneath = deny_keys
+                .iter()
+                .any(|deny| key != *deny && is_at_or_under(&key, deny));
+            let is_deny = deny_keys.contains(&key);
+            if beneath
+                && !is_deny
+                && !is_unprobed(&folder)
+                && host.disk().exists(&folder)
+                && seen.insert(key)
+            {
+                out.push(folder);
+            }
+        }
+    }
+    out
 }
 
 /// The lists of the settings and the files the library masked, before they are
@@ -202,4 +250,87 @@ pub fn access<D: Disk>(host: &Host<D>, settings: &Settings<'_>) -> Result<Access
             held: None,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::fake::FakeDisk;
+    use super::*;
+
+    fn host(disk: FakeDisk) -> Host<FakeDisk> {
+        Host::new(Some(r"C:\Users\Dev"), Some(r"C:\Work"), disk)
+    }
+
+    fn strings(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_folder_between_a_deny_and_a_grant_is_listed() {
+        let host = host(FakeDisk::default().file(r"C:\Users\Dev\.shep\worker\run\settings.json"));
+
+        let folders = folders_above_grants_in_denies(
+            &host,
+            &strings(&[r"C:\Users\Dev\.shep\worker\run\settings.json"]),
+            &strings(&[r"C:\Users\Dev"]),
+        );
+
+        assert_eq!(
+            folders,
+            strings(&[
+                r"C:\Users\Dev\.shep",
+                r"C:\Users\Dev\.shep\worker",
+                r"C:\Users\Dev\.shep\worker\run",
+            ])
+        );
+    }
+
+    #[test]
+    fn the_deny_itself_and_folders_outside_it_are_not_listed() {
+        let host = host(
+            FakeDisk::default()
+                .dir(r"C:\Users\Dev\.shep\run")
+                .dir(r"C:\Work\proj\src")
+                .dir(r"C:\Users\Dev\secrets\inner"),
+        );
+
+        let folders = folders_above_grants_in_denies(
+            &host,
+            &strings(&[
+                r"C:\Users\Dev\.shep\run",
+                r"C:\Work\proj\src",
+                r"C:\Users\Dev\secrets\inner",
+            ]),
+            &strings(&[r"C:\Users\Dev", r"C:\Users\Dev\secrets"]),
+        );
+
+        assert_eq!(folders, strings(&[r"C:\Users\Dev\.shep"]));
+    }
+
+    #[test]
+    fn a_folder_above_two_grants_is_listed_once() {
+        let host = host(
+            FakeDisk::default()
+                .dir(r"C:\Users\Dev\.shep\a")
+                .dir(r"C:\Users\Dev\.shep\b"),
+        );
+
+        let folders = folders_above_grants_in_denies(
+            &host,
+            &strings(&[r"C:\Users\Dev\.shep\a", r"c:/users/dev/.SHEP/b"]),
+            &strings(&[r"C:\Users\Dev"]),
+        );
+
+        assert_eq!(folders, strings(&[r"C:\Users\Dev\.shep"]));
+    }
+
+    #[test]
+    fn nothing_is_listed_without_a_deny_or_a_grant() {
+        let host = host(FakeDisk::default().dir(r"C:\Users\Dev\.shep\run"));
+        let grants = strings(&[r"C:\Users\Dev\.shep\run"]);
+        let denies = strings(&[r"C:\Users\Dev"]);
+
+        assert!(folders_above_grants_in_denies(&host, &grants, &[]).is_empty());
+        assert!(folders_above_grants_in_denies(&host, &[], &denies).is_empty());
+    }
 }

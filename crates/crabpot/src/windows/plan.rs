@@ -33,7 +33,7 @@ macro_rules! sections {
     };
 }
 
-sections!(write, read, deny_read, deny_write);
+sections!(write, read, deny_read, deny_write, metadata);
 
 /// What srt-win exits with when it holds the call off and nothing changed.
 const EXIT_GRANT_BLOCKED: i32 = 24;
@@ -405,6 +405,31 @@ mod tests {
         let both = Plan::build_on(&config, &host(SSH_DIRS), &ProfileExclusions::default()).unwrap();
 
         assert_eq!(stdin(&both), stdin(&plan));
+    }
+
+    const DEEP_DIRS: &[&str] = &[r"C:\work", r"C:\work\a", r"C:\work\a\b", r"C:\work\a\b\c"];
+
+    #[test]
+    fn a_grant_beneath_a_deny_adds_its_folders_to_metadata() {
+        let plan = plan_with(DEEP_DIRS, |filesystem| {
+            filesystem.deny_read = entries(&[r"C:\work"]);
+            filesystem.allow_read = Some(entries(&[r"C:\work\a\b\c"]));
+        });
+
+        assert_eq!(
+            stdin(&plan),
+            r#"{"read":["C:\\work\\a\\b\\c"],"write":[],"denyRead":["C:\\work"],"denyWrite":[],"metadata":["C:\\work\\a","C:\\work\\a\\b"]}"#
+        );
+    }
+
+    #[test]
+    fn a_write_grant_beneath_a_deny_adds_its_folders_to_metadata() {
+        let plan = plan_with(DEEP_DIRS, |filesystem| {
+            filesystem.deny_read = entries(&[r"C:\work"]);
+            filesystem.allow_write = entries(&[r"C:\work\a\b"]);
+        });
+
+        assert!(stdin(&plan).ends_with(r#""metadata":["C:\\work\\a"]}"#));
     }
 
     fn profile(exclusions: &[&str], ungranted_only: &[&str]) -> ProfileExclusions {

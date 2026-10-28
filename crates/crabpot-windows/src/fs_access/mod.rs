@@ -32,12 +32,15 @@ pub use exclusions::{
     Conflict, ConflictOptions, ExclusionKind, ProfileGrant, Relation, profile_exclusion_conflicts,
 };
 pub use expand::{ExpandError, Mode, expand_paths};
-pub use rank::{Held, Lists, Settings, access, grants_beneath_denies, rank};
+pub use rank::{
+    Held, Lists, Settings, access, folders_above_grants_in_denies, grants_beneath_denies, rank,
+};
 
 use spelling::{is_unprobed, key_of, strip_extended_prefix};
 
 /// What `srt-win` is handed: resolved paths to grant to the sandbox user and
-/// to deny it. Serializes as `{"read":…,"write":…,"denyRead":…,"denyWrite":…}`.
+/// to deny it. Serializes as `{"read":…,"write":…,"denyRead":…,"denyWrite":…}`,
+/// with a `"metadata"` list after them when there is one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Access {
@@ -49,6 +52,10 @@ pub struct Access {
     pub deny_read: Vec<String>,
     /// Paths the sandbox user may not write.
     pub deny_write: Vec<String>,
+    /// Folders whose attributes may be read and nothing else, which the sandbox
+    /// user reaches a grant through ([`folders_above_grants_in_denies`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub metadata: Vec<String>,
 }
 
 /// What a path is read against: the home directory, the working directory and

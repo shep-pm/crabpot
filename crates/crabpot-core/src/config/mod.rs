@@ -58,6 +58,20 @@ pub struct Config {
     /// platform reads.
     #[serde(default)]
     pub windows: Windows,
+    /// `git`: what git is told inside the sandbox.
+    #[serde(default)]
+    pub git: Git,
+}
+
+/// `git`: what git is told inside the sandbox.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct Git {
+    /// `safeDirectories`: directories git treats as `safe.directory`, which
+    /// grants no write.
+    #[serde(default)]
+    pub safe_directories: Vec<String>,
 }
 
 /// `network`: what a command may reach.
@@ -171,7 +185,14 @@ impl Config {
 /// The groups of keys, which serde would otherwise read from a list, field by
 /// field in order.
 fn require_objects(settings: &Value) -> Result<(), ConfigError> {
-    for key in ["", "network", "filesystem", mitm_proxy::PATH, "windows"] {
+    for key in [
+        "",
+        "network",
+        "filesystem",
+        mitm_proxy::PATH,
+        "windows",
+        "git",
+    ] {
         let value = key
             .split('.')
             .filter(|part| !part.is_empty())

@@ -51,8 +51,6 @@ pub(super) const PATHS: &[&str] = &[
     // The JVM agent that points Java at the proxy, which ADR-0008 leaves to
     // upstream's own jar.
     "javaAgentJarPath",
-    // Directories git is told are safe through `GIT_CONFIG_*`.
-    "git.safeDirectories",
 ];
 
 /// The keys of [`PATHS`] that upstream's Windows path never reads: the macOS

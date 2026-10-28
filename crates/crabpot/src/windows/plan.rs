@@ -279,6 +279,7 @@ mod tests {
             exe: Path::new(r"C:\crabpot\crabpot.exe"),
             held_by: 4242,
             write_roots: plan.write_roots(),
+            git_safe_directories: &[],
             allow_loopback: false,
             proxy_port: 60080,
             token: "tok",

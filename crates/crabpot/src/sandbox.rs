@@ -145,7 +145,7 @@ impl Sandbox {
                     mount_points: wrapped.mount_points,
                     helper,
                     args_files: Mutex::new(Vec::new()),
-                    facts: Facts::for_sandbox(),
+                    facts: Facts::for_sandbox(config),
                     proxy,
                 })
             }
@@ -248,7 +248,7 @@ impl Sandbox {
                 .map_err(|e| WrapError::Bwrap(e.to_string()))?;
             let mut wrapped = rendered.command;
             carry_over(command, &mut wrapped);
-            for (name, value) in crabpot_linux::env::vars(&self.facts) {
+            for (name, value) in crabpot_linux::env::vars(&self.facts.for_command(command)) {
                 wrapped.env(name, value);
             }
             // On the command's environment, not in bwrap's words: its argv is

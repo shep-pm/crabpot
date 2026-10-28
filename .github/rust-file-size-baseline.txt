@@ -7,10 +7,13 @@
 # smaller files: a later sync from upstream is a copy, and splitting these
 # files locally would turn every sync into a merge. They leave the baseline when
 # the Windows map rewrites a file, or upstream splits it first.
-3985 crates/crabpot-windows/srt-win/src/cli.rs
+#
+# `acl.rs` and `cli.rs` grew by the metadata grant, the first change to
+# upstream's behaviour (`crates/crabpot-windows/PATCHES.md`, ADR-0016).
+3996 crates/crabpot-windows/srt-win/src/cli.rs
 3887 crates/crabpot-windows/srt-win/src/profile.rs
 3287 crates/crabpot-windows/srt-win/src/profile_plan.rs
-3042 crates/crabpot-windows/srt-win/src/acl.rs
+3141 crates/crabpot-windows/srt-win/src/acl.rs
 2783 crates/crabpot-windows/srt-win/src/state_db.rs
 2012 crates/crabpot-windows/srt-win/src/persist.rs
 1335 crates/crabpot-windows/srt-win/src/probe.rs

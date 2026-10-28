@@ -737,6 +737,9 @@ struct AclGrantInput {
     read: Vec<String>,
     #[serde(default)]
     write: Vec<String>,
+    /// Folders granted attribute reads only, not inherited.
+    #[serde(default)]
+    metadata: Vec<String>,
     /// `--persistent` only — see `acl grant`.
     #[serde(default)]
     deny_read: Vec<String>,
@@ -2099,6 +2102,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
                         &[
                             (&input.read, acl::SbAce::Grant(acl::GrantMask::ReadOnly)),
                             (&input.write, acl::SbAce::Grant(acl::GrantMask::Modify)),
+                            (&input.metadata, acl::SbAce::Grant(acl::GrantMask::Metadata)),
                         ],
                         &[],
                     )?;
@@ -2108,6 +2112,8 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
                         .targets
                         .iter()
                         .filter_map(|(p, a)| match a {
+                            // A metadata grant reads no content.
+                            acl::SbAce::Grant(acl::GrantMask::Metadata) => None,
                             acl::SbAce::Grant(m) => Some((p.clone(), *m == acl::GrantMask::Modify)),
                             _ => None,
                         })
@@ -3805,6 +3811,11 @@ mod tests {
         );
         let plain: AclGrantInput = serde_json::from_str(r#"{"write":["w"]}"#).unwrap();
         assert!(plain.deny_read.is_empty() && plain.deny_write.is_empty());
+
+        // The folders to read attributes of ride there too, and may be left out.
+        assert!(plain.metadata.is_empty());
+        let with_metadata: AclGrantInput = serde_json::from_str(r#"{"metadata":["m"]}"#).unwrap();
+        assert_eq!(with_metadata.metadata, vec!["m".to_owned()]);
     }
 
     /// `probe token` / `probe parent-access` parse only in a `test-hooks` build.

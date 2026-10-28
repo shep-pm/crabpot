@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 /// Past this many safe directories, one `*` stands for all of them instead
 /// of each with its own glob. Upstream's `SAFE_DIRECTORY_WILDCARD_THRESHOLD`.
-const SAFE_DIRECTORY_WILDCARD_THRESHOLD: usize = 8;
+pub const SAFE_DIRECTORY_WILDCARD_THRESHOLD: usize = 8;
 
 /// The `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` pairs that make `dirs` safe,
 /// and the `GIT_CONFIG_COUNT` that includes them.

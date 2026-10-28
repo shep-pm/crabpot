@@ -70,7 +70,7 @@ pub fn vars(facts: &Facts, username: &str, token: &str) -> Vec<(String, String)>
     merge(&[
         host_layer(facts),
         proxy_layer(facts, username, token),
-        git_config::vars(
+        git_config::vars_from(
             &facts.safe_dirs,
             facts.git_config_count.as_deref(),
             facts.ca_cert_path.is_some(),

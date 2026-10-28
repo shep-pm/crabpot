@@ -3,52 +3,40 @@
 
 use std::path::Path;
 
-/// What `PATHEXT` is when the command sees none.
-const DEFAULT_PATHEXT: &str = ".com;.exe;.bat;.cmd";
-
 /// The `.exe` or `.com` file `program` runs, or `None` when it runs through
 /// `cmd.exe`: a file of another kind, `cmd.exe` itself, or no file.
 ///
 /// A program with a directory part is taken as it is. A bare name is looked up
 /// in each entry of `path`, the `PATH` the command sees, and the current
-/// directory is not searched. A name with no extension tries each extension of
-/// `pathext` in turn, in each directory, so the first match is the one
-/// `cmd.exe` would run. `is_file` is the lookup of a file on disk.
+/// directory is not searched. `.exe` is added to a name with no extension.
+/// `is_file` is the lookup of a file on disk.
 pub(super) fn executable(
     program: &str,
     path: Option<&str>,
-    pathext: Option<&str>,
     is_file: &dyn Fn(&Path) -> bool,
 ) -> Option<String> {
-    let dirs: Vec<Option<&str>> = if program.contains(['\\', '/', ':']) {
-        vec![None]
+    let candidates: Vec<String> = if program.contains(['\\', '/', ':']) {
+        vec![program.to_owned()]
     } else {
         path?
             .split(';')
             .map(|dir| dir.trim_matches('"').trim_end_matches(['\\', '/']))
             .filter(|dir| !dir.is_empty())
-            .map(Some)
+            .map(|dir| format!("{dir}\\{program}"))
             .collect()
     };
-    let exts: Vec<&str> = pathext
-        .unwrap_or(DEFAULT_PATHEXT)
-        .split(';')
-        .filter(|ext| ext.starts_with('.'))
-        .collect();
-    let found = dirs
+    candidates
         .into_iter()
-        .map(|dir| match dir {
-            Some(dir) => format!("{dir}\\{program}"),
-            None => program.to_owned(),
+        .map(|path| match extension(&path) {
+            Some(_) => path,
+            None => format!("{path}.exe"),
         })
-        .flat_map(|path| match extension(&path) {
-            Some(_) => vec![path],
-            None => exts.iter().map(|ext| format!("{path}{ext}")).collect(),
+        .find(|path| {
+            extension(path).is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("com")
+            }) && !is_cmd(path)
+                && is_file(Path::new(path))
         })
-        .find(|path| is_file(Path::new(path)))?;
-    let ext = extension(&found)?;
-    let runs_directly = ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("com");
-    (runs_directly && !is_cmd(&found)).then_some(found)
 }
 
 /// Whether `path` names `cmd.exe`, which reads the words after `/c` itself.
@@ -78,7 +66,7 @@ mod tests {
     }
 
     fn found(program: &str, path: Option<&str>, files: &[&str]) -> Option<String> {
-        executable(program, path, None, &on_disk(files))
+        executable(program, path, &on_disk(files))
     }
 
     #[test]
@@ -138,31 +126,6 @@ mod tests {
     #[test]
     fn a_missing_file_is_not_an_executable() {
         assert_eq!(found(r"C:\tools\env.exe", None, &[]), None);
-    }
-
-    #[test]
-    fn an_earlier_batch_file_on_the_path_wins_over_a_later_executable() {
-        let files = [r"C:\a\npm.cmd", r"C:\b\npm.exe"];
-
-        assert_eq!(found("npm", Some(r"C:\a;C:\b"), &files), None);
-        assert_eq!(
-            found("npm", Some(r"C:\b;C:\a"), &files),
-            Some(r"C:\b\npm.exe".to_owned())
-        );
-    }
-
-    #[test]
-    fn the_order_of_pathext_picks_between_files_in_one_directory() {
-        let files = [r"C:\a\tool.cmd", r"C:\a\tool.exe"];
-
-        assert_eq!(
-            found("tool", Some(r"C:\a"), &files),
-            Some(r"C:\a\tool.exe".to_owned())
-        );
-        assert_eq!(
-            executable("tool", Some(r"C:\a"), Some(".CMD;.EXE"), &on_disk(&files)),
-            None
-        );
     }
 
     #[test]

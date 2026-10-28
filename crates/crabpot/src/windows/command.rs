@@ -73,10 +73,7 @@ fn wrap_with(
     }
     let program = command.get_program().to_str();
     let path = carried(command, "PATH");
-    let pathext = carried(command, "PATHEXT");
-    match program
-        .and_then(|program| executable(program, path.as_deref(), pathext.as_deref(), is_file))
-    {
+    match program.and_then(|program| executable(program, path.as_deref(), is_file)) {
         Some(program) => {
             wrapped.arg("--").arg(program).args(command.get_args());
         }

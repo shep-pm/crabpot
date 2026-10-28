@@ -61,7 +61,6 @@ const ASKING: &[(&str, &str)] = &[
     ("allowPty", "true"),
     ("allowAppleEvents", "true"),
     ("javaAgentJarPath", r#""/opt/srt-proxy-agent.jar""#),
-    ("git.safeDirectories", r#"["/repo"]"#),
 ];
 
 /// The keys only Linux refuses: each changes what bwrap or the seccomp filter
@@ -142,6 +141,30 @@ fn enable_weaker_network_isolation_is_read_into_the_config() {
             .unwrap_or_else(|e| panic!("{value}: {e}"));
 
         assert_eq!(enable_weaker_network_isolation, read, "{value}");
+    }
+}
+
+#[test]
+fn git_safe_directories_are_read_into_the_config() {
+    let config =
+        Config::from_json(&with("git.safeDirectories", json!(["/repo", "/other"]))).unwrap();
+
+    assert_eq!(config.git.safe_directories, ["/repo", "/other"]);
+    assert!(Config::default().git.safe_directories.is_empty());
+}
+
+#[test]
+fn git_safe_directories_that_are_not_strings_are_invalid() {
+    for (path, value) in [
+        ("git", json!(["/repo"])),
+        ("git.safeDirectories", json!("/repo")),
+        ("git.safeDirectories", json!(null)),
+        ("git.safeDirectories", json!(["/repo", 1])),
+    ] {
+        assert!(
+            invalid_key(&with(path, value.clone())).starts_with(path),
+            "{path}: {value}"
+        );
     }
 }
 

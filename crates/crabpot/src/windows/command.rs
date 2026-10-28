@@ -31,6 +31,9 @@ pub(crate) struct Params<'a> {
     pub(crate) held_by: u32,
     /// The roots the session granted write on.
     pub(crate) write_roots: &'a [String],
+    /// The config's `git.safeDirectories`, which git is told are safe and
+    /// which are granted no write.
+    pub(crate) git_safe_directories: &'a [String],
     /// Whether the fence leaves loopback open for the command.
     pub(crate) allow_loopback: bool,
     /// The port both proxies answer on.
@@ -121,12 +124,15 @@ fn check_length(wrapped: &Command, overlay: &[(String, String)]) -> Result<(), W
 /// The variables the command gets, name and value: the caller's that the
 /// sandbox does not set, then the sandbox's own.
 fn overlay(params: &Params<'_>, command: &Command) -> Vec<(String, String)> {
-    let changes = command.get_envs().filter_map(|(name, value)| {
-        Some((
-            name.to_string_lossy().into_owned(),
-            value?.to_string_lossy().into_owned(),
-        ))
-    });
+    let changes: Vec<(String, String)> = command
+        .get_envs()
+        .filter_map(|(name, value)| {
+            Some((
+                name.to_string_lossy().into_owned(),
+                value?.to_string_lossy().into_owned(),
+            ))
+        })
+        .collect();
     let cwd = command
         .get_current_dir()
         .map(Path::to_path_buf)
@@ -140,14 +146,23 @@ fn overlay(params: &Params<'_>, command: &Command) -> Vec<(String, String)> {
             .iter()
             .filter_map(|dir| dir.to_str())
             .chain(params.write_roots.iter().map(String::as_str))
+            .chain(params.git_safe_directories.iter().map(String::as_str))
             .map(str::to_owned)
             .collect(),
+        // The host's own never reaches the child, which starts from the sandbox
+        // user's profile: the count is the one the caller sets.
+        git_config_count: changes
+            .iter()
+            .rev()
+            .find(|(name, _)| name.eq_ignore_ascii_case("GIT_CONFIG_COUNT"))
+            .map(|(_, value)| value.clone()),
         path: carried(command, "PATH"),
         pathext: carried(command, "PATHEXT"),
     };
     let username = username_for(&command_line(command));
     let own = vars(&facts, &username, params.token);
     let mut overlay: Vec<(String, String)> = changes
+        .into_iter()
         .filter(|(name, _)| !own.iter().any(|(set, _)| set.eq_ignore_ascii_case(name)))
         .collect();
     overlay.extend(own);
@@ -225,6 +240,7 @@ mod tests {
             exe: Path::new(EXE),
             held_by: 4242,
             write_roots,
+            git_safe_directories: &[],
             allow_loopback,
             proxy_port: 60080,
             token: "tok",
@@ -355,6 +371,85 @@ mod tests {
             .filter(|pair| pair[0] == "--env")
             .map(|pair| pair[1].clone())
             .collect()
+    }
+
+    fn git_values(overlay: &[String]) -> Vec<&str> {
+        overlay
+            .iter()
+            .filter_map(|pair| {
+                let (name, value) = pair.split_once('=')?;
+                name.starts_with("GIT_CONFIG_VALUE_").then_some(value)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_configured_safe_directory_joins_the_working_directory() {
+        let roots = [r"C:\root".to_owned()];
+        let safe = [r"D:\shared\.git".to_owned()];
+        let params = Params {
+            git_safe_directories: &safe,
+            ..params(&roots, false)
+        };
+        let mut command = echo();
+        command.current_dir(r"C:\work");
+
+        let args = args_of(&wrap(&params, &command).unwrap());
+        let overlay: Vec<String> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "--env")
+            .map(|pair| pair[1].clone())
+            .collect();
+
+        assert_eq!(
+            git_values(&overlay),
+            [
+                "C:/work",
+                "C:/work/*",
+                "C:/root",
+                "C:/root/*",
+                "D:/shared/.git",
+                "D:/shared/.git/*",
+                "openssl"
+            ],
+            "the working directory, the write roots, then the config's list"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == r"D:\shared\.git"),
+            "a safe directory is granted no write root: {args:?}"
+        );
+    }
+
+    #[test]
+    fn the_numbering_continues_from_the_count_the_caller_sets() {
+        let mut command = echo();
+        command.current_dir(r"C:\work").env("GIT_CONFIG_COUNT", "2");
+        let overlay = overlay_of(&command);
+
+        assert!(
+            overlay.contains(&"GIT_CONFIG_KEY_2=safe.directory".to_owned()),
+            "{overlay:?}"
+        );
+        assert!(
+            overlay.contains(&"GIT_CONFIG_COUNT=5".to_owned()),
+            "{overlay:?}"
+        );
+        assert_eq!(
+            overlay
+                .iter()
+                .filter(|pair| pair.starts_with("GIT_CONFIG_COUNT="))
+                .count(),
+            1,
+            "the caller's count gives way to the new total: {overlay:?}"
+        );
+
+        command.env("GIT_CONFIG_COUNT", "0");
+        let overlay = overlay_of(&command);
+        assert_eq!(git_values(&overlay), [] as [&str; 0], "{overlay:?}");
+        assert!(
+            overlay.contains(&"GIT_CONFIG_COUNT=0".to_owned()),
+            "the caller's opt-out stays: {overlay:?}"
+        );
     }
 
     #[test]

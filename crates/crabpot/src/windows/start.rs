@@ -55,6 +55,7 @@ pub(crate) struct Session {
     proxy: Proxy,
     exe: PathBuf,
     write_roots: Vec<String>,
+    git_safe_directories: Vec<String>,
     allow_loopback: bool,
     // Last, so the grants are released once the proxy has stopped.
     held: Held,
@@ -74,6 +75,7 @@ impl Session {
                 exe: &self.exe,
                 held_by: self.held.holder,
                 write_roots: &self.write_roots,
+                git_safe_directories: &self.git_safe_directories,
                 allow_loopback: self.allow_loopback,
                 proxy_port: self.proxy.port(),
                 token: self.proxy.token(),
@@ -241,6 +243,7 @@ impl Prepared {
             proxy,
             exe: self.exe,
             write_roots: self.plan.write_roots().to_vec(),
+            git_safe_directories: config.git.safe_directories.clone(),
             allow_loopback: self.allow_loopback,
             held: self.held,
         })

@@ -50,9 +50,13 @@ pub struct Facts {
     /// The proxy's TLS trust bundle, as the host names it. Emitted with
     /// forward slashes.
     pub ca_cert_path: Option<String>,
-    /// The directories git is told are safe: the command's working directory
-    /// and the write grants over it, as the host names them.
+    /// The directories git is told are safe: the command's working directory,
+    /// the write grants over it and the config's `git.safeDirectories`, as the
+    /// host names them.
     pub safe_dirs: Vec<String>,
+    /// The `GIT_CONFIG_COUNT` the command brings, as text. The git config
+    /// numbering continues from it, and `0` leaves the command with none.
+    pub git_config_count: Option<String>,
     /// `PATH`, as the host carries it. The child runs as the sandbox user,
     /// so the host's `PATH` reaches it only through this.
     pub path: Option<String>,
@@ -66,7 +70,11 @@ pub fn vars(facts: &Facts, username: &str, token: &str) -> Vec<(String, String)>
     merge(&[
         host_layer(facts),
         proxy_layer(facts, username, token),
-        git_config::vars(&facts.safe_dirs, facts.ca_cert_path.is_some()),
+        git_config::vars_from(
+            &facts.safe_dirs,
+            facts.git_config_count.as_deref(),
+            facts.ca_cert_path.is_some(),
+        ),
     ])
 }
 

@@ -13,7 +13,7 @@
 3996 crates/crabpot-windows/srt-win/src/cli.rs
 3887 crates/crabpot-windows/srt-win/src/profile.rs
 3287 crates/crabpot-windows/srt-win/src/profile_plan.rs
-3085 crates/crabpot-windows/srt-win/src/acl.rs
+3141 crates/crabpot-windows/srt-win/src/acl.rs
 2783 crates/crabpot-windows/srt-win/src/state_db.rs
 2012 crates/crabpot-windows/srt-win/src/persist.rs
 1335 crates/crabpot-windows/srt-win/src/probe.rs

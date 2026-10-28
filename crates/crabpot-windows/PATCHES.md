@@ -52,8 +52,11 @@ it cannot be stat'd, which upstream's macOS profile avoids with
 - `acl.rs`: `GrantMask::Metadata`, `FILE_READ_ATTRIBUTES | SYNCHRONIZE`
   (`0x0010_0080`), written with `NO_INHERIT` where the other grants are `OICI`
   (`GrantMask::flags`). `SbAce::as_str` and `SbAce::parse` call it
-  `"metadata"`, and `SbAce::max` ranks it below `ReadOnly`. Two unit tests pin
-  the bits, the flags, the round trip and the rank.
+  `"metadata"`, and `SbAce::max` ranks it below `ReadOnly`. `SbAceSet::aces`
+  writes a metadata allow ahead of the same set's read deny, so a folder the
+  session also read-denies (a recorded profile path under the deny) can still be
+  stat'd. Unit tests pin the bits, the flags, the round trip, the rank and that
+  order.
 - `cli.rs`: `AclGrantInput` gains a `metadata` list, applied per session for the
   sandbox user SID as `read` is, and left out of `check_session_grants`, since
   it reads no content.

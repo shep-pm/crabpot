@@ -1100,7 +1100,8 @@ pub struct SbAceSet {
 
 impl SbAceSet {
     /// The set's DENY entries as [`NewAce`]s for `sid`, deny →
-    /// deny-delete → deny-fdc, and its ALLOW entry.
+    /// deny-delete → deny-fdc, and its ALLOW entry. The entries of the
+    /// first list go ahead of the others in the DACL.
     fn aces(&self, sid: PSID) -> (Vec<NewAce>, Vec<NewAce>) {
         let mut v = Vec::with_capacity(3);
         if let Some(m) = self.deny {
@@ -1112,11 +1113,18 @@ impl SbAceSet {
         if self.deny_fdc {
             v.push(NewAce::Deny(sid, Mask::FILE_DELETE_CHILD.bits(), OICI));
         }
-        let allow = self
-            .grant
-            .map(|m| NewAce::Allow(sid, m.bits(), m.flags()))
-            .into_iter()
-            .collect();
+        let mut allow = Vec::new();
+        if let Some(m) = self.grant {
+            let ace = NewAce::Allow(sid, m.bits(), m.flags());
+            // A metadata allow goes ahead of this set's read deny, on a
+            // folder that is itself denied: the deny would win otherwise,
+            // and it carries the attribute bits too.
+            if m == GrantMask::Metadata && self.deny == Some(DenyMask::ReadDeny) {
+                v.insert(0, ace);
+            } else {
+                allow.push(ace);
+            }
+        }
         (v, allow)
     }
 }
@@ -3081,5 +3089,53 @@ mod tests {
         assert_eq!(read.max(metadata), read);
         assert_eq!(metadata.max(modify), modify);
         assert_eq!(modify.max(metadata), modify);
+    }
+
+    /// On a folder the set also read-denies, the metadata allow is written
+    /// ahead of the deny so the folder can still be stat'd; a read grant
+    /// stays behind it.
+    #[test]
+    fn metadata_allow_goes_ahead_of_the_sets_read_deny() {
+        const GUESTS: &str = "S-1-5-32-546";
+        let base = std::env::temp_dir().join(format!("srtwin-meta-{}", std::process::id()));
+        let ours = |p: &str| -> String {
+            read_aces(p)
+                .unwrap()
+                .iter()
+                .filter(|a| !a.inherited && a.sid == GUESTS)
+                .map(AceView::sddl)
+                .collect()
+        };
+        for (name, grant, want) in [
+            (
+                "metadata",
+                GrantMask::Metadata,
+                format!(
+                    "(A;;0x100080;;;{GUESTS})(D;OICI;{:#x};;;{GUESTS})",
+                    Mask::FILE_ALL.bits()
+                ),
+            ),
+            (
+                "read",
+                GrantMask::ReadOnly,
+                format!(
+                    "(D;OICI;{:#x};;;{GUESTS})(A;OICI;{:#x};;;{GUESTS})",
+                    Mask::FILE_ALL.bits(),
+                    Mask::FILE_READ_EXEC.bits()
+                ),
+            ),
+        ] {
+            let dir = base.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.to_str().unwrap();
+            let set = SbAceSet {
+                grant: Some(grant),
+                deny: Some(DenyMask::ReadDeny),
+                ..Default::default()
+            };
+            apply_sandbox_aces(path, GUESTS, set).unwrap();
+            assert_eq!(ours(path), want, "{name}");
+        }
+        std::fs::remove_dir_all(&base).ok();
     }
 }

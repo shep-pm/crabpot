@@ -155,9 +155,12 @@ fn the_folders_between_a_deny_and_a_grant_can_be_statd() {
     let path = |path: &std::path::Path| path.to_str().expect("a UTF-8 path").to_owned();
     let config = crabpot::Config::from_json(
         &serde_json::json!({
+            "network": {"allowedDomains": [], "deniedDomains": []},
             "filesystem": {
                 "denyRead": [path(&denied)],
                 "allowRead": [path(&file)],
+                "allowWrite": [],
+                "denyWrite": [],
             }
         })
         .to_string(),

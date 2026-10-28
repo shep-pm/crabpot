@@ -13,6 +13,7 @@ pub(crate) mod inherited;
 pub(crate) mod install;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod plan;
+mod resolve;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod runner;
 #[cfg_attr(not(windows), allow(dead_code))]

@@ -1,8 +1,13 @@
 //! A sandbox started on a machine where an install has run, and a command run
 //! through it. Like `windows_status`, it is its own host for the `--srt-win`
-//! relaunch: the wrapped command runs this binary again as `srt-win exec`.
-//! It is its own command too: `--print-env <name>` prints one variable.
+//! relaunch: the wrapped command runs this binary again as `srt-win exec`. The
+//! other commands are this binary once more: `--print-arg <text>` prints its
+//! argument back and `--print-env <name>` prints one variable.
 
+#[cfg(windows)]
+const PRINT_ARG: &str = "--print-arg";
+#[cfg(windows)]
+const ARGUMENT: &str = "line one\nline \"two\" %PATH%";
 #[cfg(windows)]
 const WRAPPER_VARIABLE: &str = "CRABPOT_WRAPPER_VARIABLE";
 
@@ -10,10 +15,17 @@ const WRAPPER_VARIABLE: &str = "CRABPOT_WRAPPER_VARIABLE";
 fn main() {
     crabpot::run_from_args();
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--print-env") {
-        let name = args.next().expect("--print-env names a variable");
-        print!("{}", std::env::var(name).unwrap_or_default());
-        return;
+    match args.next().as_deref() {
+        Some(PRINT_ARG) => {
+            print!("{}", args.next().expect("an argument to print"));
+            return;
+        }
+        Some("--print-env") => {
+            let name = args.next().expect("--print-env names a variable");
+            print!("{}", std::env::var(name).unwrap_or_default());
+            return;
+        }
+        _ => {}
     }
     a_command_runs_in_the_sandbox();
     the_wrapper_keeps_its_environment_but_not_the_profile();
@@ -45,6 +57,23 @@ fn a_command_runs_in_the_sandbox() {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
+
+    let mut print = Command::new(std::env::current_exe().expect("the test binary has a path"));
+    print.arg(PRINT_ARG).arg(ARGUMENT);
+
+    let output = sandbox
+        .command(&print)
+        .expect("the command is wrapped")
+        .output()
+        .expect("srt-win launches the command");
+
+    assert!(
+        output.status.success(),
+        "{:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), ARGUMENT);
 }
 
 /// Runs this binary as `--crabpot -- <itself> --print-env <name>` with

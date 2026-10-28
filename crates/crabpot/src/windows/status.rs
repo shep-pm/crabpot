@@ -4,6 +4,7 @@
 //! `checkWindowsSandboxStatus` make.
 
 use core::ops::RangeInclusive;
+use std::collections::BTreeMap;
 
 use crabpot_windows::fs_access::{
     ConflictOptions, Disk, Host, ProfileGrant, profile_exclusion_conflicts,
@@ -11,6 +12,18 @@ use crabpot_windows::fs_access::{
 use serde::Deserialize;
 
 use crate::{ProfileConflict, StartError};
+
+/// The variables that point a sandboxed tool at the real user's config files
+/// in place, in upstream's order. `profile status` may report any of them, and
+/// a status keeps no other name it reports.
+pub const PROFILE_READ_ENV_VARS: [&str; 6] = [
+    "NPM_CONFIG_USERCONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "PIP_CONFIG_FILE",
+    "MAVEN_ARGS",
+    "RUSTUP_HOME",
+    "CARGO_HOME",
+];
 
 /// What the install says about the sandbox, read without elevation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +52,11 @@ pub struct WindowsStatus {
     pub profile: ProfileState,
     /// What the profile read grant keeps unreadable, empty when there is none.
     pub profile_exclusions: ProfileExclusions,
+    /// The variables, from [`PROFILE_READ_ENV_VARS`], that name the real user's
+    /// files the profile read grant reaches, each with its value. Empty unless
+    /// the grant is current. Nothing sets these on a sandboxed command: a host
+    /// that wants them sets them itself.
+    pub profile_read_env: Vec<(String, String)>,
     /// Whether the Secondary Logon service can launch the sandbox user. False
     /// when it is disabled or missing, and true when it could not be read,
     /// which is not proof of a problem.
@@ -164,6 +182,22 @@ impl WindowsStatus {
         sids.extend(self.sandbox_group_sid.as_deref());
         sids
     }
+
+    /// The [`Self::profile_read_env`] pairs a host has not already set. A name
+    /// in `supplied` is matched without regard to case, as Windows reads
+    /// variable names, and is left out.
+    #[must_use]
+    pub fn profile_read_env_for<'a>(
+        &self,
+        supplied: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<(String, String)> {
+        let supplied: Vec<String> = supplied.into_iter().map(str::to_uppercase).collect();
+        self.profile_read_env
+            .iter()
+            .filter(|(name, _)| !supplied.contains(&name.to_uppercase()))
+            .cloned()
+            .collect()
+    }
 }
 
 /// The error a srt-win query that exits with `code` stands for, when it is one
@@ -206,6 +240,8 @@ struct WfpJson {
 #[derive(Deserialize)]
 struct ProfileJson {
     state: String,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     #[serde(flatten)]
     exclusions: ProfileExclusions,
 }
@@ -224,6 +260,25 @@ pub(crate) fn read(
         .collect();
     let wfp: WfpJson = parse("wfp status", &wfp_args, &run)?;
     let profile: ProfileJson = parse("profile status", &[], &run)?;
+    let profile_state = match profile.state.as_str() {
+        "none" => ProfileState::None,
+        "current" => ProfileState::Current,
+        "outdated" => ProfileState::Outdated,
+        "incomplete" => ProfileState::Incomplete,
+        "in_progress" => ProfileState::InProgress,
+        _ => ProfileState::Unknown,
+    };
+    let profile_read_env = if profile_state == ProfileState::Current {
+        PROFILE_READ_ENV_VARS
+            .iter()
+            .filter_map(|name| {
+                let value = profile.env.get(*name).filter(|value| !value.is_empty())?;
+                Some(((*name).to_owned(), value.clone()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let provisioned =
         user.user.exists && user.cred_present && user.marker_version == Some(user.setup_version);
     // A session without an owner is session 0, which is refused by name before
@@ -250,15 +305,9 @@ pub(crate) fn read(
             LoopbackMode::Closed
         },
         proxy_ports: wfp.port_range.map(|[low, high]| low..=high),
-        profile: match profile.state.as_str() {
-            "none" => ProfileState::None,
-            "current" => ProfileState::Current,
-            "outdated" => ProfileState::Outdated,
-            "incomplete" => ProfileState::Incomplete,
-            "in_progress" => ProfileState::InProgress,
-            _ => ProfileState::Unknown,
-        },
+        profile: profile_state,
         profile_exclusions: profile.exclusions,
+        profile_read_env,
         seclogon_runs: !matches!(user.seclogon.as_str(), "disabled" | "missing"),
         in_desktop_session,
     })
@@ -492,6 +541,63 @@ mod tests {
                 ungranted_only: vec![r"C:\Users\me\AppData\Local\Temp".to_owned()],
             }
         );
+    }
+
+    /// A srt-win whose `profile status` prints `profile`.
+    fn status_with_profile(profile: &str) -> WindowsStatus {
+        let profile = profile.to_owned();
+        read(None, move |command, _| match command {
+            "user status" => Ok(PROVISIONED.to_owned()),
+            "wfp status" => Ok(WFP.to_owned()),
+            _ => Ok(profile.clone()),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_current_grant_reads_its_profile_env() {
+        let status = status_with_profile(
+            r#"{"state":"current","env":{"GIT_CONFIG_GLOBAL":"C:\\Users\\me\\.gitconfig"}}"#,
+        );
+
+        assert_eq!(
+            status.profile_read_env,
+            [(
+                "GIT_CONFIG_GLOBAL".to_owned(),
+                r"C:\Users\me\.gitconfig".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_grant_that_is_not_current_has_no_profile_env() {
+        let status = status_with_profile(
+            r#"{"state":"outdated","env":{"GIT_CONFIG_GLOBAL":"C:\\Users\\me\\.gitconfig"}}"#,
+        );
+
+        assert_eq!(status.profile_read_env, []);
+    }
+
+    #[test]
+    fn an_unknown_or_empty_profile_env_name_is_dropped() {
+        let status =
+            status_with_profile(r#"{"state":"current","env":{"OTHER":"x","PIP_CONFIG_FILE":""}}"#);
+
+        assert_eq!(status.profile_read_env, []);
+    }
+
+    #[test]
+    fn a_name_the_host_already_sets_is_left_out() {
+        let status = status_with_profile(
+            r#"{"state":"current","env":{"CARGO_HOME":"C:\\Users\\me\\.cargo",
+                "GIT_CONFIG_GLOBAL":"C:\\Users\\me\\.gitconfig"}}"#,
+        );
+
+        assert_eq!(
+            status.profile_read_env_for(["git_config_global"]),
+            [("CARGO_HOME".to_owned(), r"C:\Users\me\.cargo".to_owned())]
+        );
+        assert_eq!(status.profile_read_env_for([]).len(), 2);
     }
 
     #[test]

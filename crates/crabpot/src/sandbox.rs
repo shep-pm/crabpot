@@ -635,6 +635,8 @@ pub enum WrapError {
     /// Windows: the command runs through `cmd.exe`, because its program is not
     /// a `.exe` or `.com` file, and a word of it has a double quote, a percent
     /// sign or a line break, which `cmd.exe` would act on instead of passing on.
+    /// Also when the environment it carries makes the srt-win command line
+    /// longer than Windows spawns.
     Cmd(String),
     /// The platform has no sandbox yet: only macOS, Linux and Windows have one.
     UnsupportedPlatform,

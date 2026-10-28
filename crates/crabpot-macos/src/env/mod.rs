@@ -33,7 +33,7 @@ macro_rules! parts {
     };
 }
 
-parts!(base, java);
+parts!(base, java, git);
 
 /// What the parts are built from: what the sandbox lets the command reach,
 /// and the names it inherits. [`Facts::for_command`] turns the host's names
@@ -49,6 +49,11 @@ pub struct Facts {
     /// `JAVA_TOOL_OPTIONS`, as the host carries it, or as one command carries
     /// it after [`Facts::for_command`].
     pub java_tool_options: Option<OsString>,
+    /// `git.safeDirectories`: the directories git is told are safe.
+    pub git_safe_directories: Vec<String>,
+    /// `GIT_CONFIG_COUNT`, as the host carries it, or as one command carries
+    /// it after [`Facts::for_command`].
+    pub git_config_count: Option<OsString>,
 }
 
 impl Facts {
@@ -67,13 +72,15 @@ impl Facts {
             claude_code_tmpdir: env::var_os("CLAUDE_CODE_TMPDIR"),
             claude_tmpdir: env::var_os("CLAUDE_TMPDIR"),
             java_tool_options: env::var_os("JAVA_TOOL_OPTIONS"),
+            git_safe_directories: config.git.safe_directories.clone(),
+            git_config_count: env::var_os(git::GIT_CONFIG_COUNT),
         }
     }
 
     /// The facts for one command, whose own `env` and `env_remove` calls are
-    /// where its environment lands. Only `JAVA_TOOL_OPTIONS` is read from the
-    /// command: the base part's names are the host's, the way upstream reads
-    /// them.
+    /// where its environment lands. Only `JAVA_TOOL_OPTIONS` and
+    /// `GIT_CONFIG_COUNT` are read from the command: the base part's names are
+    /// the host's, the way upstream reads them.
     #[must_use]
     pub fn for_command(&self, command: &Command) -> Self {
         let mut facts = self.clone();
@@ -83,6 +90,13 @@ impl Facts {
             .last()
         {
             facts.java_tool_options = value.map(OsString::from);
+        }
+        if let Some((_, value)) = command
+            .get_envs()
+            .filter(|(key, _)| *key == git::GIT_CONFIG_COUNT)
+            .last()
+        {
+            facts.git_config_count = value.map(OsString::from);
         }
         facts
     }
@@ -108,6 +122,8 @@ mod tests {
             claude_code_tmpdir: claude_code_tmpdir.map(OsString::from),
             claude_tmpdir: claude_tmpdir.map(OsString::from),
             java_tool_options: None,
+            git_safe_directories: Vec::new(),
+            git_config_count: None,
         }
     }
 
@@ -153,6 +169,8 @@ mod tests {
             claude_code_tmpdir: None,
             claude_tmpdir: None,
             java_tool_options: Some(OsString::from("-Xmx256m")),
+            git_safe_directories: Vec::new(),
+            git_config_count: None,
         };
 
         let mut command = Command::new("java");
@@ -174,6 +192,89 @@ mod tests {
                 OsString::from("-Djava.net.preferIPv4Stack=true"),
             )],
             "a value the command removed is not carried back"
+        );
+    }
+
+    fn safe_directories(names: &[&str]) -> Facts {
+        Facts {
+            git_safe_directories: names.iter().map(|name| (*name).to_owned()).collect(),
+            ..facts(None, None)
+        }
+    }
+
+    fn pairs(vars: Vec<(OsString, OsString)>) -> Vec<(String, String)> {
+        vars.into_iter()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_configured_safe_directory_is_given_to_git() {
+        let vars = pairs(vars(&safe_directories(&["/repo"])));
+
+        for expected in [
+            ("GIT_CONFIG_KEY_0", "safe.directory"),
+            ("GIT_CONFIG_VALUE_0", "/repo"),
+            ("GIT_CONFIG_KEY_1", "safe.directory"),
+            ("GIT_CONFIG_VALUE_1", "/repo/*"),
+            ("GIT_CONFIG_COUNT", "2"),
+        ] {
+            assert!(
+                vars.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+                "{expected:?} is missing from {vars:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_list_emits_no_git_config_name() {
+        let vars = pairs(vars(&safe_directories(&[])));
+
+        assert!(
+            vars.iter()
+                .all(|(name, _)| !name.starts_with("GIT_CONFIG_")),
+            "{vars:?}"
+        );
+    }
+
+    #[test]
+    fn the_commands_own_count_wins_over_the_hosts() {
+        let host = Facts {
+            git_config_count: Some(OsString::from("5")),
+            ..safe_directories(&["/repo"])
+        };
+        let first_key = |facts: &Facts| {
+            pairs(vars(facts))
+                .into_iter()
+                .find(|(name, _)| name.starts_with("GIT_CONFIG_KEY_"))
+                .map(|(name, _)| name)
+        };
+        assert_eq!(first_key(&host).as_deref(), Some("GIT_CONFIG_KEY_5"));
+
+        let mut command = Command::new("git");
+        command.env("GIT_CONFIG_COUNT", "1");
+        assert_eq!(
+            first_key(&host.for_command(&command)).as_deref(),
+            Some("GIT_CONFIG_KEY_1")
+        );
+
+        command.env_remove("GIT_CONFIG_COUNT");
+        assert_eq!(
+            first_key(&host.for_command(&command)).as_deref(),
+            Some("GIT_CONFIG_KEY_0"),
+            "a count the command removed is not carried back"
+        );
+
+        command.env("GIT_CONFIG_COUNT", "0");
+        assert_eq!(
+            first_key(&host.for_command(&command)),
+            None,
+            "an explicit 0 opts out of environment git config"
         );
     }
 }

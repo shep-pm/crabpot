@@ -105,6 +105,8 @@ mod tests {
             claude_code_tmpdir: None,
             claude_tmpdir: None,
             java_tool_options: inherited.map(OsString::from),
+            git_safe_directories: Vec::new(),
+            git_config_count: None,
         }
     }
 

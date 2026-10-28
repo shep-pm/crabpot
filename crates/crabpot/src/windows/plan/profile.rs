@@ -6,12 +6,10 @@
 //! runs here first, on the plan's own lists, so the refusal names the paths.
 //! With no grant recorded the exclusions are empty and nothing conflicts.
 
-use crabpot_windows::fs_access::{
-    Access, ConflictOptions, Disk, Host, ProfileGrant, profile_exclusion_conflicts,
-};
+use crabpot_windows::fs_access::{Access, Disk, Host};
 
 use super::super::status::ProfileExclusions;
-use crate::{ProfileConflict, StartError};
+use crate::StartError;
 
 /// Whether no path of `access` that is granted meets `profile`.
 ///
@@ -24,26 +22,8 @@ pub(super) fn check<D: Disk>(
     access: &Access,
     profile: &ProfileExclusions,
 ) -> Result<(), StartError> {
-    let grant = ProfileGrant {
-        exclusions: &profile.exclusions,
-        ungranted_only: &profile.ungranted_only,
-    };
-    let mut found = Vec::new();
-    for (paths, write) in [(&access.read, false), (&access.write, true)] {
-        let options = ConflictOptions {
-            write,
-            ..ConflictOptions::default()
-        };
-        found.extend(
-            profile_exclusion_conflicts(host, paths, &grant, &options)
-                .into_iter()
-                .map(|conflict| ProfileConflict {
-                    path: conflict.path,
-                    exclusion: conflict.exclusion,
-                    write,
-                }),
-        );
-    }
+    let mut found = profile.conflicts_on(host, &access.read, false);
+    found.extend(profile.conflicts_on(host, &access.write, true));
     if found.is_empty() {
         Ok(())
     } else {

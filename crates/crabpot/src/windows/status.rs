@@ -5,9 +5,12 @@
 
 use core::ops::RangeInclusive;
 
+use crabpot_windows::fs_access::{
+    ConflictOptions, Disk, Host, ProfileGrant, profile_exclusion_conflicts,
+};
 use serde::Deserialize;
 
-use crate::StartError;
+use crate::{ProfileConflict, StartError};
 
 /// What the install says about the sandbox, read without elevation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +91,48 @@ pub struct ProfileExclusions {
     /// may not grant one, or a path above one.
     #[serde(default)]
     pub ungranted_only: Vec<String>,
+}
+
+impl ProfileExclusions {
+    /// The `paths` a session may not grant, each with the exclusion it meets, as
+    /// upstream's `windowsProfileExclusionConflicts` finds them. A path equal
+    /// to, inside or above a protected exclusion meets it, and above a wildcard
+    /// one only when something on disk beneath matches. An ungranted-only
+    /// directory is met by a path equal to it or above it. `write` is whether
+    /// the paths would be granted for writing, and is recorded on each result.
+    ///
+    /// Paths are read against this process's home directory, working directory
+    /// and disk. With no profile grant recorded there are no exclusions, and
+    /// nothing conflicts.
+    #[must_use]
+    pub fn conflicts(&self, paths: &[String], write: bool) -> Vec<ProfileConflict> {
+        self.conflicts_on(&Host::from_process(), paths, write)
+    }
+
+    /// [`Self::conflicts`] against `host`.
+    pub(crate) fn conflicts_on<D: Disk>(
+        &self,
+        host: &Host<D>,
+        paths: &[String],
+        write: bool,
+    ) -> Vec<ProfileConflict> {
+        let grant = ProfileGrant {
+            exclusions: &self.exclusions,
+            ungranted_only: &self.ungranted_only,
+        };
+        let options = ConflictOptions {
+            write,
+            ..ConflictOptions::default()
+        };
+        profile_exclusion_conflicts(host, paths, &grant, &options)
+            .into_iter()
+            .map(|conflict| ProfileConflict {
+                path: conflict.path,
+                exclusion: conflict.exclusion,
+                write,
+            })
+            .collect()
+    }
 }
 
 /// Whether the profile read grant is in place, as `profile status` reports it.
@@ -236,7 +281,95 @@ fn parse<T: for<'de> Deserialize<'de>>(
 mod tests {
     use core::cell::RefCell;
 
+    use crabpot_windows::fs_access::{Disk, DiskError, Entry, Kind};
+
     use super::*;
+
+    /// A volume where only the listed directories exist, spelled as given.
+    struct Volume(&'static [&'static str]);
+
+    impl Disk for Volume {
+        fn real_path(&self, path: &str) -> Result<String, DiskError> {
+            self.0
+                .iter()
+                .find(|dir| dir.eq_ignore_ascii_case(path))
+                .map(|dir| (*dir).to_owned())
+                .ok_or(DiskError::Absent)
+        }
+
+        fn exists(&self, path: &str) -> bool {
+            self.real_path(path).is_ok()
+        }
+
+        fn lstat(&self, path: &str) -> Result<Kind, DiskError> {
+            self.real_path(path).map(|_| Kind::Dir)
+        }
+
+        fn read_dir(&self, _: &str) -> Result<Vec<Entry>, DiskError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn host() -> Host<Volume> {
+        Host::new(
+            Some(r"C:\Users\me"),
+            Some(r"C:\work"),
+            Volume(&[r"C:\Users\me\.cargo", r"C:\Users\me\.cargo\bin"]),
+        )
+    }
+
+    fn cargo_credentials() -> ProfileExclusions {
+        ProfileExclusions {
+            exclusions: vec![r"C:\Users\me\.cargo\credentials".to_owned()],
+            ungranted_only: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_path_above_a_protected_exclusion_conflicts() {
+        let found =
+            cargo_credentials().conflicts_on(&host(), &[r"C:\Users\me\.cargo".to_owned()], false);
+
+        assert_eq!(
+            found,
+            [ProfileConflict {
+                path: r"C:\Users\me\.cargo".to_owned(),
+                exclusion: r"C:\Users\me\.cargo\credentials".to_owned(),
+                write: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_path_beside_an_exclusion_does_not_conflict() {
+        let found = cargo_credentials().conflicts_on(
+            &host(),
+            &[r"C:\Users\me\.cargo\bin".to_owned()],
+            false,
+        );
+
+        assert_eq!(found, []);
+    }
+
+    #[test]
+    fn a_write_conflict_says_so() {
+        let found =
+            cargo_credentials().conflicts_on(&host(), &[r"C:\Users\me\.cargo".to_owned()], true);
+
+        assert!(found.iter().all(|conflict| conflict.write));
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn no_exclusions_means_no_conflicts() {
+        let found = ProfileExclusions::default().conflicts_on(
+            &host(),
+            &[r"C:\Users\me\.cargo".to_owned()],
+            false,
+        );
+
+        assert_eq!(found, []);
+    }
 
     const PROVISIONED: &str = r#"{
         "user": {"name": "crabpot-sandbox", "exists": true, "sid": "S-1-5-21-1",

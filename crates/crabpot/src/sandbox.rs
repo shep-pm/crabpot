@@ -630,7 +630,9 @@ pub enum WrapError {
     /// line is long could not be opened.
     Bwrap(String),
     /// Windows: a word of the command has a double quote, a percent sign or a
-    /// line break, which `cmd.exe` would act on instead of passing on.
+    /// line break, which `cmd.exe` would act on instead of passing on, or the
+    /// environment it carries makes the srt-win command line longer than
+    /// Windows spawns.
     Cmd(String),
     /// The platform has no sandbox yet: only macOS, Linux and Windows have one.
     UnsupportedPlatform,

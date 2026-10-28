@@ -217,9 +217,28 @@ fn prepare(args: impl IntoIterator<Item = OsString>) -> Result<(Sandbox, Command
     };
     let wrapped = sandbox.command(&command)?;
     if args.debug {
-        eprintln!("crabpot: running {wrapped:?}");
+        eprintln!("crabpot: running {}", debug_line(&wrapped));
     }
     Ok((sandbox, wrapped))
+}
+
+/// `command` as `--debug` prints it: the program and its arguments, with the
+/// value of each `--env NAME=VALUE` pair left out, since the environment holds
+/// credentials and a log keeps what is printed.
+fn debug_line(command: &Command) -> String {
+    let mut words = vec![format!("{:?}", command.get_program())];
+    let mut after_env = false;
+    for arg in command.get_args() {
+        let arg = arg.to_string_lossy();
+        if after_env {
+            let name = arg.split('=').next().unwrap_or_default();
+            words.push(format!("{:?}", format!("{name}=<redacted>")));
+        } else {
+            words.push(format!("{arg:?}"));
+        }
+        after_env = !after_env && arg == "--env";
+    }
+    words.join(" ")
 }
 
 /// Reads the settings file, as upstream does: a default file that is not there
@@ -380,6 +399,19 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn debug_does_not_print_the_value_of_an_env_pair() {
+        let mut command = Command::new("crabpot");
+        command.args(["--env", "TOKEN=secret", "--", "echo", "TOKEN=plain"]);
+
+        let line = debug_line(&command);
+
+        assert_eq!(
+            line,
+            r#""crabpot" "--env" "TOKEN=<redacted>" "--" "echo" "TOKEN=plain""#
+        );
+    }
 
     /// A signal reaches every wrapper in the process, so the tests that run a
     /// command take turns.

@@ -14,6 +14,13 @@ use crabpot_windows::env::{Facts, vars};
 use crate::args::SRT_WIN_FLAG;
 use crate::sandbox::{WrapError, command_line};
 
+/// What Windows allows a command line, in characters (`CreateProcessW`).
+const COMMAND_LINE_LIMIT: usize = 32_767;
+
+/// What a word costs on the line beyond its characters: a pair of quotes and
+/// a space.
+const QUOTES_AND_SPACE: usize = 3;
+
 /// What a session tells every command it wraps.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Params<'a> {
@@ -36,12 +43,13 @@ pub(crate) struct Params<'a> {
 /// The command runs as `cmd.exe /d /s /c <line>`: srt-win puts the line in the
 /// one pair of quotes `/s` strips and passes it on as written. The sandbox
 /// user's own profile environment is the command's, with the overlay of
-/// `--env` pairs on it: the caller's changes, then the sandbox's own, which win.
+/// `--env` pairs on it: the caller's changes, then the sandbox's own, which win
+/// and which the caller's of the same name, whatever its case, give way to.
 ///
 /// # Errors
 ///
 /// [`WrapError::Cmd`] when a word of `command` cannot be put on a `cmd.exe`
-/// line as itself.
+/// line as itself, or the overlay makes the line longer than Windows spawns.
 pub(crate) fn wrap(params: &Params<'_>, command: &Command) -> Result<Command, WrapError> {
     let mut wrapped = Command::new(params.exe);
     wrapped
@@ -55,27 +63,47 @@ pub(crate) fn wrap(params: &Params<'_>, command: &Command) -> Result<Command, Wr
     if params.allow_loopback {
         wrapped.arg("--allow-loopback");
     }
-    for (name, value) in overlay(params, command) {
+    let overlay = overlay(params, command);
+    for (name, value) in &overlay {
         wrapped.arg("--env").arg(format!("{name}={value}"));
     }
     wrapped.args(["--", &shell(), "/d", "/s", "/c", &line_of(command)?]);
+    check_length(&wrapped, &overlay)?;
     if let Some(dir) = command.get_current_dir() {
         wrapped.current_dir(dir);
     }
     Ok(wrapped)
 }
 
-/// The variables the command gets, name and value, the caller's first.
+/// Refuses a `wrapped` command line that Windows cannot spawn, by the largest
+/// of the `overlay` variables, which is what makes a line long.
+fn check_length(wrapped: &Command, overlay: &[(String, String)]) -> Result<(), WrapError> {
+    let length: usize = core::iter::once(wrapped.get_program())
+        .chain(wrapped.get_args())
+        .map(|word| word.to_string_lossy().encode_utf16().count() + QUOTES_AND_SPACE)
+        .sum();
+    if length <= COMMAND_LINE_LIMIT {
+        return Ok(());
+    }
+    let largest = overlay
+        .iter()
+        .max_by_key(|(name, value)| name.len() + value.len())
+        .map_or("", |(name, _)| name.as_str());
+    Err(WrapError::Cmd(format!(
+        "the environment makes the srt-win command line {length} characters, over the \
+         {COMMAND_LINE_LIMIT} Windows allows; the largest variable is {largest}"
+    )))
+}
+
+/// The variables the command gets, name and value: the caller's that the
+/// sandbox does not set, then the sandbox's own.
 fn overlay(params: &Params<'_>, command: &Command) -> Vec<(String, String)> {
-    let mut overlay: Vec<(String, String)> = command
-        .get_envs()
-        .filter_map(|(name, value)| {
-            Some((
-                name.to_string_lossy().into_owned(),
-                value?.to_string_lossy().into_owned(),
-            ))
-        })
-        .collect();
+    let changes = command.get_envs().filter_map(|(name, value)| {
+        Some((
+            name.to_string_lossy().into_owned(),
+            value?.to_string_lossy().into_owned(),
+        ))
+    });
     let cwd = command
         .get_current_dir()
         .map(Path::to_path_buf)
@@ -95,7 +123,11 @@ fn overlay(params: &Params<'_>, command: &Command) -> Vec<(String, String)> {
         pathext: carried(command, "PATHEXT"),
     };
     let username = username_for(&command_line(command));
-    overlay.extend(vars(&facts, &username, params.token));
+    let own = vars(&facts, &username, params.token);
+    let mut overlay: Vec<(String, String)> = changes
+        .filter(|(name, _)| !own.iter().any(|(set, _)| set.eq_ignore_ascii_case(name)))
+        .collect();
+    overlay.extend(own);
     overlay
 }
 
@@ -271,6 +303,45 @@ mod tests {
             .find_map(|pair| pair.strip_prefix("https_proxy="))
             .expect("https_proxy is in the overlay");
         assert!(proxy.ends_with(":tok@localhost:60080"), "{proxy}");
+    }
+
+    fn overlay_of(command: &Command) -> Vec<String> {
+        let args = args_of(&wrap(&params(&[], false), command).unwrap());
+        args.windows(2)
+            .filter(|pair| pair[0] == "--env")
+            .map(|pair| pair[1].clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_variable_the_sandbox_sets_is_on_the_line_once_whatever_its_case() {
+        let mut command = echo();
+        command.env("Path", r"C:\host").env("SANDBOX_RUNTIME", "no");
+        let overlay = overlay_of(&command);
+
+        for name in ["path", "sandbox_runtime"] {
+            let count = overlay
+                .iter()
+                .filter(|pair| {
+                    pair.split('=')
+                        .next()
+                        .is_some_and(|key| key.eq_ignore_ascii_case(name))
+                })
+                .count();
+            assert_eq!(count, 1, "{name}: {overlay:?}");
+        }
+        assert!(!overlay.contains(&"SANDBOX_RUNTIME=no".to_owned()));
+    }
+
+    #[test]
+    fn an_environment_too_long_for_a_command_line_is_refused_by_name() {
+        let mut command = echo();
+        command.env("BIG", "x".repeat(33_000));
+
+        let Err(WrapError::Cmd(reason)) = wrap(&params(&[], false), &command) else {
+            panic!("a 33000 character variable is refused");
+        };
+        assert!(reason.contains("BIG"), "{reason}");
     }
 
     #[test]

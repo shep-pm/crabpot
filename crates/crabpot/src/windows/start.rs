@@ -158,6 +158,7 @@ fn prepare(
     let sid = status.sandbox_sid.clone().ok_or(StartError::StatusFailed {
         command: "user status",
         code: None,
+        stderr: String::new(),
     })?;
     // The loopback mode is the install's, not the session's: a session that
     // asks for the other is refused here, before anything is granted. `srt-win
@@ -312,7 +313,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::windows::srt::fake::{Calls, Fake, exit};
+    use crate::windows::srt::fake::{Calls, Fake, exit, fail};
     use crate::windows::status::{LoopbackMode, ProfileExclusions, SetupVersion, UserState};
 
     /// Where the next window of ports to hold is looked for, so that tests
@@ -774,7 +775,8 @@ mod tests {
             error,
             StartError::StatusFailed {
                 command: "user status",
-                code: None
+                code: None,
+                stderr: String::new()
             }
         );
     }
@@ -827,7 +829,7 @@ mod tests {
                 .args
                 .starts_with(&["acl".to_owned(), "grant".to_owned()])
             {
-                exit(2, "")
+                fail(2, "deny refused: x")
             } else {
                 exit(0, "[]")
             }
@@ -835,7 +837,13 @@ mod tests {
 
         let error = start(srt, &Verified::new(), &status(), &Config::default()).unwrap_err();
 
-        assert_eq!(error, StartError::GrantFailed { code: Some(2) });
+        assert_eq!(
+            error,
+            StartError::GrantFailed {
+                code: Some(2),
+                stderr: "deny refused: x".to_owned()
+            }
+        );
         assert_eq!(verbs(&calls), ["acl grant", "acl revoke", "acl restore"]);
     }
 

@@ -139,15 +139,22 @@ impl Plan {
             Ok(output) => Err(match output.code {
                 Some(EXIT_GRANT_BLOCKED) => StartError::GrantBlocked,
                 Some(EXIT_PROFILE_BUSY) => StartError::ProfileBusy,
-                code => StartError::GrantFailed { code },
+                code => StartError::GrantFailed {
+                    code,
+                    stderr: output.stderr.trim().to_owned(),
+                },
             }),
-            Err(_) => Err(StartError::GrantFailed { code: None }),
+            Err(_) => Err(StartError::GrantFailed {
+                code: None,
+                stderr: String::new(),
+            }),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::path::Path;
     use std::process::Command;
 
@@ -155,7 +162,10 @@ mod tests {
     use crabpot_windows::fs_access::{DiskError, Entry, Kind};
 
     use super::super::command::{Params, wrap};
-    use super::super::srt::fake::{Fake, exit};
+    use super::super::srt::{
+        Output,
+        fake::{Fake, exit, fail},
+    };
     use super::*;
     use crate::ProfileConflict;
 
@@ -455,6 +465,56 @@ mod tests {
         });
 
         assert!(plan.is_ok());
+    }
+
+    #[test]
+    fn a_failed_grant_carries_what_srt_win_printed() {
+        let (srt, _) = Fake::answering(|_| fail(1, "deny refused: x\n"));
+        let plan = Plan::build(&Config::default(), &ProfileExclusions::default()).unwrap();
+
+        let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();
+
+        assert_eq!(
+            error,
+            StartError::GrantFailed {
+                code: Some(1),
+                stderr: "deny refused: x".to_owned()
+            }
+        );
+        assert!(error.to_string().ends_with("exited 1: deny refused: x"));
+    }
+
+    #[test]
+    fn a_failed_grant_that_printed_nothing_keeps_its_message() {
+        let (srt, _) = Fake::answering(|_| fail(1, " \n"));
+        let plan = Plan::build(&Config::default(), &ProfileExclusions::default()).unwrap();
+
+        let error = plan.apply(&srt, "S-1-5-21-7", 4242).unwrap_err();
+
+        assert_eq!(error.to_string(), "`srt-win acl grant` exited 1");
+    }
+
+    #[test]
+    fn a_grant_call_that_did_not_run_carries_no_stderr() {
+        #[derive(Debug)]
+        struct Broken;
+        impl Srt for Broken {
+            fn run(&self, _: &Call) -> io::Result<Output> {
+                Err(io::Error::other("no srt-win"))
+            }
+        }
+        let plan = Plan::build(&Config::default(), &ProfileExclusions::default()).unwrap();
+
+        let error = plan.apply(&Broken, "S-1-5-21-7", 4242).unwrap_err();
+
+        assert_eq!(
+            error,
+            StartError::GrantFailed {
+                code: None,
+                stderr: String::new()
+            }
+        );
+        assert_eq!(error.to_string(), "`srt-win acl grant` did not run");
     }
 
     #[test]

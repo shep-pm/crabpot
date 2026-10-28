@@ -73,7 +73,10 @@ fn wrap_with(
     }
     let program = command.get_program().to_str();
     let path = carried(command, "PATH");
-    match program.and_then(|program| executable(program, path.as_deref(), is_file)) {
+    let pathext = carried(command, "PATHEXT");
+    match program
+        .and_then(|program| executable(program, path.as_deref(), pathext.as_deref(), is_file))
+    {
         Some(program) => {
             wrapped.arg("--").arg(program).args(command.get_args());
         }
@@ -505,6 +508,24 @@ mod tests {
         assert_eq!(flags, ["/d", "/s", "/c"]);
         assert_eq!(line, r"C:\tools\run.bat one");
         assert!(matches!(broken, Err(WrapError::Cmd(_))), "{broken:?}");
+    }
+
+    #[test]
+    fn cmd_itself_keeps_its_words_quoted_on_the_line() {
+        let mut command = Command::new("cmd");
+        command
+            .env("PATH", r"C:\Windows\System32")
+            .args(["/c", "echo", "x&y"]);
+
+        let wrapped = wrap_over(
+            &|path| path == r"c:\windows\system32\cmd.exe",
+            &params(&[], false),
+            &command,
+        )
+        .unwrap();
+
+        let after = after_separator(&wrapped);
+        assert_eq!(after[1..], ["/d", "/s", "/c", r#"cmd /c echo "x&y""#]);
     }
 
     #[test]

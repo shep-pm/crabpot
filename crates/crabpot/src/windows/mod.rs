@@ -11,8 +11,8 @@ mod held;
 pub(crate) mod install;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod plan;
-#[cfg_attr(not(windows), allow(dead_code))]
 mod resolve;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod runner;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod srt;

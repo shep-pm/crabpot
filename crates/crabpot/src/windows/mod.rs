@@ -8,6 +8,8 @@ pub(crate) mod command;
 mod ffi;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod held;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod inherited;
 pub(crate) mod install;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod plan;

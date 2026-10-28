@@ -209,6 +209,12 @@ fn prepare(args: impl IntoIterator<Item = OsString>) -> Result<(Sandbox, Command
             command
         }
     };
+    #[cfg(windows)]
+    let command = {
+        let mut command = command;
+        command.envs(crate::windows::inherited::carried(env::vars_os()));
+        command
+    };
     let wrapped = sandbox.command(&command)?;
     if args.debug {
         eprintln!("crabpot: running {wrapped:?}");

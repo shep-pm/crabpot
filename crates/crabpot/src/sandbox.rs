@@ -397,6 +397,9 @@ pub enum StartError {
         command: &'static str,
         /// Its exit code, when it ran to one.
         code: Option<i32>,
+        /// What it printed on stderr, trimmed, and empty when it did not run or
+        /// printed nothing.
+        stderr: String,
     },
     /// Windows: the recorded read grant on the user profile cannot be used, since
     /// it is `state` and not none or current. Bringing it up to date, or
@@ -410,6 +413,9 @@ pub enum StartError {
     GrantFailed {
         /// Its exit code, when it ran to one.
         code: Option<i32>,
+        /// What it printed on stderr, trimmed, and empty when it did not run or
+        /// printed nothing.
+        stderr: String,
     },
     /// Windows: srt-win exited 24 for the `acl grant` call, which holds it off.
     /// Nothing was granted or denied, and the call can be made again.
@@ -478,6 +484,15 @@ impl From<crabpot_linux::deps::DepsError> for StartError {
     }
 }
 
+/// Appends `: <stderr>` to an error message, when srt-win printed any.
+fn write_stderr(f: &mut fmt::Formatter<'_>, stderr: &str) -> fmt::Result {
+    if stderr.is_empty() {
+        Ok(())
+    } else {
+        write!(f, ": {stderr}")
+    }
+}
+
 impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -531,22 +546,37 @@ impl fmt::Display for StartError {
             Self::StatusFailed {
                 command,
                 code: Some(code),
-            } => write!(f, "`srt-win {command}` exited {code}"),
+                stderr,
+            } => {
+                write!(f, "`srt-win {command}` exited {code}")?;
+                write_stderr(f, stderr)
+            }
             Self::StatusFailed {
                 command,
                 code: None,
-            } => write!(
-                f,
-                "`srt-win {command}` did not run, or printed what cannot be read"
-            ),
+                stderr,
+            } => {
+                write!(
+                    f,
+                    "`srt-win {command}` did not run, or printed what cannot be read"
+                )?;
+                write_stderr(f, stderr)
+            }
             Self::ProfileGrantOutdated { state } => write!(
                 f,
                 "the recorded read grant on the user profile cannot be used ({state:?}); bring it up to date with the install, or forget it"
             ),
-            Self::GrantFailed { code: Some(code) } => {
-                write!(f, "`srt-win acl grant` exited {code}")
+            Self::GrantFailed {
+                code: Some(code),
+                stderr,
+            } => {
+                write!(f, "`srt-win acl grant` exited {code}")?;
+                write_stderr(f, stderr)
             }
-            Self::GrantFailed { code: None } => write!(f, "`srt-win acl grant` did not run"),
+            Self::GrantFailed { code: None, stderr } => {
+                write!(f, "`srt-win acl grant` did not run")?;
+                write_stderr(f, stderr)
+            }
             Self::GrantBlocked => write!(
                 f,
                 "`srt-win acl grant` was held off (exit 24), and changed nothing"

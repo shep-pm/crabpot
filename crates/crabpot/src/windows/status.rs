@@ -228,6 +228,7 @@ fn parse<T: for<'de> Deserialize<'de>>(
     serde_json::from_str(&run(command, args)?).map_err(|_| StartError::StatusFailed {
         command,
         code: None,
+        stderr: String::new(),
     })
 }
 
@@ -409,6 +410,32 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_status_carries_what_srt_win_printed() {
+        let error = read(None, |command, _| {
+            Err(StartError::StatusFailed {
+                command,
+                code: Some(1),
+                stderr: "deny refused: x".to_owned(),
+            })
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            StartError::StatusFailed {
+                command: "user status",
+                code: Some(1),
+                stderr: "deny refused: x".to_owned()
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .ends_with("`srt-win user status` exited 1: deny refused: x")
+        );
+    }
+
+    #[test]
     fn output_that_is_not_json_is_a_failed_query() {
         let error = read(None, fake("not json", WFP)).unwrap_err();
 
@@ -416,7 +443,8 @@ mod tests {
             error,
             StartError::StatusFailed {
                 command: "user status",
-                code: None
+                code: None,
+                stderr: String::new()
             }
         );
     }

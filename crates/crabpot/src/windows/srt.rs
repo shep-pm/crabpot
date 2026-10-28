@@ -143,6 +143,14 @@ pub(crate) mod fake {
         }
     }
 
+    /// An output that ended with `code` and printed `stderr`.
+    pub(crate) fn fail(code: i32, stderr: &str) -> Output {
+        Output {
+            stderr: stderr.to_owned(),
+            ..exit(code, "")
+        }
+    }
+
     /// A `wfp verify` answer for a fence that blocks the plain attempt.
     pub(crate) const BLOCKED: &str = r#"{"egress_probe":"blocked","target":"127.0.0.1:1"}"#;
 

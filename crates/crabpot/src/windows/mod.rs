@@ -130,6 +130,7 @@ fn current_session() -> Result<u32, StartError> {
     ffi::session_of(std::process::id()).ok_or(StartError::StatusFailed {
         command: "ProcessIdToSessionId",
         code: None,
+        stderr: String::new(),
     })
 }
 
@@ -168,19 +169,25 @@ pub(crate) fn start_session(config: &Config) -> Result<Session, StartError> {
 /// Runs this binary as `srt-win <command>` and returns what it printed.
 #[cfg(windows)]
 fn run_srt_win(command: &'static str, extra: &[&str]) -> Result<String, StartError> {
-    let failed = |code| StartError::StatusFailed { command, code };
+    let failed = |code, stderr: &[u8]| StartError::StatusFailed {
+        command,
+        code,
+        stderr: String::from_utf8_lossy(stderr).trim().to_owned(),
+    };
     let exe = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
     let output = Command::new(exe)
         .arg(crabpot_windows::SRT_WIN_DISPATCH_ARG1)
         .args(command.split(' '))
         .args(extra)
         .output()
-        .map_err(|_| failed(None))?;
+        .map_err(|_| failed(None, &[]))?;
     if output.status.success() {
-        return String::from_utf8(output.stdout).map_err(|_| failed(None));
+        return String::from_utf8(output.stdout).map_err(|_| failed(None, &output.stderr));
     }
     let code = output.status.code();
-    Err(code.and_then(refusal_for_exit).unwrap_or(failed(code)))
+    Err(code
+        .and_then(refusal_for_exit)
+        .unwrap_or_else(|| failed(code, &output.stderr)))
 }
 
 #[cfg(not(windows))]

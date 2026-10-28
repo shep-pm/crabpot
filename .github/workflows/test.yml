@@ -70,7 +70,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
-    runs-on: ${{ matrix.os }}
+    # `ubuntu-latest` is Ubuntu 26.04 now, where the helper's nested user
+    # namespace is refused (EPERM) inside bwrap even with the AppArmor sysctl
+    # off. It runs on 24.04, like the arm job, under the same check name.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7

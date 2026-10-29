@@ -73,10 +73,12 @@ impl fmt::Display for InstallError {
             Self::CurrentExe(kind) => write!(f, "cannot find this binary: {kind}"),
             Self::RunnerUnreadable(path) => write!(
                 f,
-                "the sandbox user cannot read {}, which it runs as the runner; run \
+                "the sandbox user cannot read {path}, which it runs as the runner; run \
                  windows-install to make the profile read grant, or move crabpot to a folder \
-                 every user can read, such as one under Program Files",
-                path.display()
+                 every user can read, such as one under Program Files; a binary moved in from \
+                 another folder keeps its old access list, and `icacls \"{path}\" /reset` \
+                 re-applies the folder's inherited entries",
+                path = path.display()
             ),
             Self::NotRun(kind) => write!(f, "cannot run srt-win: {kind}"),
             Self::StatusUnreadable => write!(
@@ -301,10 +303,12 @@ pub(crate) fn install(host: &mut impl Host, options: &InstallOptions) -> Result<
 /// cannot read.
 fn unreadable_without_grant(path: &Path) -> String {
     format!(
-        "the sandbox user cannot read {}, which it runs as the runner; run `crabpot --srt-win \
+        "the sandbox user cannot read {path}, which it runs as the runner; run `crabpot --srt-win \
          profile grant` as the user whose sessions read their profile, or move crabpot to a \
-         folder every user can read, such as one under Program Files",
-        path.display()
+         folder every user can read, such as one under Program Files; a binary moved in from \
+         another folder keeps its old access list, and `icacls \"{path}\" /reset` re-applies \
+         the folder's inherited entries",
+        path = path.display()
     )
 }
 
@@ -706,6 +710,20 @@ mod tests {
             [vec!["install"], vec!["profile", "grant"]],
             "the install and the grant both ran first: the grant is what makes a runner under the profile readable"
         );
+    }
+
+    #[test]
+    fn the_notice_after_a_skipped_grant_names_the_reset_for_a_moved_binary() {
+        let said = unreadable_without_grant(Path::new("crabpot.exe"));
+
+        assert!(said.contains(r#"icacls "crabpot.exe" /reset"#), "{said}");
+    }
+
+    #[test]
+    fn an_unreadable_runner_names_its_reset() {
+        let said = InstallError::RunnerUnreadable("crabpot.exe".into()).to_string();
+
+        assert!(said.contains(r#"icacls "crabpot.exe" /reset"#), "{said}");
     }
 
     #[test]

@@ -60,6 +60,15 @@ fn probe(operation: &str, path: &str) -> String {
 fn a_command_runs_in_the_sandbox() {
     use std::process::Command;
 
+    // The same check `Sandbox::start` makes below, read ahead of it: this test
+    // binary is the runner a sandboxed command launches.
+    let status = crabpot::windows_status().expect("srt-win answers the queries");
+    assert_eq!(
+        status.runner_readable,
+        Some(true),
+        "the sandbox user can read this test binary: {status:?}"
+    );
+
     let sandbox = crabpot::Sandbox::start(&crabpot::Config::default())
         .expect("a sandbox starts where the install has run");
     let mut echo = Command::new("cmd");

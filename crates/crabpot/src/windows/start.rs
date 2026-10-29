@@ -343,6 +343,8 @@ mod tests {
             profile_read_env: Vec::new(),
             seclogon_runs: true,
             in_desktop_session: true,
+            // `prepare` is handed its runner, not a status carrying one.
+            runner_readable: None,
         }
     }
 

@@ -44,6 +44,11 @@ use crate::StartError;
 /// again as srt-win (`--srt-win`) for `user status`, `wfp status` and `profile
 /// status`, under the default WFP sublayer. None of them needs elevation.
 ///
+/// It also reads this binary's own access list, so the status holds
+/// [`runner_readable`](WindowsStatus::runner_readable): what
+/// [`Sandbox::start`](crate::Sandbox::start) refuses on before it grants
+/// anything, which a host can read ahead of a start.
+///
 /// [`windows_status_for`] reads the status of the install a
 /// [`Config`]'s `windows` settings name.
 ///
@@ -65,13 +70,33 @@ pub fn windows_status() -> Result<WindowsStatus, StartError> {
 }
 
 /// [`windows_status`] for the install `config`'s `windows.sublayerGuid` names,
-/// as upstream's status call reads it.
+/// as upstream's status call reads it, with this binary's runner check filled
+/// in.
 ///
 /// # Errors
 ///
 /// Those of [`windows_status`].
 pub fn windows_status_for(config: &Config) -> Result<WindowsStatus, StartError> {
-    status::read(config.windows.sublayer_guid.as_deref(), run_srt_win)
+    let mut status = status::read(config.windows.sublayer_guid.as_deref(), run_srt_win)?;
+    status.runner_readable = runner_check(&status)?;
+    Ok(status)
+}
+
+/// Whether the sandbox user can read this binary by its own access list, which
+/// is the fact [`Sandbox::start`](crate::Sandbox::start) refuses on and
+/// `windows-install` checks after its grant. `status` names the account and the
+/// group a grant for the sandbox was made for; a status that names neither
+/// leaves the check to the well-known groups alone.
+#[cfg(windows)]
+fn runner_check(status: &WindowsStatus) -> Result<Option<bool>, StartError> {
+    let exe = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
+    Ok(runner::Runner::of(exe, Some(status)).dacl_allows)
+}
+
+#[cfg(not(windows))]
+fn runner_check(status: &WindowsStatus) -> Result<Option<bool>, StartError> {
+    let _ = status;
+    Err(StartError::UnsupportedPlatform)
 }
 
 /// Checks what [`windows_status`] reads, and the session this process runs in,
@@ -221,6 +246,8 @@ mod tests {
             profile_read_env: Vec::new(),
             seclogon_runs: true,
             in_desktop_session: true,
+            // A refusal reads none of the runner's facts.
+            runner_readable: None,
         }
     }
 

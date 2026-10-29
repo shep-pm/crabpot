@@ -63,6 +63,12 @@ pub struct WindowsStatus {
     pub seclogon_runs: bool,
     /// Whether this process runs as the user who owns its session.
     pub in_desktop_session: bool,
+    /// Whether the sandbox user can read this binary, which it runs as the
+    /// runner, by the binary's own access list: the check
+    /// [`Sandbox::start`](crate::Sandbox::start) makes before it grants
+    /// anything, which a host can read ahead of a start. `None` when the machine
+    /// could not make the check, which refuses nothing.
+    pub runner_readable: Option<bool>,
 }
 
 /// Whether a command can be launched as the sandbox user.
@@ -310,6 +316,9 @@ pub(crate) fn read(
         profile_read_env,
         seclogon_runs: !matches!(user.seclogon.as_str(), "disabled" | "missing"),
         in_desktop_session,
+        // The runner check reads this binary's own access list, which no srt-win
+        // query answers: the caller that names this binary fills it.
+        runner_readable: None,
     })
 }
 
@@ -476,6 +485,15 @@ mod tests {
         assert_eq!(status.profile, ProfileState::Current);
         assert!(status.seclogon_runs);
         assert!(status.in_desktop_session);
+    }
+
+    /// `read` runs the three srt-win queries and reads no access list, so the
+    /// runner check is left to the caller that names this binary.
+    #[test]
+    fn a_read_status_leaves_the_runner_check_to_the_caller() {
+        let status = read(None, fake(PROVISIONED, WFP)).unwrap();
+
+        assert_eq!(status.runner_readable, None);
     }
 
     /// A grant made for the sandbox is made for its account or for the group it

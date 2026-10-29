@@ -390,7 +390,10 @@ pub enum StartError {
     NotDesktopSession,
     /// Windows: the sandbox user cannot read this binary, which it has to run
     /// as the runner. The profile read grant `windows-install` makes, or a
-    /// binary in a folder every user can read, is the repair.
+    /// binary in a folder every user can read, is the repair. A binary moved in
+    /// from another folder (`cargo install` does) keeps its old access list and
+    /// lacks the grant's inherited entry, which `icacls <this binary> /reset`
+    /// restores.
     RunnerUnreadable,
     /// Windows: `command`, one of the srt-win queries a status is read from,
     /// did not run, exited with `code`, or printed what this build cannot read
@@ -543,7 +546,9 @@ impl fmt::Display for StartError {
                     f,
                     "the sandbox user cannot read this binary, which it runs as the runner; \
                      run `crabpot windows-install` to make the profile read grant, or keep \
-                     crabpot in a folder every user can read"
+                     crabpot in a folder every user can read; a binary moved in from another \
+                     folder keeps its old access list, and `icacls <this binary> /reset` \
+                     re-applies the folder's inherited entries"
                 )
             }
             Self::StatusFailed {
@@ -863,6 +868,14 @@ mod tests {
                 .all(|arg| !arg.to_string_lossy().contains(token)),
             "bwrap's argv is readable from /proc: {wrapped:?}"
         );
+    }
+
+    #[test]
+    fn runner_unreadable_names_the_reset_for_a_moved_binary() {
+        let said = super::StartError::RunnerUnreadable.to_string();
+
+        assert!(said.contains("icacls"), "{said}");
+        assert!(said.contains("/reset"), "{said}");
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]

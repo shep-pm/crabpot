@@ -73,10 +73,12 @@ impl fmt::Display for InstallError {
             Self::CurrentExe(kind) => write!(f, "cannot find this binary: {kind}"),
             Self::RunnerUnreadable(path) => write!(
                 f,
-                "the sandbox user cannot read {}, which it runs as the runner; run \
+                "the sandbox user cannot read {path}, which it runs as the runner; run \
                  windows-install to make the profile read grant, or move crabpot to a folder \
-                 every user can read, such as one under Program Files",
-                path.display()
+                 every user can read, such as one under Program Files; a binary moved in from \
+                 another folder keeps its old access list, and `icacls \"{path}\" /reset` \
+                 re-applies the folder's inherited entries",
+                path = path.display()
             ),
             Self::NotRun(kind) => write!(f, "cannot run srt-win: {kind}"),
             Self::StatusUnreadable => write!(
@@ -706,6 +708,13 @@ mod tests {
             [vec!["install"], vec!["profile", "grant"]],
             "the install and the grant both ran first: the grant is what makes a runner under the profile readable"
         );
+    }
+
+    #[test]
+    fn an_unreadable_runner_names_its_reset() {
+        let said = InstallError::RunnerUnreadable("crabpot.exe".into()).to_string();
+
+        assert!(said.contains(r#"icacls "crabpot.exe" /reset"#), "{said}");
     }
 
     #[test]

@@ -9,7 +9,8 @@
 # the Windows map rewrites a file, or upstream splits it first.
 #
 # `acl.rs` and `cli.rs` grew by the metadata grant, the first change to
-# upstream's behaviour (`crates/crabpot-windows/PATCHES.md`, ADR-0016).
+# upstream's behaviour (`crates/crabpot-windows/PATCHES.md`, ADR-0016), and
+# `logon.rs` by the unreadable-runner check.
 3996 crates/crabpot-windows/srt-win/src/cli.rs
 3887 crates/crabpot-windows/srt-win/src/profile.rs
 3287 crates/crabpot-windows/srt-win/src/profile_plan.rs
@@ -18,4 +19,4 @@
 2012 crates/crabpot-windows/srt-win/src/persist.rs
 1335 crates/crabpot-windows/srt-win/src/probe.rs
 1224 crates/crabpot-windows/srt-win/src/wfp.rs
-1036 crates/crabpot-windows/srt-win/src/logon.rs
+1295 crates/crabpot-windows/srt-win/src/logon.rs

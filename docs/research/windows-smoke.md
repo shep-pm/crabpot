@@ -45,11 +45,28 @@ The install was put back to loopback closed afterwards.
 
 ## The live kelpie worker
 
-Not run: kelpie routes Windows workers through crabpot only once shep-pm/shep-kelpie#1217 lands. #218 holds that run.
+Run on 2026-10-29 for #218, in the desktop session, against shep-pm/kelpie-scratch.
+
+| Run | Build | Result |
+|---|---|---|
+| shep-pm/kelpie-scratch#22 | a kelpie build from before the fixes below | merged as shep-pm/kelpie-scratch#23, with four host stopgaps |
+| shep-pm/kelpie-scratch#24 | kelpie 41dff50, crabpot 0.5.2, shep 0.19.0 | merged as shep-pm/kelpie-scratch#25, with no stopgaps |
+
+The second run went from its worker's turn to a merge ruling in 8 minutes: the worker committed and pushed from a clone with its own git dir, opened the PR, and passed kelpie's review and CI.
+
+Each stopgap of the first run became a fix:
+
+| Stopgap on the VM | Fix |
+|---|---|
+| git identity in the checkout's own config, since the sandbox read no `~\.gitconfig` | #253, in 0.5.2: a host reads the profile grant's `GIT_CONFIG_GLOBAL` and the other config pointers, as upstream exports them. Kelpie sets them (shep-pm/shep-kelpie#1523) |
+| `credential.helper` set to gh in the checkout, since Git for Windows' credential manager hung | shep-pm/shep-kelpie#1511 |
+| `Modify` grants on the checkout's ref folders, so the worker could lock its branch ref | shep-pm/shep-kelpie#1515, shep-pm/shep-kelpie#1516 and shep-pm/shep-kelpie#1517: a worker gets its own clone. Every session runs as one sandbox user, so no grant on a shared `.git` lets a session create a ref lock without letting the others overwrite it |
+| `profile grant` run again for a `~\.gitconfig` made after the grant | none needed: the grant is a snapshot, as the README says |
+
+The second run met one more: `cargo install` builds in `%TEMP%` and moves the binary into `~\.cargo\bin`, so the new binary keeps the temporary folder's access list and misses the grant's inherited entry. Every turn then fails with `RunnerUnreadable`, and running `profile grant` again writes nothing. `icacls <exe> /reset` repairs it (#258, #259).
 
 ## Gaps
 
-- #215: `windows-install` makes no profile read grant, and `Sandbox::start` never refuses an unreadable runner, so crabpot or kelpie under the profile fails with seclogon's message. Blocks the release
-- #216: a full port range reads `cannot start the proxy: other error`. Blocks the release
-- #217: the harness runs more Windows sandboxes at once than the range holds on a machine with more than 5 CPUs
-- #218: the live kelpie worker run, after shep-pm/shep-kelpie#1217
+- #215, #216 and #217 are fixed
+- #258: `RunnerUnreadable` names a repair that cannot fix a binary moved in by `cargo install`
+- #259: an embedder cannot check its runner before a start, so kelpie's doctor passes while every turn fails (shep-pm/shep-kelpie#1530)

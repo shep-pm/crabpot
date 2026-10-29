@@ -63,10 +63,11 @@ Each stopgap of the first run became a fix:
 | `Modify` grants on the checkout's ref folders, so the worker could lock its branch ref | shep-pm/shep-kelpie#1515, shep-pm/shep-kelpie#1516 and shep-pm/shep-kelpie#1517: a worker gets its own clone. Every session runs as one sandbox user, so no grant on a shared `.git` lets a session create a ref lock without letting the others overwrite it |
 | `profile grant` run again for a `~\.gitconfig` made after the grant | none needed: the grant is a snapshot, as the README says |
 
-The second run met one more: `cargo install` builds in `%TEMP%` and moves the binary into `~\.cargo\bin`, so the new binary keeps the temporary folder's access list and misses the grant's inherited entry. Every turn then fails with `RunnerUnreadable`, and running `profile grant` again writes nothing. `icacls <exe> /reset` repairs it (#258, #259).
+The second run met one more: `cargo install` builds in `%TEMP%` and moves the binary into `~\.cargo\bin`, so the new binary keeps the temporary folder's access list and misses the grant's inherited entry. Every turn then fails with `RunnerUnreadable`, and running `profile grant` again writes nothing. `icacls <exe> /reset` repairs it. crabpot 0.5.3 names that repair (#258), and 0.5.4 lets a host check its runner ahead of a start (#259).
+
+A third run, shep-pm/kelpie-scratch#26 on kelpie 1414937 with crabpot 0.5.4, checked the repair path. Straight after `cargo install`, kelpie's doctor reported the unreadable binary with the `icacls` line and exited 1 (shep-pm/shep-kelpie#1530). After the reset it passed, and the worker took the issue through review and CI to a merge as shep-pm/kelpie-scratch#27.
 
 ## Gaps
 
-- #215, #216 and #217 are fixed
-- #258: `RunnerUnreadable` names a repair that cannot fix a binary moved in by `cargo install`
-- #259: an embedder cannot check its runner before a start, so kelpie's doctor passes while every turn fails (shep-pm/shep-kelpie#1530)
+- #215, #216, #217, #258 and #259 are fixed
+- A `cargo install` upgrade still leaves the binary unreadable until `icacls /reset` runs. crabpot and kelpie name the repair, and neither applies it, since it changes a file the user owns

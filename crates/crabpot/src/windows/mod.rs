@@ -34,8 +34,8 @@ use crabpot_core::config::Config;
 #[cfg(windows)]
 pub(crate) use start::Session;
 pub use status::{
-    LoopbackMode, ProfileExclusions, ProfileState, SetupVersion, UserState, WindowsStatus,
-    refusal_for_exit,
+    LoopbackMode, PROFILE_READ_ENV_VARS, ProfileExclusions, ProfileState, SetupVersion, UserState,
+    WindowsStatus, refusal_for_exit,
 };
 
 use crate::StartError;
@@ -218,6 +218,7 @@ mod tests {
             proxy_ports: None,
             profile: ProfileState::Current,
             profile_exclusions: ProfileExclusions::default(),
+            profile_read_env: Vec::new(),
             seclogon_runs: true,
             in_desktop_session: true,
         }

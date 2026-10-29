@@ -340,6 +340,7 @@ mod tests {
             proxy_ports: Some(40000..=40063),
             profile: ProfileState::Current,
             profile_exclusions: ProfileExclusions::default(),
+            profile_read_env: Vec::new(),
             seclogon_runs: true,
             in_desktop_session: true,
         }

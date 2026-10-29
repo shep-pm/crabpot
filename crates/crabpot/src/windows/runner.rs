@@ -36,11 +36,12 @@ impl Runner {
 
     /// Whether the sandbox user can read `exe`, by `exe`'s own access list.
     ///
-    /// The profile read grant writes one entry per path it reaches, so a file's
-    /// list is the record of what the grant opened. Being under the profile is
-    /// not that record: the grant denies its protected exclusions, writes nothing
-    /// in its ungranted-only temporary directory, and reaches no top-level item
-    /// made after it ran.
+    /// The profile read grant puts an inheritable entry on each folder it
+    /// reaches, so a file's list is the record of what the grant opened. Being
+    /// under the profile is not that record: the grant denies its protected
+    /// exclusions, writes nothing in its ungranted-only temporary directory, and
+    /// reaches no top-level item made after it ran. A file moved into a granted
+    /// folder keeps the list it had and inherits nothing from it.
     pub(crate) fn readable(&self) -> bool {
         self.dacl_allows.unwrap_or(true)
     }

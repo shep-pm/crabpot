@@ -7,7 +7,7 @@ Native Rust sandbox runtime for AI agents, rewritten from Anthropic's sandbox-ru
 
 crabpot enforces filesystem and network restrictions on any process at the OS level, without a container. It is a port of [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (`srt`) to Rust, with no Node runtime.
 
-Nothing is implemented yet. The crate on crates.io is a placeholder until the first real release.
+It runs on macOS (`sandbox-exec`), Linux (bubblewrap and seccomp) and Windows (a separate sandbox user behind a WFP fence). Use it as a library, with `Sandbox::start` and then `Sandbox::command`, or as the `crabpot` command, which takes upstream's `-s/--settings`, `-c`, `-d` and `--`.
 
 ## Windows setup
 

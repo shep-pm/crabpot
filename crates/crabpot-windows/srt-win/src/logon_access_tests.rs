@@ -1,16 +1,21 @@
 use super::{
-    dacl_lets_sandbox_read, group_can_read, group_rights, sandbox_can_read, sid_can_read,
-    sid_rights, unreadable_runner,
+    dacl_lets_sandbox_read, denied_by, group_can_read, group_rights, sandbox_can_read,
+    sid_can_read, sid_rights, unreadable_runner,
 };
 use crate::sid::LocalPsid;
 use std::path::Path;
 use windows::Win32::Foundation::{GENERIC_EXECUTE, GENERIC_READ};
 use windows::Win32::Security::{
-    ACE_FLAGS, ACL, ACL_REVISION, AddAccessAllowedAceEx, AddAccessDeniedAceEx, InitializeAcl,
-    WinAuthenticatedUserSid, WinBuiltinUsersSid, WinWorldSid,
+    ACE_FLAGS, ACL, ACL_REVISION, AddAccessAllowedAceEx, AddAccessDeniedAceEx, INHERIT_ONLY_ACE,
+    InitializeAcl, WinAuthenticatedUserSid, WinBuiltinUsersSid, WinWorldSid,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_READ_DATA, FILE_WRITE_DATA,
+    DELETE, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_DATA,
+    FILE_WRITE_DATA, READ_CONTROL, SYNCHRONIZE,
+};
+use windows::Win32::System::SystemServices::{
+    ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, ACCESS_DENIED_CALLBACK_ACE_TYPE,
+    ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE, ACCESS_DENIED_OBJECT_ACE_TYPE,
 };
 
 /// An account-shaped SID that is none of the three groups the check asks.
@@ -26,20 +31,30 @@ const SANDBOX_GROUP: &str = "S-1-5-21-1-2-3-1002";
 const READ_EXEC: u32 = FILE_GENERIC_READ.0 | FILE_GENERIC_EXECUTE.0;
 
 /// A DACL held in memory words, so no test asks about a file of the machine
-/// it runs on. Each entry is `(deny, mask, SID string)`.
+/// it runs on. Each entry is `(deny, mask, SID string)`, applying to the
+/// object itself.
 fn dacl(aces: &[(bool, u32, &str)]) -> Vec<u32> {
+    let aces: Vec<_> = aces
+        .iter()
+        .map(|&(deny, mask, sid)| (deny, mask, sid, ACE_FLAGS(0)))
+        .collect();
+    dacl_with_flags(&aces)
+}
+
+/// [`dacl`] with each entry's ACE flags: `(deny, mask, SID string, flags)`.
+fn dacl_with_flags(aces: &[(bool, u32, &str, ACE_FLAGS)]) -> Vec<u32> {
     // Words, because an ACL and an ACE are 4-byte aligned, and 1024 bytes
     // is more than these few ACEs need.
     let mut buf = vec![0u32; 256];
     let acl: *mut ACL = buf.as_mut_ptr().cast();
     unsafe { InitializeAcl(acl, 1024, ACL_REVISION) }.unwrap();
-    for (deny, mask, sid) in aces {
+    for (deny, mask, sid, flags) in aces {
         let psid = LocalPsid::from_string(sid).unwrap();
         unsafe {
             if *deny {
-                AddAccessDeniedAceEx(acl, ACL_REVISION, ACE_FLAGS(0), *mask, psid.as_psid())
+                AddAccessDeniedAceEx(acl, ACL_REVISION, *flags, *mask, psid.as_psid())
             } else {
-                AddAccessAllowedAceEx(acl, ACL_REVISION, ACE_FLAGS(0), *mask, psid.as_psid())
+                AddAccessAllowedAceEx(acl, ACL_REVISION, *flags, *mask, psid.as_psid())
             }
         }
         .unwrap();
@@ -194,6 +209,111 @@ fn a_deny_for_another_account_leaves_a_grant_to_users_standing() {
 }
 
 /// A name with an unpaired surrogate is valid on NTFS and is not UTF-8.
+#[test]
+fn a_deny_that_only_children_inherit_does_not_apply_to_the_runner() {
+    let buf = dacl_with_flags(&[
+        (true, READ_EXEC, SANDBOX_USER, INHERIT_ONLY_ACE),
+        (false, READ_EXEC, EVERYONE, ACE_FLAGS(0)),
+    ]);
+    let dacl = buf.as_ptr().cast::<ACL>();
+
+    assert!(dacl_lets_sandbox_read(dacl, &[SANDBOX_USER, SANDBOX_GROUP]));
+}
+
+/// Denying `SYNCHRONIZE` blocks any synchronous open, a read included.
+#[test]
+fn a_deny_of_synchronize_alone_takes_a_grant_to_users_back() {
+    let buf = dacl(&[
+        (true, SYNCHRONIZE.0, SANDBOX_GROUP),
+        (false, READ_EXEC, USERS),
+    ]);
+    let dacl = buf.as_ptr().cast::<ACL>();
+
+    assert!(!dacl_lets_sandbox_read(
+        dacl,
+        &[SANDBOX_USER, SANDBOX_GROUP]
+    ));
+}
+
+#[test]
+fn a_deny_in_generic_read_takes_a_grant_to_users_back() {
+    let buf = dacl(&[
+        (true, GENERIC_READ.0, SANDBOX_USER),
+        (false, READ_EXEC, USERS),
+    ]);
+    let dacl = buf.as_ptr().cast::<ACL>();
+
+    assert!(!dacl_lets_sandbox_read(
+        dacl,
+        &[SANDBOX_USER, SANDBOX_GROUP]
+    ));
+}
+
+/// What srt-win writes for `denyWrite`: generic write without the two rights
+/// that would also block a read, plus delete.
+#[test]
+fn the_write_deny_srt_win_writes_leaves_a_grant_to_users_standing() {
+    let write_deny = FILE_GENERIC_WRITE.0 & !(SYNCHRONIZE.0 | READ_CONTROL.0) | DELETE.0;
+    let buf = dacl(&[(true, write_deny, SANDBOX_USER), (false, READ_EXEC, USERS)]);
+    let dacl = buf.as_ptr().cast::<ACL>();
+
+    assert!(dacl_lets_sandbox_read(dacl, &[SANDBOX_USER, SANDBOX_GROUP]));
+}
+
+/// A token holding Users is granted by an allow that comes before the deny.
+#[test]
+fn a_deny_after_a_grant_to_users_does_not_take_it_back() {
+    let buf = dacl(&[(false, READ_EXEC, USERS), (true, READ_EXEC, SANDBOX_USER)]);
+    let dacl = buf.as_ptr().cast::<ACL>();
+
+    assert!(dacl_lets_sandbox_read(dacl, &[SANDBOX_USER, SANDBOX_GROUP]));
+}
+
+/// The ACE bytes after the header: mask, then (object ACEs) a flags word, then
+/// the SID.
+fn ace_body(mask: u32, object_flags: Option<u32>, sid: &[u8]) -> Vec<u8> {
+    let mut body = vec![0u8; 4];
+    body.extend(mask.to_le_bytes());
+    body.extend(object_flags.map_or(Vec::new(), |f| f.to_le_bytes().to_vec()));
+    body.extend(sid);
+    body
+}
+
+#[test]
+fn every_deny_layout_that_applies_to_a_file_yields_its_mask_and_sid() {
+    let sid = [1u8, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+    let plain = ace_body(0x20, None, &sid);
+    let object = ace_body(0x20, Some(0), &sid);
+
+    for ace_type in [ACCESS_DENIED_ACE_TYPE, ACCESS_DENIED_CALLBACK_ACE_TYPE] {
+        assert_eq!(denied_by(ace_type, &plain), Some((0x20, &sid[..])));
+    }
+    for ace_type in [
+        ACCESS_DENIED_OBJECT_ACE_TYPE,
+        ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE,
+    ] {
+        assert_eq!(denied_by(ace_type, &object), Some((0x20, &sid[..])));
+    }
+}
+
+#[test]
+fn an_object_deny_for_an_object_type_does_not_apply_to_a_file() {
+    let sid = [1u8, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+    let typed = ace_body(0x20, Some(1), &sid);
+
+    assert_eq!(denied_by(ACCESS_DENIED_OBJECT_ACE_TYPE, &typed), None);
+}
+
+#[test]
+fn an_allow_is_no_deny() {
+    let sid = [1u8, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+
+    assert_eq!(
+        denied_by(ACCESS_ALLOWED_ACE_TYPE, &ace_body(0x20, None, &sid)),
+        None
+    );
+}
+
 #[test]
 fn a_path_that_is_not_utf8_is_still_checked() {
     use std::ffi::OsString;

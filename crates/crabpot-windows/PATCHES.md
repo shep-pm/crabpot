@@ -74,15 +74,18 @@ running", though seclogon is running.
 - `sandbox_can_read(path, sandbox)`: whether the file's own DACL grants read and
   execute to Users, Authenticated Users, Everyone or one of `sandbox` (the
   sandbox account's SID and its group's SID). `Some(false)` when a deny ACE for
-  one of `sandbox` covers read or execute, whatever the groups are granted,
-  since srt-win writes that deny on every `denyRead` path. `None` when the DACL
-  cannot be read. A deny for some other group the sandbox user holds is not
-  seen, so `Some(true)` can still be a false yes and only `Some(false)` is
-  acted on. It reads the DACL with `GetNamedSecurityInfoW` on the path's UTF-16
-  form, so a path that is not UTF-8 is still checked, finds the deny with
-  `acl::filter_aces` (an inherit-only ACE is skipped) and asks
-  `GetEffectiveRightsFromAclW` per trustee, so a deny ACE takes rights back and
-  an ACE written in generic rights answers as nothing.
+  one of `sandbox` asks a right of `FILE_GENERIC_READ` or `FILE_GENERIC_EXECUTE`
+  (`SYNCHRONIZE` and `READ_CONTROL` among them, with the generic bits mapped)
+  that no earlier allow ACE for a SID the sandbox token holds has granted,
+  since srt-win writes that deny on every `denyRead` path. The DACL is read in
+  order with `acl::filter_aces`; an inherit-only ACE is skipped; plain and
+  callback deny ACEs count, and object deny ACEs that name no object type. `None`
+  when the DACL cannot be read. A deny for some other group the sandbox user
+  holds is not seen, so `Some(true)` can still be a false yes and only
+  `Some(false)` is acted on. It reads the DACL with `GetNamedSecurityInfoW` on
+  the path's UTF-16 form, so a path that is not UTF-8 is still checked, and asks
+  `GetEffectiveRightsFromAclW` per trustee, so an ACE written in generic rights
+  answers as nothing.
 - `spawn_runner`: after the `ERROR_LOGON_FAILURE`, `ERROR_DIRECTORY` and seclogon
   arms and before the generic message, an `E_ACCESSDENIED` with
   `sandbox_can_read(current_exe, [sb_sid, sandbox group SID]) == Some(false)`
@@ -95,7 +98,8 @@ running", though seclogon is running.
   its file-size baseline.
 - Unit tests pin the answers for a grant to one account, to Everyone, a deny
   for the account or its group over a grant to Everyone or Users, a deny of
-  write alone, a path that is not UTF-8, generic rights, read without execute
+  write alone or of `SYNCHRONIZE` alone, an inherit-only deny, a deny after a
+  grant to Users, the deny layouts, a path that is not UTF-8, generic rights, read without execute
   and a string that is no SID, and that the message names the executable and
   not seclogon.
 

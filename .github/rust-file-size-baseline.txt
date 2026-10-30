@@ -19,4 +19,4 @@
 2012 crates/crabpot-windows/srt-win/src/persist.rs
 1335 crates/crabpot-windows/srt-win/src/probe.rs
 1224 crates/crabpot-windows/srt-win/src/wfp.rs
-1188 crates/crabpot-windows/srt-win/src/logon.rs
+1297 crates/crabpot-windows/srt-win/src/logon.rs

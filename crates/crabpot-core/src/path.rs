@@ -86,7 +86,7 @@ impl PathBase {
 
     /// This base with `tmpdir` as its temp folder, none when the chosen one is
     /// not text.
-    pub(crate) fn with_tmpdir(mut self, tmpdir: Option<String>) -> Self {
+    pub fn with_tmpdir(mut self, tmpdir: Option<String>) -> Self {
         self.tmpdir = tmpdir;
         self
     }

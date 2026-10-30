@@ -9,7 +9,7 @@
 use crabpot_core::config::Config;
 use crabpot_core::PathError;
 use crabpot_core::paths::{
-    ListKind, PathBase, default_write_paths, remove_trailing_glob_suffix, split_path_entries,
+    ListKind, PathBase, default_write_roots, remove_trailing_glob_suffix, split_path_entries,
 };
 
 use super::filter::{Entry, caller_entries};
@@ -30,14 +30,20 @@ pub(super) fn roots(config: &Config, base: &PathBase) -> Result<Vec<Entry>, Path
     let split = split_path_entries(&config.filesystem.allow_write);
     // A trailing `/**` says "the directory and all under it", which a subpath
     // already does. A glob that still is one is kept: only Linux drops it.
-    let mut allow_only = default_write_paths(base, config)?;
+    let defaults = default_write_roots(base, config)?;
+    let mut allow_only = defaults.spelled;
     allow_only.extend(
         split
             .spelled
             .into_iter()
             .map(remove_trailing_glob_suffix),
     );
-    let marked: Vec<String> = split.marked.into_iter().map(str::to_owned).collect();
+    // The chosen temp folder is a name, whatever characters it holds.
+    let marked: Vec<String> = defaults
+        .tmpdir
+        .into_iter()
+        .chain(split.marked.into_iter().map(str::to_owned))
+        .collect();
     caller_entries(base, ListKind::Allow, &allow_only, &marked)
 }
 
@@ -110,6 +116,16 @@ mod tests {
                 r#"(subpath "/crabpot-test-work/other")"#,
             ]
         );
+    }
+
+    #[test]
+    fn a_chosen_tmpdir_with_glob_characters_is_a_name() {
+        let base = base().with_tmpdir(Some("/crabpot-test-tmp/session*".to_owned()));
+
+        let filters = root_filters(&Config::default(), &base).unwrap();
+
+        assert!(filters.contains(&r#"(subpath "/crabpot-test-tmp/session*")"#.to_owned()));
+        assert!(!filters.iter().any(|filter| filter.starts_with("(regex")));
     }
 
     #[test]

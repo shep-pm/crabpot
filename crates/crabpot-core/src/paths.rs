@@ -16,4 +16,4 @@ pub use crate::path_entries::{
     ListKind, PathReading, ReadRules, SplitEntries, literal_readings, read_rules_of,
     split_path_entries,
 };
-pub use crate::write_paths::default_write_paths;
+pub use crate::write_paths::{DefaultWriteRoots, default_write_paths, default_write_roots};

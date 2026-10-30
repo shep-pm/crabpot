@@ -36,6 +36,18 @@ const OWN_ROOTS: [&str; 8] = [
 /// Folders under the home directory made writable as a convenience.
 const HOME_DIRS: [&str; 2] = [".npm/_logs", ".claude/debug"];
 
+/// The default write roots, with the chosen temp folder apart from the rest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultWriteRoots {
+    /// The roots that are spellings: the sandbox's own devices and temp
+    /// folders, then the home folders.
+    pub spelled: Vec<String>,
+    /// The temp folder the host chose, resolved. It is a name whatever it
+    /// holds, so `*` in it is no pattern. None when it is already one of the
+    /// roots, or is not text.
+    pub tmpdir: Option<String>,
+}
+
 /// The default write roots under `config`'s read rules.
 ///
 /// # Errors
@@ -43,6 +55,26 @@ const HOME_DIRS: [&str; 2] = [".npm/_logs", ".claude/debug"];
 /// [`PathError`] when the home directory is unknown, or a read entry needs a
 /// working directory and there is none.
 pub fn default_write_paths(base: &PathBase, config: &Config) -> Result<Vec<String>, PathError> {
+    let DefaultWriteRoots {
+        mut spelled,
+        tmpdir,
+    } = default_write_roots(base, config)?;
+    if let Some(tmpdir) = tmpdir {
+        spelled.insert(OWN_ROOTS.len(), tmpdir);
+    }
+    Ok(spelled)
+}
+
+/// [`default_write_paths`], with the chosen temp folder told apart so a caller
+/// that reads spellings as patterns can take it as a name.
+///
+/// # Errors
+///
+/// [`PathError`] as [`default_write_paths`].
+pub fn default_write_roots(
+    base: &PathBase,
+    config: &Config,
+) -> Result<DefaultWriteRoots, PathError> {
     let home = base.home()?;
     let filesystem = &config.filesystem;
     let rules = read_rules_of(
@@ -61,15 +93,16 @@ pub fn default_write_paths(base: &PathBase, config: &Config) -> Result<Vec<Strin
             rules.allow_read.as_deref().unwrap_or_default(),
         )?
     };
-    let mut roots: Vec<String> = OWN_ROOTS.iter().map(|root| (*root).to_owned()).collect();
-    if let Some(chosen) = base.tmpdir() {
-        let resolved = normalize_path_for_sandbox(base, chosen, true)?;
-        if !roots.contains(&resolved) {
-            roots.push(resolved);
+    let mut spelled: Vec<String> = OWN_ROOTS.iter().map(|root| (*root).to_owned()).collect();
+    let tmpdir = match base.tmpdir() {
+        Some(chosen) => {
+            let resolved = normalize_path_for_sandbox(base, chosen, true)?;
+            (!spelled.contains(&resolved)).then_some(resolved)
         }
-    }
-    roots.extend(kept.into_iter().map(|dir| join(home, dir)));
-    Ok(roots)
+        None => None,
+    };
+    spelled.extend(kept.into_iter().map(|dir| join(home, dir)));
+    Ok(DefaultWriteRoots { spelled, tmpdir })
 }
 
 fn join(home: &str, dir: &str) -> String {

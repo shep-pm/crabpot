@@ -75,9 +75,10 @@ running", though seclogon is running.
   execute to Users, Authenticated Users, Everyone or one of `sandbox` (the
   sandbox account's SID and its group's SID). `None` when the DACL cannot be
   read or the path is not UTF-8. A group grant counts as held whatever else the
-  DACL denies the sandbox user, so only `Some(false)` is acted on. It reads the DACL with `acl::read_file_dacl` and asks
-  `GetEffectiveRightsFromAclW` per trustee, so a deny ACE takes rights back and
-  an ACE written in generic rights answers as nothing.
+  DACL denies the sandbox user, so only `Some(false)` is acted on. It reads the
+  DACL with `acl::read_file_dacl` and asks `GetEffectiveRightsFromAclW` per
+  trustee, so a deny ACE takes rights back and an ACE written in generic rights
+  answers as nothing.
 - `spawn_runner`: after the `ERROR_LOGON_FAILURE`, `ERROR_DIRECTORY` and seclogon
   arms and before the generic message, an `E_ACCESSDENIED` with
   `sandbox_can_read(current_exe, [sb_sid, sandbox group SID]) == Some(false)`
@@ -91,6 +92,29 @@ running", though seclogon is running.
 
 Reason: the message sent the maintainer to a service that was running. Every
 other failure arm and message, and every exit code, is unchanged.
+
+## `srt-win/src/winsta.rs`: no session folder grant from session 0
+
+From session 0 (ssh, a "run whether logged on or not" task) every launch failed
+before the runner started: `grant_sandbox_on_session_bno` opened
+`\Sessions\0\BaseNamedObjects`, which does not exist, and got
+`NTSTATUS 0xC0000034`.
+
+- `grant_sandbox_on_session_bno` returns `Ok(())` without opening anything when
+  the broker runs in session 0.
+- `broker_session` wraps `ProcessIdToSessionId` and is read once.
+  `open_session_bno` takes the path as an argument instead of reading the
+  session itself.
+- `session_bno_path` is pure: `None` for session 0,
+  `\Sessions\<ts>\BaseNamedObjects` otherwise. Two unit tests pin it.
+- The module doc's "Session BNO" paragraph says so.
+
+Reason: session 0's named objects live in the global `\BaseNamedObjects`. That
+folder is shared by every service and only SYSTEM and Administrators can write
+its DACL, so it must not be granted. It needs no grant: its DACL already gives
+Everyone `QUERY | TRAVERSE | CREATE_OBJECT | CREATE_SUBDIRECTORY` (`0x2000F`),
+and the lockdown token keeps Everyone enabled, so msys2's per-DLL subdirectory
+can be made there. This patch goes upstream with #166.
 
 ## Not copied
 

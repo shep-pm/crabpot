@@ -145,7 +145,7 @@ pub struct Serve {
 }
 
 /// A case file, with `$ROOT` expanded.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Case {
     /// Files to create before the probes run, with their contents.
     pub files: Vec<(PathBuf, String)>,
@@ -169,6 +169,33 @@ pub struct Case {
     /// it means nothing elsewhere, as a `denyMachLookup` case does. An empty
     /// list means every platform.
     pub platforms: Vec<Platform>,
+}
+
+/// The names of a case's `env` with every value hidden, which is how a case
+/// prints: the values are the host's environment and may carry a secret.
+struct Redacted<'a>(&'a Env);
+
+impl core::fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_map()
+            .entries(self.0.keys().map(|name| (name, "<redacted>")))
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for Case {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Case")
+            .field("files", &self.files)
+            .field("settings", &self.settings)
+            .field("refused", &self.refused)
+            .field("serve", &self.serve)
+            .field("env", &Redacted(&self.env))
+            .field("probes", &self.probes)
+            .field("upstream", &self.upstream)
+            .field("platforms", &self.platforms)
+            .finish()
+    }
 }
 
 /// Why a case file is not a case.
@@ -708,6 +735,25 @@ mod tests {
     }
 
     #[test]
+    fn a_case_prints_the_names_of_its_env_and_not_the_values() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "env": {"API_KEY": "hunter2"},
+            "probes": []
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+
+        let printed = format!("{case:?}");
+
+        assert!(
+            printed.contains(r#"env: {"API_KEY": "<redacted>"}"#),
+            "{printed}"
+        );
+        assert!(!printed.contains("hunter2"), "{printed}");
+    }
+
+    #[test]
     fn an_env_must_be_an_object_of_strings() {
         for env in ["[]", r#""A=b""#, r#"{"A": 1}"#, r#"{"A": null}"#] {
             let text =
@@ -925,12 +971,18 @@ mod tests {
             // A probe cannot tell a missing folder from a refusal, so one
             // that lands in a folder the case never made exits 2. A folder the
             // case's `env` names is one the sandbox's wrapper makes.
+            // The folder the sandbox sets `TMPDIR` to: `CLAUDE_CODE_TMPDIR`,
+            // else `CLAUDE_TMPDIR`.
+            let tmpdir = case
+                .env
+                .get("CLAUDE_CODE_TMPDIR")
+                .or_else(|| case.env.get("CLAUDE_TMPDIR"));
             let lands = |target: &str| match Path::new(target).parent() {
                 Some(parent) => {
                     !target.starts_with("/r/")
                         || folders.contains(parent)
                         || parent == Path::new("/r")
-                        || case.env.values().any(|set| Path::new(set) == parent)
+                        || tmpdir.is_some_and(|set| Path::new(set) == parent)
                 }
                 None => true,
             };

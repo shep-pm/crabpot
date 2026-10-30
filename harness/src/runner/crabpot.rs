@@ -47,11 +47,41 @@ impl Crabpot {
             .arg(settings)
             .arg("--")
             .arg(&self.probe)
-            .args(probe.args())
+            .args(probe.args());
+        // The case's env goes first, so it cannot move the case root `HOME`
+        // names.
+        export_env(&mut command, env);
+        command
             .env("HOME", home(settings))
             .current_dir(home(settings));
-        export_env(&mut command, env);
         export_harness_pid(&mut command);
         command
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::*;
+
+    #[test]
+    fn the_case_cannot_move_the_home_the_wrapper_runs_in() {
+        let env = Env::from([
+            ("HOME".to_owned(), "/elsewhere".to_owned()),
+            ("CLAUDE_CODE_TMPDIR".to_owned(), "/r/fresh".to_owned()),
+        ]);
+
+        let command =
+            Crabpot::new("probe").command(Path::new("/r/settings.json"), &Probe::Bind, &env);
+
+        let set = |name: &str| {
+            command
+                .get_envs()
+                .find(|(set, _)| *set == OsStr::new(name))
+                .and_then(|(_, value)| value)
+        };
+        assert_eq!(set("HOME"), Some(OsStr::new("/r")));
+        assert_eq!(set("CLAUDE_CODE_TMPDIR"), Some(OsStr::new("/r/fresh")));
     }
 }

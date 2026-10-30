@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::case::Probe;
+use crate::case::{Env, Probe};
 
-use super::wrapper::{exit_code, export_harness_pid, refusal};
+use super::wrapper::{exit_code, export_env, export_harness_pid, refusal};
 use super::{Error, Runner, home};
 
 /// Upstream's `srt`, from the npm package pinned in `harness/package.json`.
@@ -83,17 +83,17 @@ impl Runner for Upstream {
         "upstream"
     }
 
-    fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error> {
-        exit_code(self.command(settings, probe), self.name())
+    fn run(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<u8, Error> {
+        exit_code(self.command(settings, probe, env), self.name())
     }
 
-    fn refuses(&self, settings: &Path, probe: &Probe) -> Result<bool, Error> {
-        refusal(self.command(settings, probe), self.name())
+    fn refuses(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<bool, Error> {
+        refusal(self.command(settings, probe, env), self.name())
     }
 }
 
 impl Upstream {
-    pub(super) fn command(&self, settings: &Path, probe: &Probe) -> Command {
+    pub(super) fn command(&self, settings: &Path, probe: &Probe, env: &Env) -> Command {
         let mut command = Command::new("node");
         command
             .arg(&self.cli)
@@ -104,6 +104,7 @@ impl Upstream {
             .args(probe.args())
             .env("HOME", home(settings))
             .current_dir(home(settings));
+        export_env(&mut command, env);
         export_harness_pid(&mut command);
         command
     }

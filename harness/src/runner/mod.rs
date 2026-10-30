@@ -31,7 +31,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 use serde_json::Value;
 
-use crate::case::{self, Case, Endpoint, Platform, Probe};
+use crate::case::{self, Case, Endpoint, Env, Platform, Probe};
 use crate::probe;
 use crate::serve;
 
@@ -40,21 +40,22 @@ pub trait Runner {
     /// Who the runner is, for a failure's message.
     fn name(&self) -> &'static str;
 
-    /// Runs `probe` under the settings file at `settings`.
+    /// Runs `probe` under the settings file at `settings`, with `env` set on
+    /// the wrapper beside the harness's own variables.
     ///
     /// # Errors
     ///
     /// An [`Error`] when the probe cannot be run or does not end with a code.
-    fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error>;
+    fn run(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<u8, Error>;
 
     /// Whether the wrapper refuses the settings at `settings`: it exits 1
-    /// without running `probe`.
+    /// without running `probe`. `env` is set on the wrapper as for [`Runner::run`].
     ///
     /// # Errors
     ///
     /// An [`Error`] when the wrapper cannot be run, or exits with a status
     /// other than 1 without its probe reporting one.
-    fn refuses(&self, settings: &Path, probe: &Probe) -> Result<bool, Error>;
+    fn refuses(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<bool, Error>;
 }
 
 /// Why a case failed or could not be run.
@@ -367,7 +368,7 @@ pub fn expect(
     for probe in &case.probes {
         restore()?;
         let _served = serve(probe, settings)?;
-        let got = code(runner, settings, probe, false)?;
+        let got = code(runner, settings, probe, &case.env, false)?;
         if got != expected {
             return Err(Error::Unexpected {
                 runner: runner.name(),
@@ -395,7 +396,8 @@ pub fn expect(
 /// A probe that reported a code and still could not tell what the sandbox did
 /// ([`probe::ERROR`]) fails a comparison, which is what a code is for. The
 /// exception is a read of a file the case made: a read deny hides it, so the
-/// code is the answer there and the runners must still give the same one. With one
+/// code is the answer there and the runners must still give the same one. So is
+/// a probe the case records upstream as giving that code. With one
 /// runner there is nothing to compare the answer with, so the answer is the
 /// finding and the run reports it and goes on: upstream's bwrap path answers a
 /// read deny by mounting an empty tmpfs over the denied folder, and a probe of
@@ -407,14 +409,18 @@ fn run_probes(
     runners: &[&dyn Runner],
 ) -> Result<(), Error> {
     let compare = runners.len() > 1;
-    for probe in &case.probes {
+    for (index, probe) in case.probes.iter().enumerate() {
         let mut codes = Vec::with_capacity(runners.len());
-        for runner in runners {
+        let recorded = case.upstream_exit(index);
+        for (position, runner) in runners.iter().enumerate() {
             restore()?;
-            let strict = compare && !hidden_by_a_deny(case, probe);
+            // Upstream is the first runner, and a case may record that its
+            // probe could not tell: a write into a folder only crabpot makes.
+            let recorded_error = position == 0 && recorded == Some(probe::ERROR);
+            let strict = compare && !hidden_by_a_deny(case, probe) && !recorded_error;
             let outcome = {
                 let _served = serve(probe, settings)?;
-                code(*runner, settings, probe, strict)?
+                code(*runner, settings, probe, &case.env, strict)?
             };
             if outcome == probe::ERROR {
                 eprintln!(
@@ -430,7 +436,7 @@ fn run_probes(
             // One runner alone has nothing to agree with.
             continue;
         };
-        if let Some(recorded) = probe.upstream_exit() {
+        if let Some(recorded) = recorded {
             if upstream != recorded {
                 return Err(Error::Changed {
                     probe: probe.clone(),
@@ -532,7 +538,7 @@ fn run_refusals(
     for probe in &case.probes {
         for runner in runners {
             restore()?;
-            if !gated(|| runner.refuses(settings, probe))? || written(probe) {
+            if !gated(|| runner.refuses(settings, probe, &case.env))? || written(probe) {
                 return Err(Error::NotRefused {
                     runner: runner.name(),
                     probe: probe.clone(),
@@ -560,8 +566,14 @@ fn hidden_by_a_deny(case: &Case, probe: &Probe) -> bool {
 /// `strict`: where its answer is compared with another runner's and is not one a
 /// read deny gives. Otherwise the code is the answer, and a runner that gave
 /// another still differs.
-fn code(runner: &dyn Runner, settings: &Path, probe: &Probe, strict: bool) -> Result<u8, Error> {
-    let outcome = gated(|| runner.run(settings, probe))?;
+fn code(
+    runner: &dyn Runner,
+    settings: &Path,
+    probe: &Probe,
+    env: &Env,
+    strict: bool,
+) -> Result<u8, Error> {
+    let outcome = gated(|| runner.run(settings, probe, env))?;
     if strict && outcome == probe::ERROR {
         return Err(Error::Erred {
             runner: runner.name(),

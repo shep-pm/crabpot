@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::case::Probe;
+use crate::case::{Env, Probe};
 
-use super::wrapper::{exit_code, export_harness_pid, refusal};
+use super::wrapper::{exit_code, export_env, export_harness_pid, refusal};
 use super::{Error, Runner, home};
 
 /// crabpot, through the `probe` binary in multicall: it calls
@@ -29,17 +29,17 @@ impl Runner for Crabpot {
         "crabpot"
     }
 
-    fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error> {
-        exit_code(self.command(settings, probe), self.name())
+    fn run(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<u8, Error> {
+        exit_code(self.command(settings, probe, env), self.name())
     }
 
-    fn refuses(&self, settings: &Path, probe: &Probe) -> Result<bool, Error> {
-        refusal(self.command(settings, probe), self.name())
+    fn refuses(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<bool, Error> {
+        refusal(self.command(settings, probe, env), self.name())
     }
 }
 
 impl Crabpot {
-    fn command(&self, settings: &Path, probe: &Probe) -> Command {
+    fn command(&self, settings: &Path, probe: &Probe, env: &Env) -> Command {
         let mut command = Command::new(&self.probe);
         command
             .arg("--crabpot")
@@ -50,6 +50,7 @@ impl Crabpot {
             .args(probe.args())
             .env("HOME", home(settings))
             .current_dir(home(settings));
+        export_env(&mut command, env);
         export_harness_pid(&mut command);
         command
     }

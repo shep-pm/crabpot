@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crabpot_harness::case::{Family, Probe};
+use crabpot_harness::case::{Env, Family, Probe};
 use crabpot_harness::probe;
 use crabpot_harness::runner::{Crabpot, Runner};
 
@@ -26,7 +26,7 @@ fn under_crabpot(name: &str, probe: &Probe) -> u8 {
     let settings = home.join("settings.json");
     fs::write(&settings, SETTINGS).unwrap();
     Crabpot::new(env!("CARGO_BIN_EXE_probe"))
-        .run(&settings, probe)
+        .run(&settings, probe, &Env::new())
         .unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 

@@ -1,5 +1,6 @@
 //! A case: the files, settings and probes one differential run is made of.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -52,25 +53,16 @@ pub enum Probe {
     PsOutside,
     /// Pass the program an argument that holds a backslash, and report whether
     /// it arrived as written. Upstream's Windows runner wraps such an argument
-    /// in single quotes, so `upstream` is the code it is known to give, which
-    /// crabpot must not.
+    /// in single quotes, so its case records the code upstream is known to
+    /// give, which crabpot must not.
     BackslashArgument {
         /// The argument, which holds a backslash.
         value: String,
-        /// The code upstream's runner gives, recorded as the difference.
-        upstream: u8,
     },
 }
 
-impl Probe {
-    /// The code upstream is known to give where crabpot differs on purpose.
-    pub fn upstream_exit(&self) -> Option<u8> {
-        match self {
-            Self::BackslashArgument { upstream, .. } => Some(*upstream),
-            _ => None,
-        }
-    }
-}
+/// The host environment a case's wrappers run under, names to values.
+pub type Env = BTreeMap<String, String>;
 
 /// The address family of a `socket` probe: the two a Linux sandbox refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,8 +158,13 @@ pub struct Case {
     pub refused: bool,
     /// A socket the harness serves for the probes to reach.
     pub serve: Option<Serve>,
+    /// The host environment both wrappers run under, set beside `HOME`.
+    pub env: Env,
     /// The probes, in order.
     pub probes: Vec<Probe>,
+    /// The code upstream is known to give each probe, where crabpot differs on
+    /// purpose, in the order of `probes`. A probe past the end has none.
+    pub upstream: Vec<Option<u8>>,
     /// The platforms the case means something on. A case names one only when
     /// it means nothing elsewhere, as a `denyMachLookup` case does. An empty
     /// list means every platform.
@@ -214,7 +211,8 @@ impl Case {
     ///
     /// [`Error::Json`] when `text` is not JSON, [`Error::Shape`] when `files`,
     /// `settings`, `serve` or `probes` is missing or has the wrong type, as is a `refused`
-    /// that is not a boolean, and
+    /// that is not a boolean, an `env` that is not an object of strings, or a
+    /// probe's `upstream` that does not fit 8 bits, and
     /// [`Error::UnknownProbe`] when a probe's `kind` is not one this harness knows,
     /// and [`Error::UnknownPlatform`] when a `platforms` entry names a platform
     /// this harness does not run on.
@@ -286,21 +284,46 @@ impl Case {
                 ));
             }
         };
-        let probes = match take("probes")? {
-            Value::Array(probes) => probes
-                .iter()
-                .map(Probe::from_value)
+        let env = match take("env") {
+            Err(_) => Env::new(),
+            Ok(Value::Object(members)) => members
+                .into_iter()
+                .map(|(name, value)| match value {
+                    Value::String(value) => Ok((name, value)),
+                    _ => Err(Error::Shape(format!(
+                        "an `env` whose {name:?} is not a string"
+                    ))),
+                })
                 .collect::<Result<_, _>>()?,
-            _ => return Err(Error::Shape("a `probes` that is not an array".to_owned())),
+            Ok(_) => return Err(Error::Shape("an `env` that is not an object".to_owned())),
         };
+        let Value::Array(listed) = take("probes")? else {
+            return Err(Error::Shape("a `probes` that is not an array".to_owned()));
+        };
+        let probes = listed
+            .iter()
+            .map(Probe::from_value)
+            .collect::<Result<_, _>>()?;
+        let upstream = listed
+            .iter()
+            .map(upstream_exit_of)
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             files,
             settings,
             refused,
             serve,
+            env,
             probes,
+            upstream,
             platforms,
         })
+    }
+
+    /// The code upstream is known to give the probe at `index` where crabpot
+    /// differs on purpose, if its case records one.
+    pub fn upstream_exit(&self, index: usize) -> Option<u8> {
+        self.upstream.get(index).copied().flatten()
     }
 
     /// Whether the case means `platform`. One that names no platform means
@@ -315,6 +338,20 @@ impl Case {
     pub fn allows_loopback(&self) -> bool {
         self.settings["network"]["allowLocalBinding"] == Value::Bool(true)
     }
+}
+
+/// The `upstream` a probe's object records, which any kind of probe may carry.
+fn upstream_exit_of(probe: &Value) -> Result<Option<u8>, Error> {
+    probe
+        .get("upstream")
+        .map(|code| {
+            code.as_u64()
+                .and_then(|code| u8::try_from(code).ok())
+                .ok_or_else(|| {
+                    Error::Shape("a probe with an `upstream` that does not fit 8 bits".to_owned())
+                })
+        })
+        .transpose()
 }
 
 /// The named pipe a case may serve, which is named for its root's folder so
@@ -431,12 +468,6 @@ impl Probe {
             "ps-outside" => Ok(Self::PsOutside),
             "backslash-argument" => Ok(Self::BackslashArgument {
                 value: text("value")?,
-                upstream: field("upstream")
-                    .and_then(Value::as_u64)
-                    .and_then(|code| u8::try_from(code).ok())
-                    .ok_or_else(|| {
-                        Error::Shape("a probe without an `upstream` that fits 8 bits".to_owned())
-                    })?,
             }),
             _ => Err(Error::UnknownProbe(kind)),
         }
@@ -585,8 +616,8 @@ mod tests {
         );
     }
 
-    /// A backslash-argument probe records the code upstream gives, which is
-    /// the difference the case pins.
+    /// A backslash-argument probe is known to give a code under upstream, which
+    /// is the difference the case pins.
     #[test]
     fn a_backslash_argument_probe_records_the_code_upstream_gives() {
         let text = r#"{
@@ -603,28 +634,87 @@ mod tests {
             *probe,
             Probe::BackslashArgument {
                 value: r"C:\work".to_owned(),
-                upstream: 1,
             }
         );
         assert_eq!(
             probe.args(),
             ["backslash-argument", r"C:\work", "433a5c776f726b"]
         );
-        assert_eq!(probe.upstream_exit(), Some(1));
-        assert_eq!(Probe::Bind.upstream_exit(), None);
+        assert_eq!(case.upstream_exit(0), Some(1));
     }
 
     #[test]
-    fn a_backslash_argument_probe_needs_a_value_and_a_code_upstream_gives() {
-        for probe in [
-            r#"{"kind": "backslash-argument", "upstream": 1}"#,
-            r#"{"kind": "backslash-argument", "value": "C:\\work"}"#,
-            r#"{"kind": "backslash-argument", "value": "C:\\work", "upstream": 256}"#,
-        ] {
-            let text = format!(r#"{{"files": {{}}, "settings": {{}}, "probes": [{probe}]}}"#);
+    fn a_backslash_argument_probe_needs_a_value() {
+        let text = r#"{"files": {}, "settings": {}, "probes": [{"kind": "backslash-argument"}]}"#;
+        assert!(matches!(Case::parse(text, "/r"), Err(Error::Shape(_))));
+    }
+
+    /// Any probe may record the code upstream gives, not only the one made for
+    /// it.
+    #[test]
+    fn any_probe_may_record_the_code_upstream_gives() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "probes": [
+                {"kind": "write", "path": "/r/a", "upstream": 1},
+                {"kind": "write", "path": "/r/b"},
+                {"kind": "bind", "upstream": 0}
+            ]
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+
+        assert_eq!(case.upstream_exit(0), Some(1));
+        assert_eq!(case.upstream_exit(1), None);
+        assert_eq!(case.upstream_exit(2), Some(0));
+        assert_eq!(case.upstream_exit(3), None);
+        assert_eq!(case.probes[0], Probe::Write("/r/a".to_owned()));
+    }
+
+    #[test]
+    fn an_upstream_code_must_fit_8_bits() {
+        for upstream in ["256", "-1", r#""1""#, "null"] {
+            let text = format!(
+                r#"{{"files": {{}}, "settings": {{}}, "probes": [{{"kind": "bind", "upstream": {upstream}}}]}}"#
+            );
             assert!(
                 matches!(Case::parse(&text, "/r"), Err(Error::Shape(_))),
-                "{probe}"
+                "{upstream}"
+            );
+        }
+    }
+
+    /// A case sets the host environment the wrappers run under, with `$ROOT`
+    /// expanded in names and values like the rest of the case.
+    #[test]
+    fn a_case_may_set_the_environment_its_wrappers_run_under() {
+        let text = r#"{
+            "files": {},
+            "settings": {},
+            "env": {"CLAUDE_CODE_TMPDIR": "$ROOT/fresh", "OTHER": "x"},
+            "probes": []
+        }"#;
+        let case = Case::parse(text, "/r").unwrap();
+
+        assert_eq!(
+            case.env,
+            Env::from([
+                ("CLAUDE_CODE_TMPDIR".to_owned(), "/r/fresh".to_owned()),
+                ("OTHER".to_owned(), "x".to_owned()),
+            ])
+        );
+        let case = Case::parse(r#"{"files": {}, "settings": {}, "probes": []}"#, "/r").unwrap();
+        assert!(case.env.is_empty());
+    }
+
+    #[test]
+    fn an_env_must_be_an_object_of_strings() {
+        for env in ["[]", r#""A=b""#, r#"{"A": 1}"#, r#"{"A": null}"#] {
+            let text =
+                format!(r#"{{"files": {{}}, "settings": {{}}, "env": {env}, "probes": []}}"#);
+            assert!(
+                matches!(Case::parse(&text, "/r"), Err(Error::Shape(_))),
+                "{env}"
             );
         }
     }
@@ -833,12 +923,14 @@ mod tests {
                 }
             }
             // A probe cannot tell a missing folder from a refusal, so one
-            // that lands in a folder the case never made exits 2.
+            // that lands in a folder the case never made exits 2. A folder the
+            // case's `env` names is one the sandbox's wrapper makes.
             let lands = |target: &str| match Path::new(target).parent() {
                 Some(parent) => {
                     !target.starts_with("/r/")
                         || folders.contains(parent)
                         || parent == Path::new("/r")
+                        || case.env.values().any(|set| Path::new(set) == parent)
                 }
                 None => true,
             };

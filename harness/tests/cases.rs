@@ -77,6 +77,7 @@ const LINUX_READY: &[&str] = &[
     "allow_write_glob",
     "default_write_dev_null",
     "default_write_tmp_claude",
+    "tmpdir_outside_allow_write",
     "deny_write_file",
     "deny_write_glob",
     "deny_write_literal",
@@ -447,6 +448,14 @@ fn default_write_dev_null() {
 #[test]
 fn default_write_tmp_claude() {
     run("default_write_tmp_claude", "default-write-tmp-claude.json");
+}
+
+#[test]
+fn tmpdir_outside_allow_write() {
+    run(
+        "tmpdir_outside_allow_write",
+        "tmpdir-outside-allow-write.json",
+    );
 }
 
 #[test]

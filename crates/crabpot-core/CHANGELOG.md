@@ -5,6 +5,18 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-10-30
+
+### Fixed
+
+- Make and grant the TMPDIR the sandbox sets
+- Refuse a temp link spelled with a trailing slash
+- Grant the chosen temp folder as a name, not a pattern
+- Refuse a relative TMPDIR and accept another user's default folder
+- Grant a temp folder beneath a link by its real path
+- Refuse a dotted TMPDIR and settle the review's smaller points
+
+
 ## [0.5.8] - 2026-10-30
 
 

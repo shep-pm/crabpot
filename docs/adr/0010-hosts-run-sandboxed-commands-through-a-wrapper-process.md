@@ -6,6 +6,8 @@ The child stays in the wrapper's process group. On Unix, the wrapper and Linux h
 
 On Linux, the wrapper targets the helper below bwrap's monitor and namespace init, following their child PIDs in the host's `/proc`. Bwrap's monitor does not forward signals. Signalling it directly kills the monitor and, through `--die-with-parent`, the sandbox. The monitor stays alive to report the helper's exit status.
 
+A shutdown signal received before the helper exists stays pending while the wrapper retries discovery every 10 ms. Waiting ends when the signal is forwarded or bwrap exits and its forwarding tasks are aborted.
+
 ## Considered options
 
 - **The `Sandbox` value alone.** Rejected because a port that returns a `Command` has nowhere to keep the value alive, so every caller in kelpie would have to change.

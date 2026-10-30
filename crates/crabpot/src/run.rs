@@ -29,6 +29,10 @@ const SIGINT: i32 = 2;
 #[cfg(unix)]
 const SIGTERM: i32 = 15;
 
+// Poll at most 100 times per second until bwrap creates its descendants.
+#[cfg(unix)]
+const TARGET_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// Where upstream looks for settings when `-s` names none, under `$HOME`.
 const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 
@@ -354,7 +358,7 @@ async fn run(command: Command, target: ForwardTarget) -> i32 {
             .map(|(name, mut stream)| {
                 tokio::spawn(async move {
                     while stream.recv().await.is_some() {
-                        forward(name, pid, target).await;
+                        forward(name, pid, |pid| target.pid(pid)).await;
                     }
                 })
             })
@@ -421,9 +425,13 @@ fn exit_after_wait(status: io::Result<ExitStatus>) -> i32 {
 /// send SIGKILL and `kill(2)` is unsafe to call. A signal that does not go
 /// through is dropped: the command is gone, or it was never ours to signal.
 #[cfg(unix)]
-async fn forward(name: &str, pid: u32, target: ForwardTarget) {
-    let Some(pid) = target.pid(pid) else {
-        return;
+async fn forward(name: &str, pid: u32, target: impl Fn(u32) -> Option<u32>) {
+    // The owning run task aborts this retry when its child exits.
+    let pid = loop {
+        if let Some(pid) = target(pid) {
+            break pid;
+        }
+        tokio::time::sleep(TARGET_RETRY_INTERVAL).await;
     };
     let _ = tokio::process::Command::new("/bin/kill")
         .args(["-s", name, &pid.to_string()])
@@ -639,6 +647,62 @@ mod tests {
     fn a_child_stopped_by_sigint_or_sigterm_is_a_clean_stop() {
         assert_eq!(run(shell("kill -INT $$")), 0, "SIGINT is a clean end");
         assert_eq!(run(shell("kill -TERM $$")), 0, "SIGTERM is a clean end");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shutdown_signal_waits_for_its_target_to_appear() {
+        use std::cell::Cell;
+        use std::future::{Future, poll_fn};
+        use std::io::{BufRead, BufReader};
+        use std::sync::mpsc;
+        use std::task::Poll;
+        use std::thread;
+        use std::time::Duration;
+
+        let mut command = shell("trap 'exit 7' TERM; echo ready; read -r line; exit 9");
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let _stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (ready_sender, ready) = mpsc::channel();
+        let (exit_sender, exited) = mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).unwrap();
+            let _ = ready_sender.send(line);
+            let _ = exit_sender.send(child.wait().unwrap());
+        });
+        // Real time bounds the shell and kill subprocesses.
+        let timeout = Duration::from_secs(5);
+        assert_eq!(ready.recv_timeout(timeout).unwrap(), "ready\n");
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+
+        runtime.block_on(async {
+            let discoverable = Cell::new(false);
+            let mut forwarding = std::pin::pin!(forward("TERM", pid, |pid| {
+                discoverable.get().then_some(pid)
+            }));
+            poll_fn(|cx| {
+                assert!(
+                    forwarding.as_mut().poll(cx).is_pending(),
+                    "the signal was dropped before its target appeared"
+                );
+                Poll::Ready(())
+            })
+            .await;
+
+            discoverable.set(true);
+            tokio::time::timeout(timeout, forwarding)
+                .await
+                .expect("the pending signal was not forwarded");
+        });
+
+        assert_eq!(exited.recv_timeout(timeout).unwrap().code(), Some(7));
     }
 
     #[cfg(unix)]

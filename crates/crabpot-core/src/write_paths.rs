@@ -15,8 +15,8 @@
 use crate::config::{Config, PathEntry};
 use crate::glob::deny_glob_matches;
 use crate::path::{
-    PathBase, PathError, contains_glob_chars, is_at_or_under, normalize_path_for_sandbox,
-    remove_trailing_glob_suffix,
+    PathBase, PathError, contains_glob_chars, dirname, is_at_or_under, normalize_path_for_sandbox,
+    real_path_of, remove_trailing_glob_suffix,
 };
 use crate::path_entries::read_rules_of;
 
@@ -96,13 +96,29 @@ pub fn default_write_roots(
     let mut spelled: Vec<String> = OWN_ROOTS.iter().map(|root| (*root).to_owned()).collect();
     let tmpdir = match base.tmpdir() {
         Some(chosen) => {
-            let resolved = normalize_path_for_sandbox(base, chosen, true)?;
+            let resolved = chosen_root(base, chosen)?;
             (!spelled.contains(&resolved)).then_some(resolved)
         }
         None => None,
     };
     spelled.extend(kept.into_iter().map(|dir| join(home, dir)));
     Ok(DefaultWriteRoots { spelled, tmpdir })
+}
+
+/// The chosen temp folder as a root: its parent by real path, so a link above
+/// it that leaves its own tree still grants the folder it leads to, and the
+/// folder itself as named, so a link at the end is never followed.
+fn chosen_root(base: &PathBase, chosen: &str) -> Result<String, PathError> {
+    let spelled = normalize_path_for_sandbox(base, chosen, true)?;
+    let parent = dirname(&spelled);
+    let name = spelled[parent.len()..].trim_start_matches('/');
+    if name.is_empty() {
+        return Ok(spelled);
+    }
+    Ok(match real_path_of(base, parent) {
+        Ok(real) => format!("{}/{name}", real.trim_end_matches('/')),
+        Err(_) => spelled,
+    })
 }
 
 fn join(home: &str, dir: &str) -> String {
@@ -241,6 +257,24 @@ mod tests {
         let roots = default_write_paths(&base, &Config::default()).unwrap();
 
         assert_eq!(roots.len(), 10);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tmpdir_beneath_a_linked_parent_is_granted_by_its_real_path() {
+        let tree = crate::test_tree::Tree::new("write-paths-linked-parent");
+        let chosen = |spelling: &str| {
+            let base = tree.base().with_tmpdir(Some(tree.spell(spelling)));
+            let roots = default_write_paths(&base, &Config::default()).unwrap();
+            tree.unspell(&roots[8])
+        };
+
+        assert_eq!(chosen("{root}/link/sub"), "{root}/real/sub");
+        assert_eq!(
+            chosen("{root}/link/not-made-yet"),
+            "{root}/real/not-made-yet"
+        );
+        assert_eq!(chosen("{root}/link"), "{root}/link");
     }
 
     #[cfg(target_os = "macos")]

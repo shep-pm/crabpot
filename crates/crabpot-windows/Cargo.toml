@@ -14,10 +14,9 @@ keywords.workspace = true
 # a published .crate, which is permanent.
 exclude = ["/docs/"]
 
-# No test targets here, and a sync from upstream must not add any: the two
-# access-check tests under `srt-win/tests/` are included from `src/lib.rs` as
-# test modules, because an integration test cannot name a `pub(crate)` module
-# (ADR-0015). See PATCHES.md.
+# The two access-check tests under `srt-win/tests/` are included from `src/lib.rs`
+# as test modules: integration tests cannot name their `pub(crate)` dependencies
+# (ADR-0015). A sync must keep these two out of `[[test]]`. See PATCHES.md.
 
 # The path rules (`fs_access`) compile on every host, so this is not
 # `cfg(windows)`: the pure string tests run on the macOS and Linux runners too.

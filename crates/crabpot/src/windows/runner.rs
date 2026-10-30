@@ -29,7 +29,7 @@ impl Runner {
     pub(crate) fn of(exe: PathBuf, status: Option<&WindowsStatus>) -> Self {
         let sids = status.map_or_else(Vec::new, |status| status.sandbox_sids());
         Self {
-            dacl_allows: super::ffi::sandbox_can_read(&exe, &sids),
+            dacl_allows: crabpot_windows::sandbox_can_read(&exe, &sids),
             exe,
         }
     }
@@ -53,7 +53,7 @@ mod tests {
 
     /// A runner under the profile, where a crabpot sits unreadable until the
     /// grant reaches it. `dacl_allows` is what the access-list check answered
-    /// for it, which [`super::super::ffi`]'s tests pin for each shape of list.
+    /// for it, which srt-win's `logon` tests pin for each shape of list.
     fn runner(dacl_allows: Option<bool>) -> Runner {
         Runner {
             exe: PathBuf::from(r"C:\Users\runneradmin\.cargo\bin\crabpot.exe"),
@@ -77,5 +77,55 @@ mod tests {
     #[test]
     fn a_check_the_machine_could_not_make_refuses_nothing() {
         assert!(runner(None).readable());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod native_tests {
+    use super::*;
+    use crate::test::{runner_file, sandbox_status};
+
+    #[test]
+    fn a_grant_for_the_sandbox_account_opens_the_runner() {
+        let file = runner_file("account", "S-1-5-19");
+        let status = sandbox_status(Some("S-1-5-19"), Some("S-1-5-20"));
+
+        assert_eq!(Runner::of(file.exe.clone(), None).dacl_allows, Some(false));
+        assert_eq!(
+            Runner::of(file.exe.clone(), Some(&status)).dacl_allows,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_grant_for_the_sandbox_group_opens_the_runner() {
+        let file = runner_file("group", "S-1-5-19");
+        let status = sandbox_status(Some("S-1-5-20"), Some("S-1-5-19"));
+
+        assert_eq!(
+            Runner::of(file.exe.clone(), Some(&status)).dacl_allows,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_grant_for_the_real_user_does_not_open_the_runner_for_the_sandbox() {
+        let file = runner_file("real-user", "S-1-5-19");
+        let mut status = sandbox_status(Some("S-1-5-20"), None);
+        status.real_user_sid = Some("S-1-5-19".to_owned());
+
+        assert_eq!(
+            Runner::of(file.exe.clone(), Some(&status)).dacl_allows,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_access_list_leaves_the_runner_check_unknown() {
+        let exe = std::env::current_exe()
+            .expect("this test binary")
+            .join("missing.exe");
+
+        assert_eq!(Runner::of(exe.clone(), None).dacl_allows, None);
     }
 }

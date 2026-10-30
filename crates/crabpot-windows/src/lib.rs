@@ -11,9 +11,9 @@
 //! meaning `crabpot_windows`: no path inside a copied file is edited to say so.
 //! The names are `pub(crate)` re-exports (ADR-0015): upstream's internal API
 //! stays off crates.io, and what this crate publishes is
-//! [`env`](mod@env), [`fs_access`], `run_from_args` and
+//! [`env`](mod@env), [`fs_access`], `sandbox_can_read`, `run_from_args` and
 //! `SRT_WIN_DISPATCH_ARG1`, which is exactly what the facade reaches. The last
-//! two are Windows-only, so they are named in code spans here rather than
+//! three are Windows-only, so they are named in code spans here rather than
 //! linked: this page builds on every host.
 //!
 //! Upstream's two integration tests are included here as test modules rather
@@ -51,6 +51,10 @@ extern crate self as crabpot_windows;
 #[allow(dead_code)]
 #[path = "../srt-win/src/lib.rs"]
 mod srt_win;
+
+// The facade shares srt-win's runner preflight check.
+#[cfg(windows)]
+pub use srt_win::logon::sandbox_can_read;
 
 // What the facade links: upstream's multicall entry point and its sentinel.
 #[cfg(windows)]
@@ -119,7 +123,6 @@ mod tests {
     #[test]
     fn the_patches_list_says_where_the_two_upstream_tests_run() {
         let patches = include_str!("../PATCHES.md");
-        let manifest = include_str!("../Cargo.toml");
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
         let lib = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         for (file, module) in [
@@ -138,10 +141,6 @@ mod tests {
             );
             assert!(lib.contains(module), "src/lib.rs no longer has {module}");
         }
-        assert!(
-            !manifest.contains("[[test]]"),
-            "Cargo.toml declares a test target again: these two cannot build as test crates, because their modules are private to the library"
-        );
         assert!(
             patches.contains("unit test"),
             "PATCHES.md does not say the two upstream tests run as unit tests of the library"

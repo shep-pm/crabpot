@@ -1,7 +1,8 @@
 //! The roots every sandbox may write, before the config adds its own.
 //!
 //! Upstream's `getDefaultWritePaths` and `defaultWritePathsUnder`: the
-//! sandbox's own devices and temporary folder, and two folders under the home
+//! sandbox's own devices and temporary folders, the host's chosen one among
+//! them, and two folders under the home
 //! directory that its tools log to. Those two are left out when a `denyRead`
 //! entry covers them, so an explicit read deny wins over a write nobody asked
 //! for. Upstream also judges them against the credential denies, and
@@ -14,13 +15,13 @@
 use crate::config::{Config, PathEntry};
 use crate::glob::deny_glob_matches;
 use crate::path::{
-    PathBase, PathError, contains_glob_chars, is_at_or_under, normalize_path_for_sandbox,
-    remove_trailing_glob_suffix,
+    PathBase, PathError, contains_glob_chars, dirname, is_at_or_under, normalize_path_for_sandbox,
+    real_path_of, remove_trailing_glob_suffix,
 };
 use crate::path_entries::read_rules_of;
 
 /// What the sandbox needs writable: the child's stdio and the `TMPDIR` it is
-/// handed. Kept whatever is read-denied.
+/// handed by default. Kept whatever is read-denied.
 const OWN_ROOTS: [&str; 8] = [
     "/dev/stdout",
     "/dev/stderr",
@@ -35,6 +36,18 @@ const OWN_ROOTS: [&str; 8] = [
 /// Folders under the home directory made writable as a convenience.
 const HOME_DIRS: [&str; 2] = [".npm/_logs", ".claude/debug"];
 
+/// The default write roots, with the chosen temp folder apart from the rest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultWriteRoots {
+    /// The roots that are spellings: the sandbox's own devices and temp
+    /// folders, then the home folders.
+    pub spelled: Vec<String>,
+    /// The temp folder the host chose, resolved. It is a name whatever it
+    /// holds, so `*` in it is no pattern. None when it is already one of the
+    /// roots, or is not text.
+    pub tmpdir: Option<String>,
+}
+
 /// The default write roots under `config`'s read rules.
 ///
 /// # Errors
@@ -42,6 +55,26 @@ const HOME_DIRS: [&str; 2] = [".npm/_logs", ".claude/debug"];
 /// [`PathError`] when the home directory is unknown, or a read entry needs a
 /// working directory and there is none.
 pub fn default_write_paths(base: &PathBase, config: &Config) -> Result<Vec<String>, PathError> {
+    let DefaultWriteRoots {
+        mut spelled,
+        tmpdir,
+    } = default_write_roots(base, config)?;
+    if let Some(tmpdir) = tmpdir {
+        spelled.insert(OWN_ROOTS.len(), tmpdir);
+    }
+    Ok(spelled)
+}
+
+/// [`default_write_paths`], with the chosen temp folder told apart so a caller
+/// that reads spellings as patterns can take it as a name.
+///
+/// # Errors
+///
+/// [`PathError`] as [`default_write_paths`].
+pub fn default_write_roots(
+    base: &PathBase,
+    config: &Config,
+) -> Result<DefaultWriteRoots, PathError> {
     let home = base.home()?;
     let filesystem = &config.filesystem;
     let rules = read_rules_of(
@@ -60,9 +93,34 @@ pub fn default_write_paths(base: &PathBase, config: &Config) -> Result<Vec<Strin
             rules.allow_read.as_deref().unwrap_or_default(),
         )?
     };
-    let mut roots: Vec<String> = OWN_ROOTS.iter().map(|root| (*root).to_owned()).collect();
-    roots.extend(kept.into_iter().map(|dir| join(home, dir)));
-    Ok(roots)
+    let mut spelled: Vec<String> = OWN_ROOTS.iter().map(|root| (*root).to_owned()).collect();
+    spelled.extend(kept.into_iter().map(|dir| join(home, dir)));
+    let tmpdir = match base.tmpdir() {
+        Some(chosen) => {
+            let resolved = chosen_root(base, chosen)?;
+            (!spelled.contains(&resolved)).then_some(resolved)
+        }
+        None => None,
+    };
+    Ok(DefaultWriteRoots { spelled, tmpdir })
+}
+
+/// The chosen temp folder as a root: its parent by real path, so a link above
+/// it that leaves its own tree still grants the folder it leads to, and the
+/// folder itself as named, so a link at the end is never followed.
+fn chosen_root(base: &PathBase, chosen: &str) -> Result<String, PathError> {
+    let spelled = normalize_path_for_sandbox(base, chosen, true)?;
+    let parent = dirname(&spelled);
+    let name = spelled[parent.len()..].trim_start_matches('/');
+    if name.is_empty() {
+        return Ok(spelled);
+    }
+    // A parent that cannot be resolved is not there to be made writable
+    // through a link, so the folder keeps its spelling.
+    Ok(match real_path_of(base, parent) {
+        Ok(real) => format!("{}/{name}", real.trim_end_matches('/')),
+        Err(_) => spelled,
+    })
 }
 
 fn join(home: &str, dir: &str) -> String {
@@ -171,6 +229,80 @@ mod tests {
         PathBase::new(Some(HOME.to_owned()), Some("/crabpot-test-work".to_owned()))
     }
 
+    #[test]
+    fn the_chosen_tmpdir_is_a_default_write_root() {
+        let base = base().with_tmpdir(Some("/crabpot-test-tmp/mine".to_owned()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(roots[8], "/crabpot-test-tmp/mine");
+        assert_eq!(roots.len(), 11);
+    }
+
+    #[test]
+    fn a_tmpdir_that_is_already_a_root_is_not_added_twice() {
+        let base = base().with_tmpdir(Some("/tmp/claude".to_owned()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(
+            roots.iter().filter(|root| *root == "/tmp/claude").count(),
+            1
+        );
+        assert_eq!(roots.len(), 10);
+    }
+
+    #[test]
+    fn a_tmpdir_that_is_a_home_dir_is_not_added_twice() {
+        let folder = "/crabpot-test-home/me/.npm/_logs";
+        let base = base().with_tmpdir(Some(folder.to_owned()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(roots.iter().filter(|root| *root == folder).count(), 1);
+        assert_eq!(roots.len(), 10);
+    }
+
+    #[test]
+    fn a_base_with_no_text_tmpdir_has_no_chosen_root() {
+        let base = base().with_tmpdir(None);
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(roots.len(), 10);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tmpdir_beneath_a_linked_parent_is_granted_by_its_real_path() {
+        let tree = crate::test_tree::Tree::new("write-paths-linked-parent");
+        let chosen = |spelling: &str| {
+            let base = tree.base().with_tmpdir(Some(tree.spell(spelling)));
+            let roots = default_write_paths(&base, &Config::default()).unwrap();
+            tree.unspell(&roots[8])
+        };
+
+        assert_eq!(chosen("{root}/link/sub"), "{root}/real/sub");
+        assert_eq!(
+            chosen("{root}/link/not-made-yet"),
+            "{root}/real/not-made-yet"
+        );
+        assert_eq!(chosen("{root}/link"), "{root}/link");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_tmpdir_under_tmp_is_granted_as_private_tmp() {
+        let folder = format!("/tmp/crabpot-core-write-paths-{}", std::process::id());
+        std::fs::create_dir_all(&folder).unwrap();
+        let base = base().with_tmpdir(Some(folder.clone()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+        let _ = std::fs::remove_dir(&folder);
+
+        assert_eq!(roots[8], format!("/private{folder}"));
+    }
+
     fn denying(entries: &[&str]) -> Config {
         let mut config = Config::default();
         config.filesystem.deny_read = entries
@@ -210,7 +342,7 @@ mod tests {
     }
 
     fn home_dirs(config: &Config) -> Vec<String> {
-        default_write_paths(&base(), config).unwrap()[8..].to_vec()
+        default_write_roots(&base(), config).unwrap().spelled[8..].to_vec()
     }
 
     #[test]

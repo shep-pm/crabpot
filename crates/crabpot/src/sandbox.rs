@@ -3,6 +3,8 @@
 
 use core::fmt;
 use std::io;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 #[cfg(target_os = "linux")]
@@ -19,6 +21,8 @@ use crabpot_core::proxy::PortRange;
 use crabpot_core::proxy::Proxy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::proxy::username_for;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crabpot_core::tmpdir::{Origin, TmpdirError};
 #[cfg(target_os = "linux")]
 use crabpot_linux::env::Facts;
 #[cfg(target_os = "linux")]
@@ -70,7 +74,13 @@ impl Sandbox {
     /// [`StartError::UnsupportedPlatform`] off macOS, Linux and Windows, where
     /// nothing confines a command yet, [`StartError::UnresolvedPath`] when a path
     /// in `config` cannot be made absolute, and [`StartError::Proxy`] when the
-    /// proxy that carries its network cannot start. On Linux the bwrap checks
+    /// proxy that carries its network cannot start. On macOS and Linux the
+    /// sandbox first makes the folder it sets `TMPDIR` to (`CLAUDE_CODE_TMPDIR`,
+    /// then `CLAUDE_TMPDIR`, then `/tmp/claude`) when it is missing, owner-only,
+    /// and lets the command write there. [`StartError::Tmpdir`] when that path
+    /// is relative or holds a `..`, its parent is missing, it is a link or a
+    /// file, or another user owns it. A `/tmp/claude` that another user owns is
+    /// used as it is, when the host names no folder. On Linux the bwrap checks
     /// run first: [`StartError::Missing`] when there is no executable `bwrap`
     /// on `PATH`, and [`StartError::Uid0WithoutSetfcap`] for uid 0 without
     /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
@@ -99,6 +109,18 @@ impl Sandbox {
         let helper = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
+            // The folder is made before the profile or the bwrap words are
+            // rendered, since they resolve and bind it only once it exists.
+            let (tmpdir, host_named) = crabpot_core::env::base::tmpdir_named(
+                std::env::var_os("CLAUDE_CODE_TMPDIR").as_deref(),
+                std::env::var_os("CLAUDE_TMPDIR").as_deref(),
+            );
+            let origin = if host_named {
+                Origin::Host
+            } else {
+                Origin::Default
+            };
+            crabpot_core::tmpdir::prepare(Path::new(&tmpdir), origin)?;
             let proxy = Proxy::start(
                 &config.network.allowed_domains,
                 &config.network.denied_domains,
@@ -455,6 +477,10 @@ pub enum StartError {
         /// What `wfp verify` exited with and printed.
         detail: String,
     },
+    /// macOS and Linux: the folder `TMPDIR` names cannot be used as the temp
+    /// folder, so there is nowhere for the command to write its temp files.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Tmpdir(TmpdirError),
     /// A write deny the sandbox must apply in its own working directory is a
     /// path its words cannot name, so there is no mount for it and no command
     /// runs. Linux only, where the mandatory denies come from a walk.
@@ -462,6 +488,13 @@ pub enum StartError {
         /// The path the walk found, as the filesystem holds it.
         path: PathBuf,
     },
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl From<TmpdirError> for StartError {
+    fn from(error: TmpdirError) -> Self {
+        Self::Tmpdir(error)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -506,6 +539,8 @@ impl fmt::Display for StartError {
                 write!(f, "only macOS, Linux and Windows have a sandbox yet")
             }
             Self::UnresolvedPath(error) => write!(f, "{error}"),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Self::Tmpdir(error) => write!(f, "{error}"),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
             Self::ProxyRangeFull { first, last } => write!(
                 f,

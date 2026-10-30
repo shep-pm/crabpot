@@ -14,6 +14,8 @@ mod resolved_path;
 #[cfg(all(test, unix))]
 mod test_tree;
 #[cfg(unix)]
+pub mod tmpdir;
+#[cfg(unix)]
 mod unix_socket;
 mod write_paths;
 // The crate's Windows FFI, which is the one module allowed unsafe code there.

@@ -14,6 +14,8 @@ use core::fmt;
 use std::env;
 use std::ffi::OsString;
 
+use crate::env::base::{DEFAULT_TMPDIR, tmpdir};
+
 pub(crate) use lexical::{collapse_interior_spellings, is_absolute, is_strictly_under, resolve};
 pub use lexical::{dirname, is_at_or_under};
 pub(crate) use real_path::is_absence_error;
@@ -24,6 +26,8 @@ pub use real_path::real_path_of;
 pub struct PathBase {
     home: Option<String>,
     cwd: Option<String>,
+    /// The temp folder a command is handed, when it is text.
+    tmpdir: Option<String>,
 }
 
 /// A path could not be read because the base it needs is missing.
@@ -47,26 +51,48 @@ impl fmt::Display for PathError {
 impl core::error::Error for PathError {}
 
 impl PathBase {
-    /// The base of this process: `HOME`, and the working directory. An empty
-    /// `HOME` is a home directory with no name, as it is to upstream. On Windows
-    /// `USERPROFILE` stands in when `HOME` is not set.
+    /// The base of this process: `HOME`, the working directory, and the temp
+    /// folder [`tmpdir`] chooses. An empty `HOME` is a home directory with no
+    /// name, as it is to upstream. On Windows `USERPROFILE` stands in when
+    /// `HOME` is not set.
     pub fn from_env() -> Self {
         let userprofile = if cfg!(windows) {
             env::var_os("USERPROFILE")
         } else {
             None
         };
+        let chosen = tmpdir(
+            env::var_os("CLAUDE_CODE_TMPDIR").as_deref(),
+            env::var_os("CLAUDE_TMPDIR").as_deref(),
+        );
         Self::new(
             home_from(env::var_os("HOME"), userprofile),
             env::current_dir()
                 .ok()
                 .and_then(|cwd| cwd.into_os_string().into_string().ok()),
         )
+        .with_tmpdir(chosen.into_string().ok())
     }
 
-    /// A base of the given home directory and working directory.
+    /// A base of the given home directory and working directory, with
+    /// `/tmp/claude` as its temp folder.
     pub fn new(home: Option<String>, cwd: Option<String>) -> Self {
-        Self { home, cwd }
+        Self {
+            home,
+            cwd,
+            tmpdir: Some(DEFAULT_TMPDIR.to_owned()),
+        }
+    }
+
+    /// This base with `tmpdir` as its temp folder, none when the chosen one is
+    /// not text.
+    pub fn with_tmpdir(mut self, tmpdir: Option<String>) -> Self {
+        self.tmpdir = tmpdir;
+        self
+    }
+
+    pub(crate) fn tmpdir(&self) -> Option<&str> {
+        self.tmpdir.as_deref()
     }
 
     /// The home directory.

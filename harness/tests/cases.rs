@@ -227,6 +227,11 @@ const WINDOWS_READY: &[&str] = &[
 /// give the answer to compare with. Each probe must be allowed.
 const WINDOWS_CRABPOT_ALONE: &[&str] = &["mitm_matching_domain_reaches_the_socket"];
 
+/// The cases that run under both and where crabpot must also allow every probe.
+/// A recorded difference from upstream only says crabpot gives another code,
+/// and a refusal would be one too.
+const CRABPOT_ALLOWED: &[&str] = &["tmpdir_outside_allow_write"];
+
 /// Each kelpie case, as the name its test runs it under and its case file.
 const KELPIE_CASES: &[(&str, &str)] = &[
     ("kelpie_loopback_bind", "kelpie-loopback-bind-refused.json"),
@@ -278,7 +283,13 @@ fn run(name: &str, file: &str) {
     let path = format!("{}/cases/{file}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(&path).unwrap();
     let outcome = if runs_crabpot(name) {
-        runner::run_case(&text, name, &upstream, &Crabpot::new(probe))
+        runner::run_case(&text, name, &upstream, &Crabpot::new(probe)).and_then(|ran| {
+            if !CRABPOT_ALLOWED.contains(&name) {
+                return Ok(ran);
+            }
+            let allowed = runner::run_expecting(&text, name, &Crabpot::new(probe), probe::ALLOWED)?;
+            Ok(ran && allowed)
+        })
     } else if cfg!(windows) && WINDOWS_CRABPOT_ALONE.contains(&name) {
         runner::run_upstream_only(&text, name, &upstream).and_then(|ran| {
             let alone = runner::run_expecting(&text, name, &Crabpot::new(probe), probe::ALLOWED)?;

@@ -11,9 +11,9 @@
 //! meaning `crabpot_windows`: no path inside a copied file is edited to say so.
 //! The names are `pub(crate)` re-exports (ADR-0015): upstream's internal API
 //! stays off crates.io, and what this crate publishes is
-//! [`env`](mod@env), [`fs_access`], `run_from_args` and
+//! [`env`](mod@env), [`fs_access`], `sandbox_can_read`, `run_from_args` and
 //! `SRT_WIN_DISPATCH_ARG1`, which is exactly what the facade reaches. The last
-//! two are Windows-only, so they are named in code spans here rather than
+//! three are Windows-only, so they are named in code spans here rather than
 //! linked: this page builds on every host.
 //!
 //! Upstream's two integration tests are included here as test modules rather
@@ -51,6 +51,10 @@ extern crate self as crabpot_windows;
 #[allow(dead_code)]
 #[path = "../srt-win/src/lib.rs"]
 mod srt_win;
+
+// The facade shares srt-win's runner preflight check.
+#[cfg(windows)]
+pub use srt_win::logon::sandbox_can_read;
 
 // What the facade links: upstream's multicall entry point and its sentinel.
 #[cfg(windows)]

@@ -29,7 +29,7 @@ impl Runner {
     pub(crate) fn of(exe: PathBuf, status: Option<&WindowsStatus>) -> Self {
         let sids = status.map_or_else(Vec::new, |status| status.sandbox_sids());
         Self {
-            dacl_allows: super::ffi::sandbox_can_read(&exe, &sids),
+            dacl_allows: crabpot_windows::sandbox_can_read(&exe, &sids),
             exe,
         }
     }
@@ -53,7 +53,7 @@ mod tests {
 
     /// A runner under the profile, where a crabpot sits unreadable until the
     /// grant reaches it. `dacl_allows` is what the access-list check answered
-    /// for it, which [`super::super::ffi`]'s tests pin for each shape of list.
+    /// for it, which srt-win's `logon` tests pin for each shape of list.
     fn runner(dacl_allows: Option<bool>) -> Runner {
         Runner {
             exe: PathBuf::from(r"C:\Users\runneradmin\.cargo\bin\crabpot.exe"),

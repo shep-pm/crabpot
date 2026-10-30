@@ -337,7 +337,7 @@ mod tests {
         child.wait().unwrap();
 
         // HUP, INT, QUIT, USR1, USR2 and TERM are bits 0, 1, 2, 9, 11 and 14.
-        assert!(status.contains("SigBlk:\t0000000000004e07\n"), "{status}");
+        assert!(status.contains("SigBlk:\t0000000000004a07\n"), "{status}");
         let group = stat.rsplit_once(')').unwrap().1.split_whitespace().nth(2);
         assert_eq!(group, Some(pid.to_string().as_str()), "{stat}");
     }

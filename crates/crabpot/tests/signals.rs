@@ -14,8 +14,10 @@ use std::time::Duration;
 /// Signals the wrapper's pid, or its whole process group, which is how a host
 /// that leads one signals it.
 fn signal_through_wrapper(signal: &str, whole_group: bool) {
+    // Tests of this binary run in parallel, so each case has a folder of its own.
+    let mode = if whole_group { "group" } else { "pid" };
     let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("signal-{signal}-{}", std::process::id()));
+        .join(format!("signal-{mode}-{signal}-{}", std::process::id()));
     fs::create_dir_all(&home).unwrap();
     let settings = home.join("settings.json");
     fs::write(

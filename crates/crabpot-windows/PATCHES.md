@@ -78,8 +78,11 @@ running", though seclogon is running.
   (`SYNCHRONIZE` and `READ_CONTROL` among them, with the generic bits mapped)
   that no earlier allow ACE for a SID the sandbox token holds has granted,
   since srt-win writes that deny on every `denyRead` path. The DACL is read in
-  order with `acl::filter_aces`; an inherit-only ACE is skipped; plain and
-  callback deny ACEs count, and object deny ACEs that name no object type. `None`
+  order with `acl::filter_aces`, which also totals what the allow ACEs for held
+  SIDs grant, so a grant ahead of a deny stands whatever
+  `GetEffectiveRightsFromAclW` answers for a group. An inherit-only ACE is
+  skipped. Plain and callback deny ACEs count, and object deny ACEs that name no
+  object type. `None`
   when the DACL cannot be read. A deny for some other group the sandbox user
   holds is not seen, so `Some(true)` can still be a false yes and only
   `Some(false)` is acted on. It reads the DACL with `GetNamedSecurityInfoW` on

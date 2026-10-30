@@ -835,23 +835,30 @@ fn read_dacl(path: &Path) -> Result<(OwnedSd, *mut ACL)> {
 /// [`sandbox_can_read`] for a DACL already read.
 fn dacl_lets_sandbox_read(dacl: *const ACL, sandbox: &[&str]) -> bool {
     // A file with no DACL grants everyone everything.
-    dacl.is_null()
-        || (!dacl_denies_read(dacl, sandbox)
-            && ([WinBuiltinUsersSid, WinAuthenticatedUserSid, WinWorldSid]
+    if dacl.is_null() {
+        return true;
+    }
+    let (denied, granted) = walk_dacl(dacl, sandbox);
+    // `GetEffectiveRightsFromAclW` answers a group trustee without regard to
+    // the order of the ACEs, so the walk's own grant counts beside it.
+    !denied
+        && (read_exec(granted)
+            || [WinBuiltinUsersSid, WinAuthenticatedUserSid, WinWorldSid]
                 .into_iter()
                 .any(|group| group_can_read(dacl, group))
-                || sandbox.iter().any(|sid| sid_can_read(dacl, sid))))
+            || sandbox.iter().any(|sid| sid_can_read(dacl, sid)))
 }
 
 /// Every right a read or an execute asks for, the ones that block an open
 /// among them (`SYNCHRONIZE`, `READ_CONTROL`).
 const READ_EXEC_RIGHTS: u32 = FILE_GENERIC_READ.0 | FILE_GENERIC_EXECUTE.0;
 
-/// Whether the DACL, read in order as Windows reads it, denies one of
-/// `sandbox` a right of read or execute that no earlier allow ACE for a SID the
-/// sandbox token holds (the groups the check asks and `sandbox`) has granted. An
-/// ACE only the children inherit does not apply to the object.
-fn dacl_denies_read(dacl: *const ACL, sandbox: &[&str]) -> bool {
+/// Reads the DACL in order as Windows does, for the SIDs the sandbox token
+/// holds (the groups the check asks and `sandbox`): whether a deny ACE for one
+/// of `sandbox` asks a right of read or execute that no earlier allow ACE has
+/// granted, and the rights the allow ACEs grant. An ACE only the children
+/// inherit does not apply to the object.
+fn walk_dacl(dacl: *const ACL, sandbox: &[&str]) -> (bool, u32) {
     let sandbox: Vec<Vec<u8>> = sandbox
         .iter()
         .filter_map(|sid| crate::sid::sid_bytes(sid).ok())
@@ -881,7 +888,7 @@ fn dacl_denies_read(dacl: *const ACL, sandbox: &[&str]) -> bool {
         }
         false
     });
-    denied
+    (denied, granted)
 }
 
 /// Where the SID starts in an ACE of the plain layout: after the header and

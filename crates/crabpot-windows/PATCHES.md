@@ -64,6 +64,29 @@ it cannot be stat'd, which upstream's macOS profile avoids with
 Reason: kelpie denies the home folder and grants paths beneath `~\.shep`, and
 claude refuses a file whose path has a component it cannot examine.
 
+## `srt-win/src/winsta.rs`: no session folder grant from session 0
+
+From session 0 (ssh, a "run whether logged on or not" task) every launch failed
+before the runner started: `grant_sandbox_on_session_bno` opened
+`\Sessions\0\BaseNamedObjects`, which does not exist, and got
+`NTSTATUS 0xC0000034`.
+
+- `grant_sandbox_on_session_bno` returns `Ok(())` without opening anything when
+  the broker runs in session 0.
+- `broker_session` wraps `ProcessIdToSessionId` and is read once.
+  `open_session_bno` takes the path as an argument instead of reading the
+  session itself.
+- `session_bno_path` is pure: `None` for session 0,
+  `\Sessions\<ts>\BaseNamedObjects` otherwise. Two unit tests pin it.
+- The module doc's "Session BNO" paragraph says so.
+
+Reason: session 0's named objects live in the global `\BaseNamedObjects`. That
+folder is shared by every service and only SYSTEM and Administrators can write
+its DACL, so it must not be granted. It needs no grant: its DACL already gives
+Everyone `QUERY | TRAVERSE | CREATE_OBJECT | CREATE_SUBDIRECTORY` (`0x2000F`),
+and the lockdown token keeps Everyone enabled, so msys2's per-DLL subdirectory
+can be made there. This patch goes upstream with #166.
+
 ## Not copied
 
 - `Cargo.lock`: the workspace has one.

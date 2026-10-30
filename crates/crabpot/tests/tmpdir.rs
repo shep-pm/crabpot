@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// A folder of its own under the target's temp folder, removed when it drops.
@@ -16,8 +16,14 @@ impl Scratch {
     fn new(test: &str) -> Self {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("tmpdir-{test}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
+        match fs::remove_dir_all(&root) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                panic!("cannot clear {}: {error}", root.display())
+            }
+            _ => {}
+        }
+        fs::create_dir_all(&root)
+            .unwrap_or_else(|error| panic!("cannot make {}: {error}", root.display()));
         Self(root)
     }
 }
@@ -30,7 +36,7 @@ impl Drop for Scratch {
 
 /// Runs `sh -c script` in a sandbox that allows no writes of its own, with
 /// `CLAUDE_CODE_TMPDIR` set to `tmpdir`.
-fn run_in(scratch: &Scratch, tmpdir: &PathBuf, script: &str) -> Output {
+fn run_in(scratch: &Scratch, tmpdir: &Path, script: &str) -> Output {
     let settings = scratch.0.join("settings.json");
     fs::write(
         &settings,
@@ -39,7 +45,7 @@ fn run_in(scratch: &Scratch, tmpdir: &PathBuf, script: &str) -> Output {
             "filesystem": {"denyRead": [], "allowWrite": [], "denyWrite": []}
         }"#,
     )
-    .unwrap();
+    .expect("the settings file is written");
     Command::new(env!("CARGO_BIN_EXE_crabpot"))
         .arg("-s")
         .arg(&settings)
@@ -47,7 +53,7 @@ fn run_in(scratch: &Scratch, tmpdir: &PathBuf, script: &str) -> Output {
         .env("HOME", &scratch.0)
         .env("CLAUDE_CODE_TMPDIR", tmpdir)
         .output()
-        .unwrap()
+        .expect("the crabpot binary runs")
 }
 
 #[test]
@@ -62,7 +68,10 @@ fn a_tmpdir_outside_allow_write_is_made_and_the_command_writes_in_it() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(fs::read_to_string(tmpdir.join("out")).unwrap(), "written\n");
+    assert_eq!(
+        fs::read_to_string(tmpdir.join("out")).expect("the command wrote its file"),
+        "written\n"
+    );
     assert_eq!(
         fs::metadata(&tmpdir).unwrap().permissions().mode() & 0o777,
         0o700
@@ -92,7 +101,7 @@ fn a_tmpdir_that_is_a_link_refuses_the_start() {
 fn a_tmpdir_that_is_relative_refuses_the_start() {
     let scratch = Scratch::new("relative");
 
-    let output = run_in(&scratch, &PathBuf::from("claude-code"), "echo ran");
+    let output = run_in(&scratch, Path::new("claude-code"), "echo ran");
 
     assert!(!output.status.success());
     assert!(

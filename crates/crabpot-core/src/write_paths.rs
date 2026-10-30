@@ -94,6 +94,7 @@ pub fn default_write_roots(
         )?
     };
     let mut spelled: Vec<String> = OWN_ROOTS.iter().map(|root| (*root).to_owned()).collect();
+    spelled.extend(kept.into_iter().map(|dir| join(home, dir)));
     let tmpdir = match base.tmpdir() {
         Some(chosen) => {
             let resolved = chosen_root(base, chosen)?;
@@ -101,7 +102,6 @@ pub fn default_write_roots(
         }
         None => None,
     };
-    spelled.extend(kept.into_iter().map(|dir| join(home, dir)));
     Ok(DefaultWriteRoots { spelled, tmpdir })
 }
 
@@ -115,6 +115,8 @@ fn chosen_root(base: &PathBase, chosen: &str) -> Result<String, PathError> {
     if name.is_empty() {
         return Ok(spelled);
     }
+    // A parent that cannot be resolved is not there to be made writable
+    // through a link, so the folder keeps its spelling.
     Ok(match real_path_of(base, parent) {
         Ok(real) => format!("{}/{name}", real.trim_end_matches('/')),
         Err(_) => spelled,
@@ -251,7 +253,18 @@ mod tests {
     }
 
     #[test]
-    fn a_tmpdir_that_is_not_text_is_no_root() {
+    fn a_tmpdir_that_is_a_home_dir_is_not_added_twice() {
+        let folder = "/crabpot-test-home/me/.npm/_logs";
+        let base = base().with_tmpdir(Some(folder.to_owned()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(roots.iter().filter(|root| *root == folder).count(), 1);
+        assert_eq!(roots.len(), 10);
+    }
+
+    #[test]
+    fn a_base_with_no_text_tmpdir_has_no_chosen_root() {
         let base = base().with_tmpdir(None);
 
         let roots = default_write_paths(&base, &Config::default()).unwrap();
@@ -329,7 +342,7 @@ mod tests {
     }
 
     fn home_dirs(config: &Config) -> Vec<String> {
-        default_write_paths(&base(), config).unwrap()[8..].to_vec()
+        default_write_roots(&base(), config).unwrap().spelled[8..].to_vec()
     }
 
     #[test]

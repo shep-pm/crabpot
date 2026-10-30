@@ -5,10 +5,10 @@
 //! missing parent is a host that has not set the sandbox up.
 
 use core::fmt;
-use std::fs::{self, DirBuilder, Metadata};
+use std::fs::{self, DirBuilder, Metadata, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
 
 use nix::unistd::geteuid;
 
@@ -21,6 +21,9 @@ pub enum TmpdirError {
     /// The path is relative, or starts with `~`, which the child and the
     /// grant would each read against a different base.
     NotAbsolute,
+    /// The path holds a `..`, which the kernel resolves through whatever link
+    /// is before it, so the folder looked at could be another one.
+    ParentComponent,
     /// The folder is missing and so is its parent.
     MissingParent,
     /// The path is a symbolic link, whatever it points at.
@@ -37,6 +40,7 @@ impl fmt::Display for TmpdirError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAbsolute => f.write_str("the temp folder is not an absolute path"),
+            Self::ParentComponent => f.write_str("the temp folder's path holds a `..`"),
             Self::MissingParent => f.write_str("the temp folder's parent is missing"),
             Self::Link => f.write_str("the temp folder is a symbolic link"),
             Self::NotADirectory => f.write_str("the temp folder is not a folder"),
@@ -66,17 +70,21 @@ pub enum Origin {
 /// # Errors
 ///
 /// [`TmpdirError::NotAbsolute`] when the path is relative,
+/// [`TmpdirError::ParentComponent`] when it holds a `..`,
 /// [`TmpdirError::MissingParent`] when the folder and its parent are both
 /// missing, [`TmpdirError::Link`] when the path is a link,
 /// [`TmpdirError::NotADirectory`] when it is a file, [`TmpdirError::OtherOwner`]
-/// when another user owns a folder `origin` says the host named, and [`TmpdirError::Io`] for any other
-/// failure.
+/// when another user owns a folder `origin` says the host named, and
+/// [`TmpdirError::Io`] for any other failure.
 pub fn prepare(path: &Path, origin: Origin) -> Result<(), TmpdirError> {
-    // A trailing `/` or `/.` makes the kernel follow a final link, which
-    // `symlink_metadata` would otherwise report as one.
     if !path.is_absolute() {
         return Err(TmpdirError::NotAbsolute);
     }
+    if path.components().any(|part| part == Component::ParentDir) {
+        return Err(TmpdirError::ParentComponent);
+    }
+    // A trailing `/` or `/.` makes the kernel follow a final link, which
+    // `symlink_metadata` would otherwise report as one.
     let path: PathBuf = path.components().collect();
     let path = path.as_path();
     match fs::symlink_metadata(path) {
@@ -90,7 +98,10 @@ pub fn prepare(path: &Path, origin: Origin) -> Result<(), TmpdirError> {
 /// racing process made it first.
 fn make(path: &Path, origin: Origin) -> Result<(), TmpdirError> {
     match DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => Ok(()),
+        // The umask only removes bits from the mode asked for, and may take
+        // an owner bit with them.
+        Ok(()) => fs::set_permissions(path, Permissions::from_mode(0o700))
+            .map_err(|error| TmpdirError::Io(error.kind())),
         Err(error) => match error.kind() {
             io::ErrorKind::NotFound => Err(TmpdirError::MissingParent),
             io::ErrorKind::AlreadyExists => fs::symlink_metadata(path)
@@ -101,8 +112,8 @@ fn make(path: &Path, origin: Origin) -> Result<(), TmpdirError> {
     }
 }
 
-/// Whether what is at the path is a folder this user owns, or a default folder
-/// of any owner.
+/// Accepts a folder this user owns, or a default folder of any owner, and
+/// refuses a link, a file, and a host-named folder of another user.
 fn check(found: &Metadata, origin: Origin) -> Result<(), TmpdirError> {
     if found.file_type().is_symlink() {
         Err(TmpdirError::Link)
@@ -117,7 +128,7 @@ fn check(found: &Metadata, origin: Origin) -> Result<(), TmpdirError> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::symlink;
     use std::path::PathBuf;
 
     use super::*;
@@ -238,14 +249,36 @@ mod tests {
 
     #[test]
     fn a_relative_tmpdir_is_refused() {
-        for relative in ["claude", "./claude", "~/claude", ""] {
+        for relative in [
+            "crabpot-core-relative-tmpdir",
+            "./crabpot-core-relative-tmpdir",
+            "~/crabpot-core-relative-tmpdir",
+            "",
+        ] {
             assert_eq!(
                 prepare(Path::new(relative), Origin::Host),
                 Err(TmpdirError::NotAbsolute),
                 "{relative}"
             );
         }
-        assert!(!Path::new("claude").exists());
+        assert!(!Path::new("crabpot-core-relative-tmpdir").exists());
+    }
+
+    #[test]
+    fn a_parent_component_is_refused() {
+        let scratch = Scratch::new("dotdot");
+        let target = scratch.0.join("target");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, scratch.0.join("claude")).unwrap();
+
+        for dotted in ["claude/../evil", "claude/.."] {
+            assert_eq!(
+                prepare(&scratch.0.join(dotted), Origin::Host),
+                Err(TmpdirError::ParentComponent),
+                "{dotted}"
+            );
+        }
+        assert!(!scratch.0.join("evil").exists());
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crabpot_core::proxy::PortRange;
 use crabpot_core::proxy::Proxy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::proxy::username_for;
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::tmpdir::{Origin, TmpdirError};
 #[cfg(target_os = "linux")]
 use crabpot_linux::env::Facts;
@@ -75,10 +75,12 @@ impl Sandbox {
     /// nothing confines a command yet, [`StartError::UnresolvedPath`] when a path
     /// in `config` cannot be made absolute, and [`StartError::Proxy`] when the
     /// proxy that carries its network cannot start. On macOS and Linux the
-    /// folder `TMPDIR` is set to (`CLAUDE_CODE_TMPDIR`, then `CLAUDE_TMPDIR`,
-    /// then `/tmp/claude`) is made when it is missing, owner-only, and the
-    /// sandbox may write it: [`StartError::Tmpdir`] when its parent is missing,
-    /// it is relative, a link or a file, or another user owns a folder the host named. Another user's default `/tmp/claude` is used as it is. On Linux the bwrap checks
+    /// sandbox first makes the folder it sets `TMPDIR` to (`CLAUDE_CODE_TMPDIR`,
+    /// then `CLAUDE_TMPDIR`, then `/tmp/claude`) when it is missing, owner-only,
+    /// and lets the command write there. [`StartError::Tmpdir`] when that path
+    /// is relative or holds a `..`, its parent is missing, it is a link or a
+    /// file, or another user owns it. A `/tmp/claude` that another user owns is
+    /// used as it is, when the host names no folder. On Linux the bwrap checks
     /// run first: [`StartError::Missing`] when there is no executable `bwrap`
     /// on `PATH`, and [`StartError::Uid0WithoutSetfcap`] for uid 0 without
     /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
@@ -107,25 +109,18 @@ impl Sandbox {
         let helper = std::env::current_exe().map_err(|e| StartError::CurrentExe(e.kind()))?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
-            // Before the profile or the words are rendered, which resolve the
-            // folder and bind it only if it is there.
-            let claude_code_tmpdir = std::env::var_os("CLAUDE_CODE_TMPDIR");
-            let claude_tmpdir = std::env::var_os("CLAUDE_TMPDIR");
-            let origin = if crabpot_core::env::base::tmpdir_is_host_named(
-                claude_code_tmpdir.as_deref(),
-                claude_tmpdir.as_deref(),
-            ) {
+            // The folder is made before the profile or the bwrap words are
+            // rendered, since they resolve and bind it only once it exists.
+            let (tmpdir, host_named) = crabpot_core::env::base::tmpdir_named(
+                std::env::var_os("CLAUDE_CODE_TMPDIR").as_deref(),
+                std::env::var_os("CLAUDE_TMPDIR").as_deref(),
+            );
+            let origin = if host_named {
                 Origin::Host
             } else {
                 Origin::Default
             };
-            crabpot_core::tmpdir::prepare(
-                Path::new(&crabpot_core::env::base::tmpdir(
-                    claude_code_tmpdir.as_deref(),
-                    claude_tmpdir.as_deref(),
-                )),
-                origin,
-            )?;
+            crabpot_core::tmpdir::prepare(Path::new(&tmpdir), origin)?;
             let proxy = Proxy::start(
                 &config.network.allowed_domains,
                 &config.network.denied_domains,
@@ -484,7 +479,7 @@ pub enum StartError {
     },
     /// macOS and Linux: the folder `TMPDIR` names cannot be used as the temp
     /// folder, so there is nowhere for the command to write its temp files.
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     Tmpdir(TmpdirError),
     /// A write deny the sandbox must apply in its own working directory is a
     /// path its words cannot name, so there is no mount for it and no command
@@ -495,7 +490,7 @@ pub enum StartError {
     },
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl From<TmpdirError> for StartError {
     fn from(error: TmpdirError) -> Self {
         Self::Tmpdir(error)
@@ -544,7 +539,7 @@ impl fmt::Display for StartError {
                 write!(f, "only macOS, Linux and Windows have a sandbox yet")
             }
             Self::UnresolvedPath(error) => write!(f, "{error}"),
-            #[cfg(unix)]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             Self::Tmpdir(error) => write!(f, "{error}"),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
             Self::ProxyRangeFull { first, last } => write!(

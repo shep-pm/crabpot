@@ -64,6 +64,35 @@ it cannot be stat'd, which upstream's macOS profile avoids with
 Reason: kelpie denies the home folder and grants paths beneath `~\.shep`, and
 claude refuses a file whose path has a component it cannot examine.
 
+## `srt-win/src/logon.rs`: naming a runner the sandbox user cannot read
+
+When the sandbox user cannot read the runner executable,
+`CreateProcessWithLogonW` fails with `Access is denied. (0x80070005)` and
+`spawn_runner` ended with "ensure the Secondary Logon service (seclogon) is
+running", though seclogon is running.
+
+- `sandbox_can_read(path, sandbox)`: whether the file's own DACL grants read and
+  execute to Users, Authenticated Users, Everyone or one of `sandbox` (the
+  sandbox account's SID and its group's SID). `None` when the DACL cannot be
+  read or the path is not UTF-8. A group grant counts as held whatever else the
+  DACL denies the sandbox user, so only `Some(false)` is acted on. It reads the
+  DACL with `acl::read_file_dacl` and asks `GetEffectiveRightsFromAclW` per
+  trustee, so a deny ACE takes rights back and an ACE written in generic rights
+  answers as nothing.
+- `spawn_runner`: after the `ERROR_LOGON_FAILURE`, `ERROR_DIRECTORY` and seclogon
+  arms and before the generic message, an `E_ACCESSDENIED` with
+  `sandbox_can_read(current_exe, [sb_sid, sandbox group SID]) == Some(false)`
+  returns an error naming the executable, which says to grant it read and
+  execute or move it to a folder the sandbox user can read. The group SID is
+  `sid::lookup_account_sid(user::SANDBOX_GROUP)`, and a failed lookup checks the
+  account SID alone.
+- Unit tests pin the answers for a grant to one account, to Everyone, a deny,
+  generic rights, read without execute and a string that is no SID, and that
+  the message names the executable and not seclogon.
+
+Reason: the message sent the maintainer to a service that was running. Every
+other failure arm and message, and every exit code, is unchanged.
+
 ## `srt-win/src/winsta.rs`: no session folder grant from session 0
 
 From session 0 (ssh, a "run whether logged on or not" task) every launch failed

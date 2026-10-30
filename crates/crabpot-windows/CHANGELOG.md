@@ -5,6 +5,19 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] - 2026-10-30
+
+### Changed
+
+- Move the runner access tests out of logon.rs
+
+### Fixed
+
+- Honour a deny for the sandbox user in the runner check
+- Read the DACL in order and count every deny that blocks a read
+- Count a grant ahead of a deny from the ordered walk
+
+
 ## [0.5.7] - 2026-10-30
 
 ### Changed

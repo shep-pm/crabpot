@@ -25,8 +25,9 @@ httparse = { version = "1", default-features = false }
 getrandom = { version = "0.4", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
-# Lists this host's interface addresses, which std cannot, through a safe call.
-nix = { version = "0.31", default-features = false, features = ["net"] }
+# Lists this host's interface addresses, which std cannot, through a safe call,
+# and reads the effective user a temp folder must belong to.
+nix = { version = "0.31", default-features = false, features = ["net", "user"] }
 # The socket calls `unix_socket` makes, because neither std nor nix binds a
 # path longer than `sun_path`.
 libc = { version = "0.2", default-features = false }

@@ -1,7 +1,8 @@
 //! The roots every sandbox may write, before the config adds its own.
 //!
 //! Upstream's `getDefaultWritePaths` and `defaultWritePathsUnder`: the
-//! sandbox's own devices and temporary folder, and two folders under the home
+//! sandbox's own devices and temporary folders, the host's chosen one among
+//! them, and two folders under the home
 //! directory that its tools log to. Those two are left out when a `denyRead`
 //! entry covers them, so an explicit read deny wins over a write nobody asked
 //! for. Upstream also judges them against the credential denies, and
@@ -20,7 +21,7 @@ use crate::path::{
 use crate::path_entries::read_rules_of;
 
 /// What the sandbox needs writable: the child's stdio and the `TMPDIR` it is
-/// handed. Kept whatever is read-denied.
+/// handed by default. Kept whatever is read-denied.
 const OWN_ROOTS: [&str; 8] = [
     "/dev/stdout",
     "/dev/stderr",
@@ -61,6 +62,12 @@ pub fn default_write_paths(base: &PathBase, config: &Config) -> Result<Vec<Strin
         )?
     };
     let mut roots: Vec<String> = OWN_ROOTS.iter().map(|root| (*root).to_owned()).collect();
+    if let Some(chosen) = base.tmpdir() {
+        let resolved = normalize_path_for_sandbox(base, chosen, true)?;
+        if !roots.contains(&resolved) {
+            roots.push(resolved);
+        }
+    }
     roots.extend(kept.into_iter().map(|dir| join(home, dir)));
     Ok(roots)
 }
@@ -169,6 +176,51 @@ mod tests {
 
     fn base() -> PathBase {
         PathBase::new(Some(HOME.to_owned()), Some("/crabpot-test-work".to_owned()))
+    }
+
+    #[test]
+    fn the_chosen_tmpdir_is_a_default_write_root() {
+        let base = base().with_tmpdir(Some("/crabpot-test-tmp/mine".to_owned()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(roots[8], "/crabpot-test-tmp/mine");
+        assert_eq!(roots.len(), 11);
+    }
+
+    #[test]
+    fn a_tmpdir_that_is_already_a_root_is_not_added_twice() {
+        let base = base().with_tmpdir(Some("/tmp/claude".to_owned()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(
+            roots.iter().filter(|root| *root == "/tmp/claude").count(),
+            1
+        );
+        assert_eq!(roots.len(), 10);
+    }
+
+    #[test]
+    fn a_tmpdir_that_is_not_text_is_no_root() {
+        let base = base().with_tmpdir(None);
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+
+        assert_eq!(roots.len(), 10);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_tmpdir_under_tmp_is_granted_as_private_tmp() {
+        let folder = format!("/tmp/crabpot-core-write-paths-{}", std::process::id());
+        std::fs::create_dir_all(&folder).unwrap();
+        let base = base().with_tmpdir(Some(folder.clone()));
+
+        let roots = default_write_paths(&base, &Config::default()).unwrap();
+        let _ = std::fs::remove_dir(&folder);
+
+        assert_eq!(roots[8], format!("/private{folder}"));
     }
 
     fn denying(entries: &[&str]) -> Config {

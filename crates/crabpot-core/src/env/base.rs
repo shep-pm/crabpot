@@ -10,7 +10,7 @@
 use std::ffi::{OsStr, OsString};
 
 /// Where a command's temp files go when the host names no folder of its own.
-const DEFAULT_TMPDIR: &str = "/tmp/claude";
+pub(crate) const DEFAULT_TMPDIR: &str = "/tmp/claude";
 
 /// The names the sandbox owns: the marker a tool reads to tell it runs inside
 /// the sandbox, and the temp folder it writes to.
@@ -32,8 +32,11 @@ pub fn vars(
 }
 
 /// The host's own temp folder, under the name it uses now and the one it used
-/// before. A name that carries nothing is no answer.
-fn tmpdir(claude_code_tmpdir: Option<&OsStr>, claude_tmpdir: Option<&OsStr>) -> OsString {
+/// before, or `/tmp/claude`. A name that carries nothing is no answer.
+///
+/// The folder `TMPDIR` is set to, and the one the sandbox makes and may write.
+#[must_use]
+pub fn tmpdir(claude_code_tmpdir: Option<&OsStr>, claude_tmpdir: Option<&OsStr>) -> OsString {
     named(claude_code_tmpdir)
         .or_else(|| named(claude_tmpdir))
         .map_or_else(|| OsString::from(DEFAULT_TMPDIR), OsString::from)

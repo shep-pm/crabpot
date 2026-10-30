@@ -87,3 +87,18 @@ fn a_tmpdir_that_is_a_link_refuses_the_start() {
     );
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn a_tmpdir_that_is_relative_refuses_the_start() {
+    let scratch = Scratch::new("relative");
+
+    let output = run_in(&scratch, &PathBuf::from("claude-code"), "echo ran");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not an absolute path"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+}

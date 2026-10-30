@@ -42,7 +42,34 @@ pub fn tmpdir(claude_code_tmpdir: Option<&OsStr>, claude_tmpdir: Option<&OsStr>)
         .map_or_else(|| OsString::from(DEFAULT_TMPDIR), OsString::from)
 }
 
+/// Whether the host names a temp folder of its own, so [`tmpdir`] is not the
+/// default.
+#[must_use]
+pub fn tmpdir_is_host_named(
+    claude_code_tmpdir: Option<&OsStr>,
+    claude_tmpdir: Option<&OsStr>,
+) -> bool {
+    named(claude_code_tmpdir)
+        .or_else(|| named(claude_tmpdir))
+        .is_some()
+}
+
 /// The name, when it carries something.
 fn named(value: Option<&OsStr>) -> Option<&OsStr> {
     value.filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_folder_is_no_host_name() {
+        let empty = OsStr::new("");
+
+        assert!(!tmpdir_is_host_named(None, None));
+        assert!(!tmpdir_is_host_named(Some(empty), Some(empty)));
+        assert!(tmpdir_is_host_named(Some(OsStr::new("/a")), None));
+        assert!(tmpdir_is_host_named(None, Some(OsStr::new("/b"))));
+    }
 }

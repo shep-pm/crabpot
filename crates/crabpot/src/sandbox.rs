@@ -22,7 +22,7 @@ use crabpot_core::proxy::Proxy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::proxy::username_for;
 #[cfg(unix)]
-use crabpot_core::tmpdir::TmpdirError;
+use crabpot_core::tmpdir::{Origin, TmpdirError};
 #[cfg(target_os = "linux")]
 use crabpot_linux::env::Facts;
 #[cfg(target_os = "linux")]
@@ -78,7 +78,7 @@ impl Sandbox {
     /// folder `TMPDIR` is set to (`CLAUDE_CODE_TMPDIR`, then `CLAUDE_TMPDIR`,
     /// then `/tmp/claude`) is made when it is missing, owner-only, and the
     /// sandbox may write it: [`StartError::Tmpdir`] when its parent is missing,
-    /// it is a link or a file, or another user owns it. On Linux the bwrap checks
+    /// it is relative, a link or a file, or another user owns a folder the host named. Another user's default `/tmp/claude` is used as it is. On Linux the bwrap checks
     /// run first: [`StartError::Missing`] when there is no executable `bwrap`
     /// on `PATH`, and [`StartError::Uid0WithoutSetfcap`] for uid 0 without
     /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
@@ -109,10 +109,23 @@ impl Sandbox {
         {
             // Before the profile or the words are rendered, which resolve the
             // folder and bind it only if it is there.
-            crabpot_core::tmpdir::prepare(Path::new(&crabpot_core::env::base::tmpdir(
-                std::env::var_os("CLAUDE_CODE_TMPDIR").as_deref(),
-                std::env::var_os("CLAUDE_TMPDIR").as_deref(),
-            )))?;
+            let claude_code_tmpdir = std::env::var_os("CLAUDE_CODE_TMPDIR");
+            let claude_tmpdir = std::env::var_os("CLAUDE_TMPDIR");
+            let origin = if crabpot_core::env::base::tmpdir_is_host_named(
+                claude_code_tmpdir.as_deref(),
+                claude_tmpdir.as_deref(),
+            ) {
+                Origin::Host
+            } else {
+                Origin::Default
+            };
+            crabpot_core::tmpdir::prepare(
+                Path::new(&crabpot_core::env::base::tmpdir(
+                    claude_code_tmpdir.as_deref(),
+                    claude_tmpdir.as_deref(),
+                )),
+                origin,
+            )?;
             let proxy = Proxy::start(
                 &config.network.allowed_domains,
                 &config.network.denied_domains,

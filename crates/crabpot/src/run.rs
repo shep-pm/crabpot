@@ -20,6 +20,9 @@ use tokio::signal::unix::{SignalKind, signal};
 #[cfg(unix)]
 use tokio::task::JoinHandle;
 
+#[cfg(target_os = "linux")]
+use crabpot_linux::info::Report;
+
 use crate::args::{self, Helper, HelperMode, Invocation, SRT_WIN_FLAG, Subcommand};
 use crate::sandbox::Sandbox;
 use crate::windows::install::{self, Machine};
@@ -321,12 +324,15 @@ impl ForwardTarget {
             #[cfg(any(not(target_os = "linux"), test))]
             Self::Child => Some(child),
             #[cfg(target_os = "linux")]
-            Self::Helper(info) => {
-                let _ = child;
-                // bwrap reports its namespace init, and the helper is the
-                // first process that starts.
-                first_child(info.child_pid()?)
-            }
+            Self::Helper(info) => match info.report() {
+                // bwrap reports its namespace init, and the helper is the first
+                // process that starts.
+                Report::Pid(init) => first_child(init),
+                Report::Pending => None,
+                // The report never came: walk down from bwrap, whose first
+                // child is the init.
+                Report::Missing => first_child(first_child(child)?),
+            },
         }
     }
 }

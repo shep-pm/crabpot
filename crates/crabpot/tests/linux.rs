@@ -257,6 +257,27 @@ fn sigusr2_reaches_the_command() {
     assert_eq!(status.code(), Some(3));
 }
 
+/// How long the launcher may take to start its command and to end it after a
+/// signal. A signal that is lost leaves it running, so the wait is bounded and
+/// a hang fails the test instead of the job.
+const LAUNCHER_WAIT: Duration = Duration::from_secs(30);
+
+/// What arrives on `lines`, or a failure that ends `launcher` first, so no
+/// sandbox outlives the test.
+fn within_wait(lines: &mpsc::Receiver<String>, launcher: &mut Child, what: &str) -> String {
+    match lines.recv_timeout(LAUNCHER_WAIT) {
+        Ok(text) => text,
+        Err(_) => {
+            let _ = launcher.kill();
+            let mut stderr = String::new();
+            if let Some(mut pipe) = launcher.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            panic!("the launcher gave no {what} in {LAUNCHER_WAIT:?}; stderr: {stderr}");
+        }
+    }
+}
+
 /// Starts the launcher on a command that traps `signal`, signals the launcher
 /// once the command says it is ready, and returns what the command wrote after
 /// that with the launcher's exit status.
@@ -265,17 +286,26 @@ fn signal_a_ready_launcher(signal: &str) -> (String, ExitStatus) {
     let mut launcher = Command::new(CRABPOT)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--", "sh", "-c", &script])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut stdout = BufReader::new(launcher.stdout.take().unwrap());
-    let mut line = String::new();
-    stdout.read_line(&mut line).unwrap();
-    assert_eq!(line, "ready\n");
+    let stdout = launcher.stdout.take().unwrap();
+    let (sender, lines) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = stdout.read_line(&mut line);
+        let _ = sender.send(line);
+        let mut rest = String::new();
+        let _ = stdout.read_to_string(&mut rest);
+        let _ = sender.send(rest);
+    });
+    assert_eq!(within_wait(&lines, &mut launcher, "ready line"), "ready\n");
 
     send(signal, &launcher);
-    let mut rest = String::new();
-    stdout.read_to_string(&mut rest).unwrap();
+    let rest = within_wait(&lines, &mut launcher, "end after the signal");
     (rest, launcher.wait().unwrap())
 }
 

@@ -8,7 +8,7 @@ use core::fmt;
 use std::fs::{self, DirBuilder, Metadata};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nix::unistd::geteuid;
 
@@ -57,6 +57,10 @@ impl core::error::Error for TmpdirError {}
 /// when another user owns the folder, and [`TmpdirError::Io`] for any other
 /// failure.
 pub fn prepare(path: &Path) -> Result<(), TmpdirError> {
+    // A trailing `/` or `/.` makes the kernel follow a final link, which
+    // `symlink_metadata` would otherwise report as one.
+    let path: PathBuf = path.components().collect();
+    let path = path.as_path();
     match fs::symlink_metadata(path) {
         Ok(found) => check(&found),
         Err(error) if error.kind() == io::ErrorKind::NotFound => make(path),
@@ -169,6 +173,18 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         assert_eq!(prepare(&link), Err(TmpdirError::Link));
+    }
+
+    #[test]
+    fn a_link_with_a_trailing_slash_is_refused() {
+        let scratch = Scratch::new("link-slash");
+        let target = scratch.0.join("target");
+        fs::create_dir(&target).unwrap();
+        let link = scratch.0.join("claude");
+        symlink(&target, &link).unwrap();
+
+        assert_eq!(prepare(&scratch.0.join("claude/")), Err(TmpdirError::Link));
+        assert_eq!(prepare(&scratch.0.join("claude/.")), Err(TmpdirError::Link));
     }
 
     #[test]

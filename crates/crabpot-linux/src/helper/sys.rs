@@ -7,6 +7,9 @@
 
 use core::ffi::c_int;
 use core::sync::atomic::{AtomicI32, Ordering};
+use std::io;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 use nix::errno::Errno;
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, sigaction};
@@ -65,4 +68,15 @@ pub(super) fn forward_signals(child: Pid, signals: &[Signal]) -> Result<(), Errn
         unsafe { sigaction(signal, &action) }?;
     }
     Ok(())
+}
+
+/// Has `command`'s child start with `signals` blocked, which survives the
+/// `exec` into the program it runs.
+pub(super) fn block_in_child(command: &mut Command, signals: SigSet) {
+    // SAFETY: the closure runs in the forked child before `exec`, where only
+    // async-signal-safe calls are sound. `thread_block` is one `pthread_sigmask`
+    // call on a set copied in, and the error conversion allocates nothing.
+    unsafe {
+        command.pre_exec(move || signals.thread_block().map_err(io::Error::from));
+    }
 }

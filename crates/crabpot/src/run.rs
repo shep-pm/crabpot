@@ -149,9 +149,10 @@ fn fail(reason: impl core::fmt::Display) -> ! {
 /// and 1 when it is refused or fails.
 ///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
-/// that is refused prints why to stderr and exits 1. A SIGINT, SIGTERM or
-/// console Ctrl-C is the command's to answer: the wrapper keeps waiting for it
-/// to end.
+/// that is refused prints why to stderr and exits 1. On Unix, a SIGINT,
+/// SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 or SIGUSR2 is passed on to the command,
+/// and a console Ctrl-C is the command's to answer: the wrapper keeps waiting
+/// for it to end.
 ///
 /// It never returns: on Unix, tokio keeps the signal handlers it installs for
 /// the rest of the process, so a caller that carried on would no longer be
@@ -173,7 +174,11 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
     match prepare(args) {
         Ok((_sandbox, command)) => {
             #[cfg(target_os = "linux")]
-            let target = ForwardTarget::BwrapCommand;
+            let (command, target) = {
+                let mut command = command;
+                crabpot_linux::helper::hold_signals(&mut command);
+                (command, ForwardTarget::BwrapCommand)
+            };
             #[cfg(not(target_os = "linux"))]
             let target = ForwardTarget::Child;
             execute(command, target)
@@ -311,14 +316,38 @@ impl ForwardTarget {
     }
 }
 
+/// The lowest pid among the processes `pid` started, or `None` while it has
+/// started none.
 #[cfg(target_os = "linux")]
 fn first_child(pid: u32) -> Option<u32> {
-    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-        .ok()?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
+    children_in(Path::new("/proc"), pid)
+}
+
+/// [`first_child`] reading the `proc` filesystem mounted at `root`. A kernel
+/// built without `CONFIG_PROC_CHILDREN`, or gVisor, has no `children` file, so
+/// it falls back to the parent pid every process's `stat` names.
+#[cfg(target_os = "linux")]
+fn children_in(root: &Path, pid: u32) -> Option<u32> {
+    match std::fs::read_to_string(root.join(format!("{pid}/task/{pid}/children"))) {
+        Ok(children) => children
+            .split_whitespace()
+            .filter_map(|child| child.parse().ok())
+            .min(),
+        Err(_) => std::fs::read_dir(root)
+            .ok()?
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|&child| parent_of(root, child) == Some(pid))
+            .min(),
+    }
+}
+
+/// The parent pid in `root/<pid>/stat`, whose command name may hold spaces and
+/// parentheses, so the fields are counted from its last `)`.
+#[cfg(target_os = "linux")]
+fn parent_of(root: &Path, pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(root.join(format!("{pid}/stat"))).ok()?;
+    let (_, after_name) = stat.rsplit_once(')')?;
+    after_name.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// Spawns `command`, waits for it with host shutdown signals forwarded to it, and
@@ -634,6 +663,36 @@ mod tests {
     #[test]
     fn a_command_that_cannot_spawn_is_a_failure() {
         assert_eq!(run(Command::new("/no/such/program")), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_is_found_without_a_children_file() {
+        let dir = Dir::new("proc");
+        // Process 20's name holds the characters that end a naive parse.
+        for (pid, stat) in [
+            (10, "10 (init) S 1 10 10 0"),
+            (20, "20 (a) b) S 10 20 20 0"),
+            (30, "30 (late) S 10 30 30 0"),
+            (40, "40 (other) S 5 40 40 0"),
+        ] {
+            fs::create_dir_all(dir.0.join(pid.to_string())).unwrap();
+            fs::write(dir.0.join(format!("{pid}/stat")), stat).unwrap();
+        }
+        fs::create_dir_all(dir.0.join("self")).unwrap();
+
+        assert_eq!(children_in(&dir.0, 10), Some(20), "the lowest child");
+        assert_eq!(children_in(&dir.0, 20), None, "a process with no child");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_is_read_from_its_children_file() {
+        let dir = Dir::new("proc-children");
+        fs::create_dir_all(dir.0.join("10/task/10")).unwrap();
+        fs::write(dir.0.join("10/task/10/children"), "31 22 \n").unwrap();
+
+        assert_eq!(children_in(&dir.0, 10), Some(22));
     }
 
     #[cfg(unix)]

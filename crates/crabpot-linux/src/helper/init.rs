@@ -16,7 +16,9 @@ use core::fmt;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
 
 use nix::errno::Errno;
 use nix::mount::{MsFlags, mount};
@@ -34,14 +36,29 @@ use super::sys;
 /// Where the sandbox's `max_user_namespaces` limit is written.
 const MAX_USER_NAMESPACES: &str = "/proc/sys/user/max_user_namespaces";
 
-/// The signals a helper passes on to what it runs: the ones a host ends a
-/// command with.
-const FORWARDED: [Signal; 4] = [
+// Keep this set aligned with the wrapper's listeners in crates/crabpot/src/run.rs.
+const FORWARDED: [Signal; 6] = [
     Signal::SIGINT,
     Signal::SIGTERM,
     Signal::SIGHUP,
     Signal::SIGQUIT,
+    Signal::SIGUSR1,
+    Signal::SIGUSR2,
 ];
+
+/// Readies the wrapper's `command` for bwrap, which runs this helper.
+///
+/// bwrap's processes forward no signals, so one that reaches them kills the
+/// sandbox, and the helper has no handlers until [`init`] gets to
+/// `fork_forwarding`. So the child starts with the `FORWARDED` signals
+/// blocked, which every process down to the helper inherits: a signal sent
+/// early stays pending until the helper forwards it. The child also leads a
+/// process group of its own, so a host's signal to the wrapper's group reaches
+/// the wrapper, which forwards it, and not bwrap's processes as well.
+pub fn hold_signals(command: &mut Command) -> &mut Command {
+    sys::block_in_child(command, forwarded_set());
+    command.process_group(0)
+}
 
 /// Runs the command `argv` names as a child of a new PID 1. With a `relay` it
 /// first forks the relay that forwards the sandbox's proxy ports to that Unix
@@ -305,6 +322,24 @@ mod tests {
     #[test]
     fn no_command_is_refused_before_any_namespace_is_made() {
         assert_eq!(init(None, &[]), Err(InitError::NoCommand));
+    }
+
+    #[test]
+    fn a_held_command_starts_with_the_forwarded_signals_blocked_in_a_group_of_its_own() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let mut child = hold_signals(&mut command).spawn().unwrap();
+        let pid = child.id();
+
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        // HUP, INT, QUIT, USR1, USR2 and TERM are bits 0, 1, 2, 9, 11 and 14.
+        assert!(status.contains("SigBlk:\t0000000000004a07\n"), "{status}");
+        let group = stat.rsplit_once(')').unwrap().1.split_whitespace().nth(2);
+        assert_eq!(group, Some(pid.to_string().as_str()), "{stat}");
     }
 
     #[test]

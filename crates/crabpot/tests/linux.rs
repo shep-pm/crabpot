@@ -242,6 +242,22 @@ fn sigint_reaches_the_command() {
 }
 
 #[test]
+fn sigusr1_reaches_the_command() {
+    let (rest, status) = signal_a_ready_command("USR1");
+
+    assert_eq!(rest, "trapped\n");
+    assert_eq!(status.code(), Some(3));
+}
+
+#[test]
+fn sigusr2_reaches_the_command() {
+    let (rest, status) = signal_a_ready_command("USR2");
+
+    assert_eq!(rest, "trapped\n");
+    assert_eq!(status.code(), Some(3));
+}
+
+#[test]
 fn a_signal_death_gives_128_plus_the_signal() {
     // SIGKILL is not one the helper forwards, so the status is the mapping and
     // nothing else.

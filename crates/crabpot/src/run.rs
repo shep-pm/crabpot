@@ -29,6 +29,10 @@ const SIGINT: i32 = 2;
 #[cfg(unix)]
 const SIGTERM: i32 = 15;
 
+// Poll at most 100 times per second until bwrap creates its descendants.
+#[cfg(unix)]
+const TARGET_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// Where upstream looks for settings when `-s` names none, under `$HOME`.
 const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 
@@ -145,9 +149,10 @@ fn fail(reason: impl core::fmt::Display) -> ! {
 /// and 1 when it is refused or fails.
 ///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
-/// that is refused prints why to stderr and exits 1. A SIGINT, SIGTERM or
-/// console Ctrl-C is the command's to answer: the wrapper keeps waiting for it
-/// to end.
+/// that is refused prints why to stderr and exits 1. On Unix, a SIGINT,
+/// SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 or SIGUSR2 is passed on to the command,
+/// and a console Ctrl-C is the command's to answer: the wrapper keeps waiting
+/// for it to end.
 ///
 /// It never returns: on Unix, tokio keeps the signal handlers it installs for
 /// the rest of the process, so a caller that carried on would no longer be
@@ -167,7 +172,17 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
         None => {}
     }
     match prepare(args) {
-        Ok((_sandbox, command)) => execute(command),
+        Ok((_sandbox, command)) => {
+            #[cfg(target_os = "linux")]
+            let (command, target) = {
+                let mut command = command;
+                crabpot_linux::helper::hold_signals(&mut command);
+                (command, ForwardTarget::BwrapCommand)
+            };
+            #[cfg(not(target_os = "linux"))]
+            let target = ForwardTarget::Child;
+            execute(command, target)
+        }
         Err(e) => {
             eprintln!("crabpot: {e}");
             1
@@ -259,7 +274,7 @@ fn load_config(settings: Option<&Path>, home: Option<OsString>) -> Result<Config
 
 /// Spawns `command` and waits for it, and returns the status the wrapper exits
 /// with.
-pub(crate) fn execute(command: Command) -> i32 {
+fn execute(command: Command, target: ForwardTarget) -> i32 {
     let runtime = match Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(e) => {
@@ -267,20 +282,94 @@ pub(crate) fn execute(command: Command) -> i32 {
             return 1;
         }
     };
-    runtime.block_on(run(command))
+    #[cfg(unix)]
+    {
+        runtime.block_on(run(command, target))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = target;
+        runtime.block_on(run(command))
+    }
 }
 
-/// Spawns `command`, waits for it with SIGINT and SIGTERM forwarded to it, and
+#[derive(Debug, Clone, Copy)]
+enum ForwardTarget {
+    #[cfg(any(not(target_os = "linux"), test))]
+    Child,
+    #[cfg(target_os = "linux")]
+    BwrapCommand,
+}
+
+#[cfg(unix)]
+impl ForwardTarget {
+    fn pid(self, child: u32) -> Option<u32> {
+        match self {
+            #[cfg(any(not(target_os = "linux"), test))]
+            Self::Child => Some(child),
+            #[cfg(target_os = "linux")]
+            Self::BwrapCommand => {
+                // The monitor and namespace init are bwrap; only the helper forwards signals.
+                first_child(first_child(child)?)
+            }
+        }
+    }
+}
+
+/// The lowest pid among the processes `pid` started, or `None` while it has
+/// started none.
+#[cfg(target_os = "linux")]
+fn first_child(pid: u32) -> Option<u32> {
+    children_in(Path::new("/proc"), pid)
+}
+
+/// [`first_child`] reading the `proc` filesystem mounted at `root`. A kernel
+/// built without `CONFIG_PROC_CHILDREN`, or gVisor, has no `children` file, so
+/// it falls back to the parent pid every process's `stat` names.
+#[cfg(target_os = "linux")]
+fn children_in(root: &Path, pid: u32) -> Option<u32> {
+    match std::fs::read_to_string(root.join(format!("{pid}/task/{pid}/children"))) {
+        Ok(children) => children
+            .split_whitespace()
+            .filter_map(|child| child.parse().ok())
+            .min(),
+        Err(_) => std::fs::read_dir(root)
+            .ok()?
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|&child| parent_of(root, child) == Some(pid))
+            .min(),
+    }
+}
+
+/// The parent pid in `root/<pid>/stat`, whose command name may hold spaces and
+/// parentheses, so the fields are counted from its last `)`.
+#[cfg(target_os = "linux")]
+fn parent_of(root: &Path, pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(root.join(format!("{pid}/stat"))).ok()?;
+    let (_, after_name) = stat.rsplit_once(')')?;
+    after_name.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Spawns `command`, waits for it with host shutdown signals forwarded to it, and
 /// returns the status the wrapper exits with.
 #[cfg(unix)]
-async fn run(command: Command) -> i32 {
+async fn run(command: Command, target: ForwardTarget) -> i32 {
     // Listening comes before spawning, so no signal falls in between.
-    let listeners = match (
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::terminate()),
-    ) {
-        (Ok(interrupt), Ok(terminate)) => [("INT", interrupt), ("TERM", terminate)],
-        (Err(e), _) | (_, Err(e)) => {
+    // Keep this set aligned with FORWARDED in crates/crabpot-linux/src/helper/init.rs.
+    let listeners = [
+        ("INT", SignalKind::interrupt()),
+        ("TERM", SignalKind::terminate()),
+        ("HUP", SignalKind::hangup()),
+        ("QUIT", SignalKind::quit()),
+        ("USR1", SignalKind::user_defined1()),
+        ("USR2", SignalKind::user_defined2()),
+    ]
+    .into_iter()
+    .map(|(name, kind)| signal(kind).map(|stream| (name, stream)))
+    .collect::<io::Result<Vec<_>>>();
+    let listeners = match listeners {
+        Ok(listeners) => listeners,
+        Err(e) => {
             eprintln!("crabpot: cannot listen for signals: {e}");
             return 1;
         }
@@ -298,7 +387,7 @@ async fn run(command: Command) -> i32 {
             .map(|(name, mut stream)| {
                 tokio::spawn(async move {
                     while stream.recv().await.is_some() {
-                        forward(name, pid).await;
+                        forward(name, pid, |pid| target.pid(pid)).await;
                     }
                 })
             })
@@ -365,7 +454,14 @@ fn exit_after_wait(status: io::Result<ExitStatus>) -> i32 {
 /// send SIGKILL and `kill(2)` is unsafe to call. A signal that does not go
 /// through is dropped: the command is gone, or it was never ours to signal.
 #[cfg(unix)]
-async fn forward(name: &str, pid: u32) {
+async fn forward(name: &str, pid: u32, target: impl Fn(u32) -> Option<u32>) {
+    // The owning run task aborts this retry when its child exits.
+    let pid = loop {
+        if let Some(pid) = target(pid) {
+            break pid;
+        }
+        tokio::time::sleep(TARGET_RETRY_INTERVAL).await;
+    };
     let _ = tokio::process::Command::new("/bin/kill")
         .args(["-s", name, &pid.to_string()])
         .stdin(Stdio::null())
@@ -439,7 +535,7 @@ mod tests {
 
     fn run(command: Command) -> i32 {
         let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        execute(command)
+        execute(command, ForwardTarget::Child)
     }
 
     #[cfg(target_os = "macos")]
@@ -569,6 +665,36 @@ mod tests {
         assert_eq!(run(Command::new("/no/such/program")), 1);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_is_found_without_a_children_file() {
+        let dir = Dir::new("proc");
+        // Process 20's name holds the characters that end a naive parse.
+        for (pid, stat) in [
+            (10, "10 (init) S 1 10 10 0"),
+            (20, "20 (a) b) S 10 20 20 0"),
+            (30, "30 (late) S 10 30 30 0"),
+            (40, "40 (other) S 5 40 40 0"),
+        ] {
+            fs::create_dir_all(dir.0.join(pid.to_string())).unwrap();
+            fs::write(dir.0.join(format!("{pid}/stat")), stat).unwrap();
+        }
+        fs::create_dir_all(dir.0.join("self")).unwrap();
+
+        assert_eq!(children_in(&dir.0, 10), Some(20), "the lowest child");
+        assert_eq!(children_in(&dir.0, 20), None, "a process with no child");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_is_read_from_its_children_file() {
+        let dir = Dir::new("proc-children");
+        fs::create_dir_all(dir.0.join("10/task/10")).unwrap();
+        fs::write(dir.0.join("10/task/10/children"), "31 22 \n").unwrap();
+
+        assert_eq!(children_in(&dir.0, 10), Some(22));
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_signalled_child_reports_a_failure_code() {
@@ -584,15 +710,75 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sigterm_sent_to_the_wrapper_reaches_the_command() {
+    fn a_shutdown_signal_waits_for_its_target_to_appear() {
+        use std::cell::Cell;
+        use std::future::{Future, poll_fn};
+        use std::io::{BufRead, BufReader};
+        use std::sync::mpsc;
+        use std::task::Poll;
+        use std::thread;
+        use std::time::Duration;
+
+        let mut command = shell("trap 'exit 7' TERM; echo ready; read -r line; exit 9");
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let _stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (ready_sender, ready) = mpsc::channel();
+        let (exit_sender, exited) = mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).unwrap();
+            let _ = ready_sender.send(line);
+            let _ = exit_sender.send(child.wait().unwrap());
+        });
+        // Real time bounds the shell and kill subprocesses.
+        let timeout = Duration::from_secs(5);
+        assert_eq!(ready.recv_timeout(timeout).unwrap(), "ready\n");
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+
+        runtime.block_on(async {
+            let discoverable = Cell::new(false);
+            let mut forwarding = std::pin::pin!(forward("TERM", pid, |pid| {
+                discoverable.get().then_some(pid)
+            }));
+            poll_fn(|cx| {
+                assert!(
+                    forwarding.as_mut().poll(cx).is_pending(),
+                    "the signal was dropped before its target appeared"
+                );
+                Poll::Ready(())
+            })
+            .await;
+
+            discoverable.set(true);
+            tokio::time::timeout(timeout, forwarding)
+                .await
+                .expect("the pending signal was not forwarded");
+        });
+
+        assert_eq!(exited.recv_timeout(timeout).unwrap().code(), Some(7));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_shutdown_signals_sent_to_the_wrapper_reach_the_command() {
         // The command signals its parent, which is this process, and then
         // waits long enough for the wrapper to forward the signal back.
-        let script = r#"trap 'exit 7' TERM
-            kill -TERM $PPID
-            n=0
-            while [ $n -lt 2000000 ]; do n=$((n+1)); done
-            exit 9"#;
+        for signal in ["INT", "TERM", "HUP", "QUIT", "USR1", "USR2"] {
+            let script = format!(
+                r#"trap 'exit 7' {signal}
+                kill -{signal} $PPID
+                n=0
+                while [ $n -lt 2000000 ]; do n=$((n+1)); done
+                exit 9"#
+            );
 
-        assert_eq!(run(shell(script)), 7);
+            assert_eq!(run(shell(&script)), 7, "{signal}");
+        }
     }
 }

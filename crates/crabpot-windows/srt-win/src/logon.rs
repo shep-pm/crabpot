@@ -30,19 +30,23 @@ use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::Win32::Foundation::{
     CloseHandle, E_ACCESSDENIED, ERROR_DIRECTORY, ERROR_LOGON_FAILURE, ERROR_NOT_SUPPORTED,
-    ERROR_PIPE_BUSY, ERROR_SERVICE_DISABLED, ERROR_SERVICE_DOES_NOT_EXIST, GENERIC_READ, HANDLE,
-    HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation, WAIT_OBJECT_0,
+    ERROR_PIPE_BUSY, ERROR_SERVICE_DISABLED, ERROR_SERVICE_DOES_NOT_EXIST, GENERIC_ALL,
+    GENERIC_EXECUTE, GENERIC_READ, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation,
+    WAIT_OBJECT_0,
 };
 use windows::Win32::Security::Authorization::{
-    BuildTrusteeWithSidW, GetEffectiveRightsFromAclW, TRUSTEE_W,
+    BuildTrusteeWithSidW, GetEffectiveRightsFromAclW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    TRUSTEE_W,
 };
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::Security::{
-    ACL, CreateWellKnownSid, PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, WELL_KNOWN_SID_TYPE,
-    WinAuthenticatedUserSid, WinBuiltinUsersSid, WinWorldSid,
+    ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE, PSECURITY_DESCRIPTOR,
+    PSID, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, WELL_KNOWN_SID_TYPE, WinAuthenticatedUserSid,
+    WinBuiltinUsersSid, WinWorldSid,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_EXECUTE, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES,
@@ -59,6 +63,7 @@ use windows::Win32::System::Services::{
     SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START_TYPE, SERVICE_STATUS,
     SERVICE_STATUS_CURRENT_STATE,
 };
+use windows::Win32::System::SystemServices::ACCESS_DENIED_ACE_TYPE;
 use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithLogonW,
     GetExitCodeProcess, INFINITE, LOGON_WITH_PROFILE, PROCESS_INFORMATION, ResumeThread,
@@ -66,11 +71,11 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{PCWSTR, PWSTR};
 
-use crate::acl::{Allow, Mask, NO_INHERIT, build_allow_dacl};
+use crate::acl::{Allow, Mask, NO_INHERIT, ace_sid_is, build_allow_dacl, filter_aces};
 use crate::job::Job;
 use crate::launch::{SpawnedChild, quote_arg};
 use crate::sid::{LocalPsid, current_user_sid};
-use crate::util::{OwnedHandle, pcwstr, scrub_wstr, wstr};
+use crate::util::{OwnedHandle, OwnedSd, pcwstr, scrub_wstr, win32_ok, wstr};
 use crate::winsta::{IsolatedDesk, grant_sandbox_on_session_bno, grant_sandbox_on_winsta};
 
 /// Typed error for [`spawn_runner`] with a mapped/network-drive
@@ -791,20 +796,70 @@ impl AsRawHandle for std::io::Stderr {
 /// Whether the sandbox user can read and execute `path` by its DACL: an ACE
 /// for one of the well-known groups its token holds, or for one of `sandbox`
 /// (the sandbox account's SID and its group's SID, as strings, which is who a
-/// grant made for the sandbox names). `None` when the DACL cannot be read or
-/// `path` is not UTF-8, which proves nothing. A group grant counts as held
-/// whatever else the DACL denies the sandbox user, so `Some(true)` can be a
-/// false yes and `Some(false)` is the answer to act on.
+/// grant made for the sandbox names). A deny ACE for one of `sandbox` that
+/// covers read or execute answers `Some(false)` whatever the groups are
+/// granted. `None` when the DACL cannot be read, which proves nothing. Group
+/// membership is not expanded, so a deny for some other group the sandbox user
+/// holds is not seen and `Some(true)` can still be a false yes.
 pub fn sandbox_can_read(path: &Path, sandbox: &[&str]) -> Option<bool> {
-    let (_sd, dacl) = crate::acl::read_file_dacl(path.to_str()?).ok()?;
+    let (_sd, dacl) = read_dacl(path).ok()?;
+    Some(dacl_lets_sandbox_read(dacl, sandbox))
+}
+
+/// [`crate::acl::read_file_dacl`] for a path as the OS holds it, which is not
+/// always UTF-8.
+fn read_dacl(path: &Path) -> Result<(OwnedSd, *mut ACL)> {
+    let w: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut psd = PSECURITY_DESCRIPTOR::default();
+    let r = unsafe {
+        GetNamedSecurityInfoW(
+            pcwstr(&w),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(&mut dacl),
+            None,
+            &mut psd,
+        )
+    };
+    win32_ok(r, &format!("GetNamedSecurityInfoW('{}')", path.display()))?;
+    Ok((OwnedSd::from_raw(psd), dacl))
+}
+
+/// [`sandbox_can_read`] for a DACL already read.
+fn dacl_lets_sandbox_read(dacl: *const ACL, sandbox: &[&str]) -> bool {
     // A file with no DACL grants everyone everything.
-    Some(
-        dacl.is_null()
-            || [WinBuiltinUsersSid, WinAuthenticatedUserSid, WinWorldSid]
+    dacl.is_null()
+        || (!sandbox.iter().any(|sid| sid_denied_read(dacl, sid))
+            && ([WinBuiltinUsersSid, WinAuthenticatedUserSid, WinWorldSid]
                 .into_iter()
                 .any(|group| group_can_read(dacl, group))
-            || sandbox.iter().any(|sid| sid_can_read(dacl, sid)),
-    )
+                || sandbox.iter().any(|sid| sid_can_read(dacl, sid))))
+}
+
+/// Whether `dacl` holds a deny ACE for the account or group whose SID string
+/// is `sid` that covers read or execute. An ACE only its children inherit does
+/// not apply to the object.
+fn sid_denied_read(dacl: *const ACL, sid: &str) -> bool {
+    let Ok(sid) = LocalPsid::from_string(sid) else {
+        return false;
+    };
+    let sid_bytes = sid.as_bytes();
+    let covers =
+        FILE_READ_DATA.0 | FILE_EXECUTE.0 | GENERIC_READ.0 | GENERIC_EXECUTE.0 | GENERIC_ALL.0;
+    filter_aces(dacl, |hdr, body| {
+        // ACCESS_DENIED_ACE layout: header (4) then Mask (u32 LE).
+        let Some(mask) = body.get(4..8).and_then(|m| <[u8; 4]>::try_from(m).ok()) else {
+            return false;
+        };
+        u32::from(hdr.AceType) == ACCESS_DENIED_ACE_TYPE
+            && u32::from(hdr.AceFlags) & INHERIT_ONLY_ACE.0 == 0
+            && u32::from_le_bytes(mask) & covers != 0
+            && ace_sid_is(body, sid_bytes)
+    })
+    .is_ok_and(|(denies, ..)| !denies.is_empty())
 }
 
 /// Whether `dacl` grants the well-known group `group` read and execute.
@@ -1131,7 +1186,8 @@ mod tests {
 #[cfg(test)]
 mod sandbox_can_read_tests {
     use super::{
-        group_can_read, group_rights, sandbox_can_read, sid_can_read, sid_rights, unreadable_runner,
+        dacl_lets_sandbox_read, group_can_read, group_rights, sandbox_can_read, sid_can_read,
+        sid_rights, unreadable_runner,
     };
     use crate::sid::LocalPsid;
     use std::path::Path;
@@ -1141,13 +1197,18 @@ mod sandbox_can_read_tests {
         WinAuthenticatedUserSid, WinBuiltinUsersSid, WinWorldSid,
     };
     use windows::Win32::Storage::FileSystem::{
-        FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_READ_DATA,
+        FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_READ_DATA, FILE_WRITE_DATA,
     };
 
     /// An account-shaped SID that is none of the three groups the check asks.
     const LOCAL_SERVICE: &str = "S-1-5-19";
     /// The group a grant to "Everyone" names.
     const EVERYONE: &str = "S-1-1-0";
+    /// The group a grant to "Users" names.
+    const USERS: &str = "S-1-5-32-545";
+    /// A sandbox account and its group, as strings a grant for the sandbox names.
+    const SANDBOX_USER: &str = "S-1-5-21-1-2-3-1001";
+    const SANDBOX_GROUP: &str = "S-1-5-21-1-2-3-1002";
     /// Read and execute, as srt-win writes it.
     const READ_EXEC: u32 = FILE_GENERIC_READ.0 | FILE_GENERIC_EXECUTE.0;
 
@@ -1273,6 +1334,68 @@ mod sandbox_can_read_tests {
 
         assert!(!sid_can_read(dacl, "nonsense"));
         assert!(sid_can_read(dacl, EVERYONE));
+    }
+
+    #[test]
+    fn a_deny_for_the_sandbox_beats_a_grant_to_everyone() {
+        let buf = dacl(&[
+            (true, READ_EXEC, SANDBOX_USER),
+            (false, READ_EXEC, EVERYONE),
+        ]);
+        let dacl = buf.as_ptr().cast::<ACL>();
+
+        assert!(!dacl_lets_sandbox_read(
+            dacl,
+            &[SANDBOX_USER, SANDBOX_GROUP]
+        ));
+    }
+
+    #[test]
+    fn a_deny_for_the_sandbox_group_beats_a_grant_to_users() {
+        let buf = dacl(&[(true, READ_EXEC, SANDBOX_GROUP), (false, READ_EXEC, USERS)]);
+        let dacl = buf.as_ptr().cast::<ACL>();
+
+        assert!(!dacl_lets_sandbox_read(
+            dacl,
+            &[SANDBOX_USER, SANDBOX_GROUP]
+        ));
+    }
+
+    #[test]
+    fn a_deny_of_write_alone_leaves_a_grant_to_users_standing() {
+        let buf = dacl(&[
+            (true, FILE_WRITE_DATA.0, SANDBOX_USER),
+            (false, READ_EXEC, USERS),
+        ]);
+        let dacl = buf.as_ptr().cast::<ACL>();
+
+        assert!(dacl_lets_sandbox_read(dacl, &[SANDBOX_USER, SANDBOX_GROUP]));
+    }
+
+    #[test]
+    fn a_deny_for_another_account_leaves_a_grant_to_users_standing() {
+        let buf = dacl(&[(true, READ_EXEC, LOCAL_SERVICE), (false, READ_EXEC, USERS)]);
+        let dacl = buf.as_ptr().cast::<ACL>();
+
+        assert!(dacl_lets_sandbox_read(dacl, &[SANDBOX_USER, SANDBOX_GROUP]));
+    }
+
+    /// A name with an unpaired surrogate is valid on NTFS and is not UTF-8.
+    #[test]
+    fn a_path_that_is_not_utf8_is_still_checked() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+
+        let name = OsString::from_wide(&[0x72, 0xD800, 0x2E, 0x65, 0x78, 0x65]);
+        let dir = std::env::temp_dir().join(format!("srtwin-nonutf8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, b"").unwrap();
+
+        let answer = sandbox_can_read(&path, &[SANDBOX_USER]);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(answer.is_some(), "{answer:?}");
     }
 
     #[test]

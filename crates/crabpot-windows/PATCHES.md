@@ -90,6 +90,9 @@ running", though seclogon is running.
   execute or move it to a folder the sandbox user can read. The group SID is
   `sid::lookup_account_sid(user::SANDBOX_GROUP)`, and a failed lookup checks the
   account SID alone.
+- `srt-win/src/logon_access_tests.rs` is a new file: the unit tests, moved out of
+  `logon.rs` as `mod sandbox_can_read_tests` through `#[path]` to keep it under
+  its file-size baseline.
 - Unit tests pin the answers for a grant to one account, to Everyone, a deny
   for the account or its group over a grant to Everyone or Users, a deny of
   write alone, a path that is not UTF-8, generic rights, read without execute

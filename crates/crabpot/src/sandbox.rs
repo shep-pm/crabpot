@@ -26,6 +26,8 @@ use crabpot_core::tmpdir::{Origin, TmpdirError};
 #[cfg(target_os = "linux")]
 use crabpot_linux::env::Facts;
 #[cfg(target_os = "linux")]
+use crabpot_linux::info::Info;
+#[cfg(target_os = "linux")]
 use crabpot_linux::net::env::HostPorts;
 #[cfg(target_os = "macos")]
 use crabpot_macos::env::Facts;
@@ -257,45 +259,7 @@ impl Sandbox {
         }
         #[cfg(target_os = "linux")]
         {
-            let mut words = vec![
-                self.helper.clone().into_os_string(),
-                OsString::from(HELPER_FLAG),
-                OsString::from(HelperMode::Init.word()),
-                OsString::from(RELAY_FLAG),
-                self.proxy.mux_socket().as_os_str().to_owned(),
-                command.get_program().to_owned(),
-            ];
-            words.extend(command.get_args().map(OsString::from));
-            let rendered = crabpot_linux::argv::render(&self.words, &words, &std::env::temp_dir())
-                .map_err(|e| WrapError::Bwrap(e.to_string()))?;
-            let mut wrapped = rendered.command;
-            carry_over(command, &mut wrapped);
-            for (name, value) in crabpot_linux::env::vars(&self.facts.for_command(command)) {
-                wrapped.env(name, value);
-            }
-            // On the command's environment, not in bwrap's words: its argv is
-            // readable from `/proc` by every process of the user, and the token
-            // is the proxy's credential.
-            let username = username_for(&command_line(command));
-            let host = HostPorts {
-                http: self.proxy.port(),
-                socks: self.proxy.socks_port(),
-            };
-            let ssh = crabpot_linux::net::ssh::vars(&self.helper, &username, self.proxy.token());
-            for (name, value) in crabpot_linux::net::env::vars(host, &username, self.proxy.token())
-                .into_iter()
-                .map(|(name, value)| (name, OsString::from(value)))
-                .chain(ssh)
-            {
-                wrapped.env(name, value);
-            }
-            if let Some(args_file) = rendered.args_file {
-                self.args_files
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(args_file);
-            }
-            Ok(wrapped)
+            self.linux_command(command, false)
         }
         #[cfg(windows)]
         {
@@ -306,6 +270,70 @@ impl Sandbox {
             let _ = command;
             Err(WrapError::UnsupportedPlatform)
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Sandbox {
+    /// [`Sandbox::command`], and with it what bwrap reports of the sandbox,
+    /// which tells the launcher which process to signal in place of bwrap
+    /// itself. The command is given the descriptor the report goes to, so it
+    /// is spawned from the returned [`Command`] and not from one a plain
+    /// [`Sandbox::command`] gave.
+    pub(crate) fn command_reporting(
+        &self,
+        command: &Command,
+    ) -> Result<(Command, Info), WrapError> {
+        let mut wrapped = self.linux_command(command, true)?;
+        let info = crabpot_linux::info::attach(&mut wrapped)
+            .map_err(|e| WrapError::Bwrap(e.to_string()))?;
+        Ok((wrapped, info))
+    }
+
+    fn linux_command(&self, command: &Command, report: bool) -> Result<Command, WrapError> {
+        let mut words = vec![
+            self.helper.clone().into_os_string(),
+            OsString::from(HELPER_FLAG),
+            OsString::from(HelperMode::Init.word()),
+            OsString::from(RELAY_FLAG),
+            self.proxy.mux_socket().as_os_str().to_owned(),
+            command.get_program().to_owned(),
+        ];
+        words.extend(command.get_args().map(OsString::from));
+        let mut bwrap_words = self.words.clone();
+        if report {
+            bwrap_words.splice(1..1, crabpot_linux::wrap::info_words());
+        }
+        let rendered = crabpot_linux::argv::render(&bwrap_words, &words, &std::env::temp_dir())
+            .map_err(|e| WrapError::Bwrap(e.to_string()))?;
+        let mut wrapped = rendered.command;
+        carry_over(command, &mut wrapped);
+        for (name, value) in crabpot_linux::env::vars(&self.facts.for_command(command)) {
+            wrapped.env(name, value);
+        }
+        // On the command's environment, not in bwrap's words: its argv is
+        // readable from `/proc` by every process of the user, and the token
+        // is the proxy's credential.
+        let username = username_for(&command_line(command));
+        let host = HostPorts {
+            http: self.proxy.port(),
+            socks: self.proxy.socks_port(),
+        };
+        let ssh = crabpot_linux::net::ssh::vars(&self.helper, &username, self.proxy.token());
+        for (name, value) in crabpot_linux::net::env::vars(host, &username, self.proxy.token())
+            .into_iter()
+            .map(|(name, value)| (name, OsString::from(value)))
+            .chain(ssh)
+        {
+            wrapped.env(name, value);
+        }
+        if let Some(args_file) = rendered.args_file {
+            self.args_files
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(args_file);
+        }
+        Ok(wrapped)
     }
 }
 

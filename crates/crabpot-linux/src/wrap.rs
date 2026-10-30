@@ -17,6 +17,26 @@ pub struct Wrapped {
     pub mount_points: MountPoints,
 }
 
+/// The descriptor bwrap is told to report its sandbox on, and the one the
+/// launcher hands the write end of its pipe as.
+///
+/// One digit, as [`BWRAP_ARGS_FD`](crate::argv::BWRAP_ARGS_FD) is, and below it.
+pub const INFO_FD: u32 = 8;
+
+/// The words that make bwrap write the sandbox's `child-pid`, as the host sees
+/// it, to [`INFO_FD`]. They go after `bwrap` itself, and only on a command whose
+/// caller has given it that descriptor with
+/// `info::attach`: bwrap refuses a descriptor that is
+/// not open. `--info-fd` is what every bwrap crabpot supports has, where
+/// `--json-status-fd` is newer.
+#[must_use]
+pub fn info_words() -> [OsString; 2] {
+    [
+        OsString::from("--info-fd"),
+        OsString::from(INFO_FD.to_string()),
+    ]
+}
+
 /// The words that make a bwrap invocation, `bwrap` itself first, for a command
 /// under `config`.
 ///
@@ -132,6 +152,11 @@ mod tests {
     /// bwrap applies its mounts in the order it reads them, and the sandbox's
     /// own `/dev` and `/proc` are the last mounts in the plan. No write bind,
     /// not one of the whole root, lands over them.
+    #[test]
+    fn the_info_words_name_the_descriptor_the_launcher_passes() {
+        assert_eq!(info_words(), ["--info-fd", "8"].map(OsString::from));
+    }
+
     #[test]
     fn the_private_mounts_follow_every_bind() {
         let mut config = Config::default();

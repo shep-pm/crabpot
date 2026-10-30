@@ -25,7 +25,7 @@ mod init;
 #[cfg(target_os = "linux")]
 mod relay;
 #[cfg(target_os = "linux")]
-mod sys;
+pub(crate) mod sys;
 
 #[cfg(target_os = "linux")]
 pub use connect::{ConnectError, connect};

@@ -257,6 +257,44 @@ fn sigusr2_reaches_the_command() {
     assert_eq!(status.code(), Some(3));
 }
 
+/// Starts the launcher on a command that traps `signal`, signals the launcher
+/// once the command says it is ready, and returns what the command wrote after
+/// that with the launcher's exit status.
+fn signal_a_ready_launcher(signal: &str) -> (String, ExitStatus) {
+    let script = format!("trap 'echo trapped; exit 3' {signal}; echo ready; sleep 30 & wait");
+    let mut launcher = Command::new(CRABPOT)
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["--", "sh", "-c", &script])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(launcher.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(line, "ready\n");
+
+    send(signal, &launcher);
+    let mut rest = String::new();
+    stdout.read_to_string(&mut rest).unwrap();
+    (rest, launcher.wait().unwrap())
+}
+
+#[test]
+fn sigterm_through_the_launcher_reaches_the_command() {
+    let (rest, status) = signal_a_ready_launcher("TERM");
+
+    assert_eq!(rest, "trapped\n");
+    assert_eq!(status.code(), Some(3));
+}
+
+#[test]
+fn sigint_through_the_launcher_reaches_the_command() {
+    let (rest, status) = signal_a_ready_launcher("INT");
+
+    assert_eq!(rest, "trapped\n");
+    assert_eq!(status.code(), Some(3));
+}
+
 #[test]
 fn a_signal_death_gives_128_plus_the_signal() {
     // SIGKILL is not one the helper forwards, so the status is the mapping and

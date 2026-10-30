@@ -3,9 +3,9 @@
 //!
 //! The crate is the landing place for the Linux slices of the Linux map, and
 //! holds only the ones that have landed: [`argv`], [`deps`], [`fs`],
-//! [`helper`], [`mandatory`], [`net`], `seccomp` and [`wrap`]. It builds on every platform so a
-//! Linux slice fails on the macOS runner too, as `crabpot-macos` does in
-//! reverse; Linux-only code sits behind
+//! [`helper`], `info`, [`mandatory`], [`net`], `seccomp` and [`wrap`]. It
+//! builds on every platform so a Linux slice fails on the macOS runner too, as
+//! `crabpot-macos` does in reverse; Linux-only code sits behind
 //! `cfg(target_os = "linux")`. The facade depends on it as a target-specific
 //! dependency under `cfg(target_os = "linux")`, the way it gates
 //! `crabpot-macos` to macOS (ADR-0012).
@@ -46,6 +46,8 @@ pub mod env;
 pub mod fs;
 #[cfg(unix)]
 pub mod helper;
+#[cfg(target_os = "linux")]
+pub mod info;
 #[cfg(unix)]
 pub mod mandatory;
 pub mod net;

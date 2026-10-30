@@ -791,8 +791,10 @@ impl AsRawHandle for std::io::Stderr {
 /// Whether the sandbox user can read and execute `path` by its DACL: an ACE
 /// for one of the well-known groups its token holds, or for one of `sandbox`
 /// (the sandbox account's SID and its group's SID, as strings, which is who a
-/// grant made for the sandbox names). `None` when the DACL cannot be read,
-/// which proves nothing.
+/// grant made for the sandbox names). `None` when the DACL cannot be read or
+/// `path` is not UTF-8, which proves nothing. A group grant counts as held
+/// whatever else the DACL denies the sandbox user, so `Some(true)` can be a
+/// false yes and `Some(false)` is the answer to act on.
 pub fn sandbox_can_read(path: &Path, sandbox: &[&str]) -> Option<bool> {
     let (_sd, dacl) = crate::acl::read_file_dacl(path.to_str()?).ok()?;
     // A file with no DACL grants everyone everything.
@@ -857,8 +859,8 @@ fn read_exec(rights: u32) -> bool {
 /// The launch error for a runner executable the sandbox user cannot read.
 fn unreadable_runner(exe: &str) -> anyhow::Error {
     anyhow!(
-        "the sandbox user cannot read {exe}, so Windows refuses the launch as \
-         Access is denied. Grant it read and execute, or move it to a folder \
+        "the sandbox user cannot read and execute {exe}, so Windows refuses the \
+         launch as Access is denied. Grant it read and execute, or move it to a folder \
          the sandbox user can read."
     )
 }

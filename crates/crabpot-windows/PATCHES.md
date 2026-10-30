@@ -74,7 +74,8 @@ running", though seclogon is running.
 - `sandbox_can_read(path, sandbox)`: whether the file's own DACL grants read and
   execute to Users, Authenticated Users, Everyone or one of `sandbox` (the
   sandbox account's SID and its group's SID). `None` when the DACL cannot be
-  read. It reads the DACL with `acl::read_file_dacl` and asks
+  read or the path is not UTF-8. A group grant counts as held whatever else the
+  DACL denies the sandbox user, so only `Some(false)` is acted on. It reads the DACL with `acl::read_file_dacl` and asks
   `GetEffectiveRightsFromAclW` per trustee, so a deny ACE takes rights back and
   an ACE written in generic rights answers as nothing.
 - `spawn_runner`: after the `ERROR_LOGON_FAILURE`, `ERROR_DIRECTORY` and seclogon

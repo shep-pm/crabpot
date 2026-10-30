@@ -97,10 +97,10 @@ fn read_report(mut reader: impl Read, found: impl FnOnce(u32)) {
         let read = reader.read(&mut chunk).unwrap_or(0);
         seen.extend_from_slice(&chunk[..read]);
         let ended = read == 0 || seen.contains(&b'}');
-        if let Some(pid) = pid_in(&seen, ended) {
-            if let Some(found) = found.take() {
-                found(pid);
-            }
+        if let Some(pid) = pid_in(&seen, ended)
+            && let Some(found) = found.take()
+        {
+            found(pid);
         }
         if ended {
             return;

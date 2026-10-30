@@ -167,7 +167,13 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
         None => {}
     }
     match prepare(args) {
-        Ok((_sandbox, command)) => execute(command),
+        Ok((_sandbox, command)) => {
+            #[cfg(target_os = "linux")]
+            let target = ForwardTarget::BwrapCommand;
+            #[cfg(not(target_os = "linux"))]
+            let target = ForwardTarget::Child;
+            execute(command, target)
+        }
         Err(e) => {
             eprintln!("crabpot: {e}");
             1
@@ -259,7 +265,7 @@ fn load_config(settings: Option<&Path>, home: Option<OsString>) -> Result<Config
 
 /// Spawns `command` and waits for it, and returns the status the wrapper exits
 /// with.
-pub(crate) fn execute(command: Command) -> i32 {
+fn execute(command: Command, target: ForwardTarget) -> i32 {
     let runtime = match Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(e) => {
@@ -267,13 +273,54 @@ pub(crate) fn execute(command: Command) -> i32 {
             return 1;
         }
     };
-    runtime.block_on(run(command))
+    #[cfg(unix)]
+    {
+        runtime.block_on(run(command, target))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = target;
+        runtime.block_on(run(command))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ForwardTarget {
+    #[cfg(any(not(target_os = "linux"), test))]
+    Child,
+    #[cfg(target_os = "linux")]
+    BwrapCommand,
+}
+
+#[cfg(unix)]
+impl ForwardTarget {
+    fn pid(self, child: u32) -> Option<u32> {
+        match self {
+            #[cfg(any(not(target_os = "linux"), test))]
+            Self::Child => Some(child),
+            #[cfg(target_os = "linux")]
+            Self::BwrapCommand => {
+                // The monitor and namespace init are bwrap; only the helper forwards signals.
+                first_child(first_child(child)?)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn first_child(pid: u32) -> Option<u32> {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Spawns `command`, waits for it with host shutdown signals forwarded to it, and
 /// returns the status the wrapper exits with.
 #[cfg(unix)]
-async fn run(command: Command) -> i32 {
+async fn run(command: Command, target: ForwardTarget) -> i32 {
     // Listening comes before spawning, so no signal falls in between.
     // Keep this set aligned with FORWARDED in crates/crabpot-linux/src/helper/init.rs.
     let listeners = [
@@ -307,7 +354,7 @@ async fn run(command: Command) -> i32 {
             .map(|(name, mut stream)| {
                 tokio::spawn(async move {
                     while stream.recv().await.is_some() {
-                        forward(name, pid).await;
+                        forward(name, pid, target).await;
                     }
                 })
             })
@@ -374,7 +421,10 @@ fn exit_after_wait(status: io::Result<ExitStatus>) -> i32 {
 /// send SIGKILL and `kill(2)` is unsafe to call. A signal that does not go
 /// through is dropped: the command is gone, or it was never ours to signal.
 #[cfg(unix)]
-async fn forward(name: &str, pid: u32) {
+async fn forward(name: &str, pid: u32, target: ForwardTarget) {
+    let Some(pid) = target.pid(pid) else {
+        return;
+    };
     let _ = tokio::process::Command::new("/bin/kill")
         .args(["-s", name, &pid.to_string()])
         .stdin(Stdio::null())
@@ -448,7 +498,7 @@ mod tests {
 
     fn run(command: Command) -> i32 {
         let _turn = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        execute(command)
+        execute(command, ForwardTarget::Child)
     }
 
     #[cfg(target_os = "macos")]

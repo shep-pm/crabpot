@@ -70,7 +70,7 @@ fn signal_through_wrapper(signal: &str) {
         .expect("the command did not close stdout");
     fs::remove_dir_all(home).unwrap();
 
-    assert_eq!(status.code(), Some(3), "{status:?}");
+    assert_eq!(status.code(), Some(3), "{status:?}, stdout: {rest:?}");
     assert_eq!(rest, "trapped\n");
 }
 

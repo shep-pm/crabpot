@@ -4,6 +4,8 @@ A sandbox's proxies have to live exactly as long as the command they serve. kelp
 
 The child stays in the wrapper's process group. On Unix, the wrapper and Linux helper forward SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2. Forwarding more than upstream's SIGINT and SIGTERM is a deliberate difference: a supervisor can choose another shutdown signal, and the wrapper must keep the sandbox and its proxies alive while the command drains. The wrapper's exit status is mapped as upstream maps it: only SIGINT and SIGTERM are a clean stop. A host that signals the wrapper's group, as kelpie does, reaches the command and the wrapper together. Ending a command's whole process tree from inside crabpot is left for after kelpie-ready, built on a process-tree crate shared with shep and kelpie rather than a third copy of that code.
 
+On Linux, the wrapper targets the helper below bwrap's monitor and namespace init, following their child PIDs in the host's `/proc`. Bwrap's monitor does not forward signals. Signalling it directly kills the monitor and, through `--die-with-parent`, the sandbox. The monitor stays alive to report the helper's exit status.
+
 ## Considered options
 
 - **The `Sandbox` value alone.** Rejected because a port that returns a `Command` has nowhere to keep the value alive, so every caller in kelpie would have to change.

@@ -1,5 +1,6 @@
 //! A case: the files, settings and probes one differential run is made of.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -52,25 +53,16 @@ pub enum Probe {
     PsOutside,
     /// Pass the program an argument that holds a backslash, and report whether
     /// it arrived as written. Upstream's Windows runner wraps such an argument
-    /// in single quotes, so `upstream` is the code it is known to give, which
-    /// crabpot must not.
+    /// in single quotes, so its case records the code upstream is known to
+    /// give, which crabpot must not.
     BackslashArgument {
         /// The argument, which holds a backslash.
         value: String,
-        /// The code upstream's runner gives, recorded as the difference.
-        upstream: u8,
     },
 }
 
-impl Probe {
-    /// The code upstream is known to give where crabpot differs on purpose.
-    pub fn upstream_exit(&self) -> Option<u8> {
-        match self {
-            Self::BackslashArgument { upstream, .. } => Some(*upstream),
-            _ => None,
-        }
-    }
-}
+/// The host environment a case's wrappers run under, names to values.
+pub type Env = BTreeMap<String, String>;
 
 /// The address family of a `socket` probe: the two a Linux sandbox refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,7 +145,7 @@ pub struct Serve {
 }
 
 /// A case file, with `$ROOT` expanded.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Case {
     /// Files to create before the probes run, with their contents.
     pub files: Vec<(PathBuf, String)>,
@@ -166,12 +158,44 @@ pub struct Case {
     pub refused: bool,
     /// A socket the harness serves for the probes to reach.
     pub serve: Option<Serve>,
+    /// The host environment both wrappers run under, set beside `HOME`.
+    pub env: Env,
     /// The probes, in order.
     pub probes: Vec<Probe>,
+    /// The code upstream is known to give each probe, where crabpot differs on
+    /// purpose, in the order of `probes`. A probe past the end has none.
+    pub upstream: Vec<Option<u8>>,
     /// The platforms the case means something on. A case names one only when
     /// it means nothing elsewhere, as a `denyMachLookup` case does. An empty
     /// list means every platform.
     pub platforms: Vec<Platform>,
+}
+
+/// The names of a case's `env` with every value hidden, which is how a case
+/// prints: the values are the host's environment and may carry a secret.
+struct Redacted<'a>(&'a Env);
+
+impl core::fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_map()
+            .entries(self.0.keys().map(|name| (name, "<redacted>")))
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for Case {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Case")
+            .field("files", &self.files)
+            .field("settings", &self.settings)
+            .field("refused", &self.refused)
+            .field("serve", &self.serve)
+            .field("env", &Redacted(&self.env))
+            .field("probes", &self.probes)
+            .field("upstream", &self.upstream)
+            .field("platforms", &self.platforms)
+            .finish()
+    }
 }
 
 /// Why a case file is not a case.
@@ -214,7 +238,8 @@ impl Case {
     ///
     /// [`Error::Json`] when `text` is not JSON, [`Error::Shape`] when `files`,
     /// `settings`, `serve` or `probes` is missing or has the wrong type, as is a `refused`
-    /// that is not a boolean, and
+    /// that is not a boolean, an `env` that is not an object of strings, or a
+    /// probe's `upstream` that does not fit 8 bits, and
     /// [`Error::UnknownProbe`] when a probe's `kind` is not one this harness knows,
     /// and [`Error::UnknownPlatform`] when a `platforms` entry names a platform
     /// this harness does not run on.
@@ -286,21 +311,46 @@ impl Case {
                 ));
             }
         };
-        let probes = match take("probes")? {
-            Value::Array(probes) => probes
-                .iter()
-                .map(Probe::from_value)
+        let env = match take("env") {
+            Err(_) => Env::new(),
+            Ok(Value::Object(members)) => members
+                .into_iter()
+                .map(|(name, value)| match value {
+                    Value::String(value) => Ok((name, value)),
+                    _ => Err(Error::Shape(format!(
+                        "an `env` whose {name:?} is not a string"
+                    ))),
+                })
                 .collect::<Result<_, _>>()?,
-            _ => return Err(Error::Shape("a `probes` that is not an array".to_owned())),
+            Ok(_) => return Err(Error::Shape("an `env` that is not an object".to_owned())),
         };
+        let Value::Array(listed) = take("probes")? else {
+            return Err(Error::Shape("a `probes` that is not an array".to_owned()));
+        };
+        let probes = listed
+            .iter()
+            .map(Probe::from_value)
+            .collect::<Result<_, _>>()?;
+        let upstream = listed
+            .iter()
+            .map(upstream_exit_of)
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             files,
             settings,
             refused,
             serve,
+            env,
             probes,
+            upstream,
             platforms,
         })
+    }
+
+    /// The code upstream is known to give the probe at `index` where crabpot
+    /// differs on purpose, if its case records one.
+    pub fn upstream_exit(&self, index: usize) -> Option<u8> {
+        self.upstream.get(index).copied().flatten()
     }
 
     /// Whether the case means `platform`. One that names no platform means
@@ -315,6 +365,20 @@ impl Case {
     pub fn allows_loopback(&self) -> bool {
         self.settings["network"]["allowLocalBinding"] == Value::Bool(true)
     }
+}
+
+/// The `upstream` a probe's object records, which any kind of probe may carry.
+fn upstream_exit_of(probe: &Value) -> Result<Option<u8>, Error> {
+    probe
+        .get("upstream")
+        .map(|code| {
+            code.as_u64()
+                .and_then(|code| u8::try_from(code).ok())
+                .ok_or_else(|| {
+                    Error::Shape("a probe with an `upstream` that does not fit 8 bits".to_owned())
+                })
+        })
+        .transpose()
 }
 
 /// The named pipe a case may serve, which is named for its root's folder so
@@ -431,12 +495,6 @@ impl Probe {
             "ps-outside" => Ok(Self::PsOutside),
             "backslash-argument" => Ok(Self::BackslashArgument {
                 value: text("value")?,
-                upstream: field("upstream")
-                    .and_then(Value::as_u64)
-                    .and_then(|code| u8::try_from(code).ok())
-                    .ok_or_else(|| {
-                        Error::Shape("a probe without an `upstream` that fits 8 bits".to_owned())
-                    })?,
             }),
             _ => Err(Error::UnknownProbe(kind)),
         }
@@ -453,420 +511,4 @@ impl Platform {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use std::path::Path;
-
-    #[test]
-    fn a_case_file_parses_and_expands_root() {
-        let text = r#"{
-            "files": {"$ROOT/in": "hello"},
-            "settings": {"filesystem": {"allowWrite": ["$ROOT/out"]}},
-            "probes": [
-                {"kind": "read", "path": "$ROOT/in"},
-                {"kind": "write", "path": "$ROOT/out"},
-                {"kind": "rename", "from": "$ROOT/in", "to": "$ROOT/moved"},
-                {"kind": "connect", "host": "example.com", "port": 443},
-                {"kind": "connect", "host": "example.com", "port": 443, "via": "socks5"},
-                {"kind": "bind"},
-                {"kind": "bind-unix", "path": "$ROOT/socks/a.sock"},
-                {"kind": "connect-unix", "path": "$ROOT/socks/live.sock"},
-                {"kind": "loopback"},
-                {"kind": "signal-group"},
-                {"kind": "ps"}
-            ]
-        }"#;
-        let case = Case::parse(text, "/r").unwrap();
-        assert_eq!(case.files, [(PathBuf::from("/r/in"), "hello".to_owned())]);
-        assert_eq!(
-            case.settings,
-            json!({"filesystem": {"allowWrite": ["/r/out"]}})
-        );
-        assert_eq!(
-            case.probes,
-            [
-                Probe::Read("/r/in".to_owned()),
-                Probe::Write("/r/out".to_owned()),
-                Probe::Rename {
-                    from: "/r/in".to_owned(),
-                    to: "/r/moved".to_owned()
-                },
-                Probe::Connect {
-                    host: "example.com".to_owned(),
-                    port: 443,
-                    via: None,
-                },
-                Probe::Connect {
-                    host: "example.com".to_owned(),
-                    port: 443,
-                    via: Some(Via::Socks5),
-                },
-                Probe::Bind,
-                Probe::BindUnix("/r/socks/a.sock".to_owned()),
-                Probe::ConnectUnix("/r/socks/live.sock".to_owned()),
-                Probe::Loopback,
-                Probe::SignalGroup,
-                Probe::Ps,
-            ]
-        );
-    }
-
-    #[test]
-    fn the_kernel_probes_parse_and_spell_their_words() {
-        let text = r#"{
-            "files": {},
-            "settings": {},
-            "probes": [
-                {"kind": "socket", "family": "unix"},
-                {"kind": "socket", "family": "vsock"},
-                {"kind": "io-uring-setup"},
-                {"kind": "unshare-user"},
-                {"kind": "ps-outside"}
-            ]
-        }"#;
-        let case = Case::parse(text, "/r").unwrap();
-        assert_eq!(
-            case.probes,
-            [
-                Probe::Socket(Family::Unix),
-                Probe::Socket(Family::Vsock),
-                Probe::IoUringSetup,
-                Probe::UnshareUser,
-                Probe::PsOutside,
-            ]
-        );
-        let words: Vec<Vec<String>> = case.probes.iter().map(Probe::args).collect();
-        assert_eq!(
-            words,
-            [
-                ["socket", "unix"].as_slice(),
-                ["socket", "vsock"].as_slice(),
-                ["io-uring-setup"].as_slice(),
-                ["unshare-user"].as_slice(),
-                ["ps-outside"].as_slice(),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_socket_probe_needs_a_family_the_probe_knows() {
-        for probe in [
-            r#"{"kind": "socket"}"#,
-            r#"{"kind": "socket", "family": "inet"}"#,
-        ] {
-            let text = format!(r#"{{"files": {{}}, "settings": {{}}, "probes": [{probe}]}}"#);
-            assert!(
-                matches!(Case::parse(&text, "/r"), Err(Error::Shape(_))),
-                "{probe}"
-            );
-        }
-    }
-
-    /// A socket probe may name its socket against the case root instead, which
-    /// is where each wrapper runs and where the harness serves it.
-    #[test]
-    fn a_socket_probe_named_against_the_case_root_stays_relative() {
-        let text = r#"{
-            "files": {},
-            "settings": {},
-            "probes": [
-                {"kind": "bind-unix", "path": "socks/a.sock"},
-                {"kind": "connect-unix", "path": "socks/live.sock"}
-            ]
-        }"#;
-        let case = Case::parse(text, "/r").unwrap();
-        assert_eq!(
-            case.probes,
-            [
-                Probe::BindUnix("socks/a.sock".to_owned()),
-                Probe::ConnectUnix("socks/live.sock".to_owned()),
-            ]
-        );
-    }
-
-    /// A backslash-argument probe records the code upstream gives, which is
-    /// the difference the case pins.
-    #[test]
-    fn a_backslash_argument_probe_records_the_code_upstream_gives() {
-        let text = r#"{
-            "files": {},
-            "settings": {},
-            "probes": [{"kind": "backslash-argument", "value": "C:\\work", "upstream": 1}]
-        }"#;
-        let case = Case::parse(text, "/r").unwrap();
-        let [probe] = case.probes.as_slice() else {
-            panic!("one probe: {:?}", case.probes);
-        };
-
-        assert_eq!(
-            *probe,
-            Probe::BackslashArgument {
-                value: r"C:\work".to_owned(),
-                upstream: 1,
-            }
-        );
-        assert_eq!(
-            probe.args(),
-            ["backslash-argument", r"C:\work", "433a5c776f726b"]
-        );
-        assert_eq!(probe.upstream_exit(), Some(1));
-        assert_eq!(Probe::Bind.upstream_exit(), None);
-    }
-
-    #[test]
-    fn a_backslash_argument_probe_needs_a_value_and_a_code_upstream_gives() {
-        for probe in [
-            r#"{"kind": "backslash-argument", "upstream": 1}"#,
-            r#"{"kind": "backslash-argument", "value": "C:\\work"}"#,
-            r#"{"kind": "backslash-argument", "value": "C:\\work", "upstream": 256}"#,
-        ] {
-            let text = format!(r#"{{"files": {{}}, "settings": {{}}, "probes": [{probe}]}}"#);
-            assert!(
-                matches!(Case::parse(&text, "/r"), Err(Error::Shape(_))),
-                "{probe}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_case_may_say_its_settings_are_refused() {
-        let text = |refused: &str| {
-            format!(r#"{{"files": {{}}, "settings": "", "refused": {refused}, "probes": []}}"#)
-        };
-
-        let case = Case::parse(&text("true"), "/r").unwrap();
-        assert!(case.refused);
-        assert_eq!(case.settings, json!(""));
-        assert!(
-            !Case::parse(r#"{"files": {}, "settings": {}, "probes": []}"#, "/r")
-                .unwrap()
-                .refused
-        );
-        assert!(matches!(
-            Case::parse(&text("1"), "/r"),
-            Err(Error::Shape(_))
-        ));
-    }
-
-    #[test]
-    fn a_case_may_serve_a_named_pipe_named_for_its_root() {
-        let text = r#"{
-            "files": {},
-            "settings": {"network": {"mitmProxy": {"socketPath": "$PIPE"}}},
-            "serve": {"namedPipe": "$PIPE", "status": "200 Connection Established"},
-            "probes": []
-        }"#;
-        let pipe = r"\\.\pipe\crabpot-harness-case";
-        for root in ["/tmp/case", r"C:\tmp\case"] {
-            let case = Case::parse(text, root).unwrap();
-
-            assert_eq!(
-                case.serve,
-                Some(Serve {
-                    endpoint: Endpoint::NamedPipe(pipe.to_owned()),
-                    status: "200 Connection Established".to_owned(),
-                })
-            );
-            assert_eq!(case.settings["network"]["mitmProxy"]["socketPath"], pipe);
-        }
-    }
-
-    #[test]
-    fn a_case_may_serve_a_unix_socket() {
-        let text = r#"{
-            "files": {},
-            "settings": {},
-            "serve": {"unixSocket": "$ROOT/mitm.sock", "status": "403 Forbidden"},
-            "probes": []
-        }"#;
-        let case = Case::parse(text, "/r").unwrap();
-
-        assert_eq!(
-            case.serve,
-            Some(Serve {
-                endpoint: Endpoint::UnixSocket("/r/mitm.sock".to_owned()),
-                status: "403 Forbidden".to_owned(),
-            })
-        );
-        let case = Case::parse(r#"{"files": {}, "settings": {}, "probes": []}"#, "/r").unwrap();
-        assert_eq!(case.serve, None);
-        for text in [
-            r#"{"files": {}, "settings": {}, "serve": [], "probes": []}"#,
-            r#"{"files": {}, "settings": {}, "serve": {}, "probes": []}"#,
-            r#"{"files": {}, "settings": {}, "serve": {"unixSocket": 1}, "probes": []}"#,
-            r#"{"files": {}, "settings": {}, "serve": {"unixSocket": "/a", "namedPipe": "p", "status": "200 OK"}, "probes": []}"#,
-        ] {
-            assert!(
-                matches!(Case::parse(text, "/r"), Err(Error::Shape(_))),
-                "{text}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_case_without_platforms_runs_everywhere() {
-        let case = Case::parse(r#"{"files": {}, "settings": {}, "probes": []}"#, "/r").unwrap();
-        assert!(case.platforms.is_empty());
-        assert!(case.runs_on(Platform::MacOs));
-        assert!(case.runs_on(Platform::Linux));
-    }
-
-    #[test]
-    fn a_case_allows_loopback_only_when_its_settings_say_true() {
-        let with = |network: &str| {
-            Case::parse(
-                &format!(
-                    r#"{{"files": {{}}, "settings": {{"network": {network}}}, "probes": []}}"#
-                ),
-                "/r",
-            )
-            .unwrap()
-        };
-
-        assert!(with(r#"{"allowLocalBinding": true}"#).allows_loopback());
-        assert!(!with(r#"{"allowLocalBinding": false}"#).allows_loopback());
-        assert!(!with("{}").allows_loopback());
-        let text = Case::parse(
-            r#"{"files": {}, "settings": "not json", "probes": []}"#,
-            "/r",
-        );
-        assert!(!text.unwrap().allows_loopback());
-    }
-
-    #[test]
-    fn a_case_runs_only_on_the_platforms_it_names() {
-        let named = |platforms: &str| {
-            Case::parse(
-                &format!(
-                    r#"{{"files": {{}}, "settings": {{}}, "platforms": {platforms}, "probes": []}}"#
-                ),
-                "/r",
-            )
-        };
-
-        let case = named(r#"["macos"]"#).unwrap();
-        assert_eq!(case.platforms, [Platform::MacOs]);
-        assert!(case.runs_on(Platform::MacOs));
-        assert!(!case.runs_on(Platform::Linux));
-
-        let case = named(r#"["linux", "macos"]"#).unwrap();
-        assert_eq!(case.platforms, [Platform::Linux, Platform::MacOs]);
-        assert!(case.runs_on(Platform::MacOs));
-        assert!(case.runs_on(Platform::Linux));
-
-        assert_eq!(
-            named(r#"["plan9"]"#),
-            Err(Error::UnknownPlatform("plan9".to_owned()))
-        );
-        for platforms in [r#""macos""#, "[1]", r#"["macos", 2]"#] {
-            assert!(
-                matches!(named(platforms), Err(Error::Shape(_))),
-                "{platforms}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_case_that_names_other_platforms_is_skipped_on_windows() {
-        let named = |platforms: &str| {
-            Case::parse(
-                &format!(
-                    r#"{{"files": {{}}, "settings": {{}}, "platforms": {platforms}, "probes": []}}"#
-                ),
-                "/r",
-            )
-            .unwrap()
-        };
-
-        let unix_only = named(r#"["macos", "linux"]"#);
-        assert!(!unix_only.runs_on(Platform::Windows));
-        assert!(unix_only.runs_on(Platform::MacOs));
-
-        let windows = named(r#"["windows"]"#);
-        assert_eq!(windows.platforms, [Platform::Windows]);
-        assert!(windows.runs_on(Platform::Windows));
-        assert!(!windows.runs_on(Platform::Linux));
-
-        let everywhere = named("[]");
-        assert!(everywhere.runs_on(Platform::Windows));
-    }
-
-    #[test]
-    fn an_unknown_probe_kind_is_a_harness_error() {
-        let text = r#"{"files": {}, "settings": {}, "probes": [{"kind": "ping"}]}"#;
-        assert_eq!(
-            Case::parse(text, "/r"),
-            Err(Error::UnknownProbe("ping".to_owned()))
-        );
-    }
-
-    #[test]
-    fn every_case_file_in_the_folder_parses() {
-        let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/cases");
-        let mut parsed = 0;
-        for entry in std::fs::read_dir(folder).unwrap() {
-            let path = entry.unwrap().path();
-            let text = std::fs::read_to_string(&path).unwrap();
-            if let Err(error) = Case::parse(&text, "/r") {
-                panic!("{}: {error}", path.display());
-            }
-            parsed += 1;
-        }
-        assert!(parsed >= 4, "only {parsed} case files found");
-    }
-
-    #[test]
-    fn every_write_and_rename_in_a_case_file_has_a_folder_to_land_in() {
-        let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/cases");
-        for entry in std::fs::read_dir(folder).unwrap() {
-            let path = entry.unwrap().path();
-            let text = std::fs::read_to_string(&path).unwrap();
-            let case = Case::parse(&text, "/r").unwrap();
-            let mut folders = std::collections::HashSet::new();
-            let mut sources = std::collections::HashSet::new();
-            for (file, _) in &case.files {
-                sources.insert(file.clone());
-                for ancestor in file.ancestors().skip(1) {
-                    folders.insert(ancestor.to_owned());
-                    sources.insert(ancestor.to_owned());
-                }
-            }
-            // A probe cannot tell a missing folder from a refusal, so one
-            // that lands in a folder the case never made exits 2.
-            let lands = |target: &str| match Path::new(target).parent() {
-                Some(parent) => {
-                    !target.starts_with("/r/")
-                        || folders.contains(parent)
-                        || parent == Path::new("/r")
-                }
-                None => true,
-            };
-            for probe in &case.probes {
-                match probe {
-                    Probe::Write(target) => {
-                        assert!(lands(target), "{}: no folder for {target}", path.display())
-                    }
-                    Probe::Rename { from, to } => {
-                        assert!(
-                            !from.starts_with("/r/") || sources.contains(Path::new(from)),
-                            "{}: nothing to move at {from}",
-                            path.display()
-                        );
-                        assert!(lands(to), "{}: no folder for {to}", path.display());
-                    }
-                    Probe::BindUnix(target) | Probe::ConnectUnix(target) => {
-                        assert!(lands(target), "{}: no folder for {target}", path.display())
-                    }
-                    Probe::Read(_) | Probe::Connect { .. } | Probe::Bind | Probe::Loopback => {}
-                    Probe::SignalGroup | Probe::Ps => {}
-                    Probe::Socket(_)
-                    | Probe::IoUringSetup
-                    | Probe::UnshareUser
-                    | Probe::PsOutside
-                    | Probe::BackslashArgument { .. } => {}
-                }
-            }
-        }
-    }
-}
+mod tests;

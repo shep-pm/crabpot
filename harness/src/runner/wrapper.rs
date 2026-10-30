@@ -3,6 +3,7 @@
 
 use std::process::{Command, Stdio};
 
+use crate::case::Env;
 use crate::probe;
 
 use super::Error;
@@ -18,6 +19,11 @@ struct Wrapped {
 /// `ps-outside` probe looks for from inside the sandbox.
 pub(super) fn export_harness_pid(command: &mut Command) {
     command.env(probe::HARNESS_PID, std::process::id().to_string());
+}
+
+/// Gives `command` the host environment the case sets.
+pub(super) fn export_env(command: &mut Command, env: &Env) {
+    command.envs(env);
 }
 
 /// Runs the wrapper to its end. Its stderr is inherited, so a failing run
@@ -63,6 +69,20 @@ pub(super) fn refusal(command: Command, runner: &'static str) -> Result<bool, Er
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn a_wrapper_command_carries_the_environment_the_case_sets() {
+        let mut command = Command::new("probe");
+        export_env(
+            &mut command,
+            &Env::from([("CLAUDE_CODE_TMPDIR".to_owned(), "/r/fresh".to_owned())]),
+        );
+        let exported = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new("CLAUDE_CODE_TMPDIR"))
+            .and_then(|(_, value)| value);
+        assert_eq!(exported, Some(OsStr::new("/r/fresh")));
+    }
 
     #[test]
     fn a_wrapper_command_carries_the_harness_pid() {

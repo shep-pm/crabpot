@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use super::wrapper::{exit_code, refusal};
 use super::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
@@ -18,11 +18,11 @@ impl Runner for StandIn {
         self.0
     }
 
-    fn run(&self, _settings: &Path, probe: &Probe) -> Result<u8, Error> {
+    fn run(&self, _settings: &Path, probe: &Probe, _env: &Env) -> Result<u8, Error> {
         Ok((self.1)(probe))
     }
 
-    fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+    fn refuses(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<bool, Error> {
         Ok(false)
     }
 }
@@ -33,6 +33,8 @@ fn case() -> Case {
         settings: json!({}),
         refused: false,
         serve: None,
+        env: Env::new(),
+        upstream: Vec::new(),
         probes: vec![Probe::Read("/r/in".to_owned()), Probe::Bind],
         platforms: Vec::new(),
     }
@@ -87,13 +89,17 @@ fn difference_case() -> Case {
     Case {
         probes: vec![Probe::BackslashArgument {
             value: r"C:\work".to_owned(),
-            upstream: 1,
         }],
+        upstream: vec![Some(1)],
         ..case()
     }
 }
 
 fn compare_difference(upstream: u8, crabpot: u8) -> Result<(), Error> {
+    compare_recorded(&difference_case(), upstream, crabpot)
+}
+
+fn compare_recorded(case: &Case, upstream: u8, crabpot: u8) -> Result<(), Error> {
     let answer = |code: u8| -> fn(&Probe) -> u8 {
         match code {
             0 => |_| 0,
@@ -102,12 +108,101 @@ fn compare_difference(upstream: u8, crabpot: u8) -> Result<(), Error> {
         }
     };
     compare(
-        &difference_case(),
+        case,
         Path::new("/r/settings.json"),
         &|| Ok(()),
         &StandIn("upstream", answer(upstream)),
         &StandIn("crabpot", answer(crabpot)),
     )
+}
+
+/// A case whose one `write` probe records upstream as exiting 1.
+fn write_difference_case() -> Case {
+    Case {
+        probes: vec![Probe::Write("/r/tmp/out".to_owned())],
+        upstream: vec![Some(1)],
+        ..case()
+    }
+}
+
+#[test]
+fn a_recorded_difference_on_a_write_probe_passes_when_crabpot_differs() {
+    compare_recorded(&write_difference_case(), 1, 0).unwrap();
+}
+
+#[test]
+fn a_recorded_difference_on_a_write_probe_fails_when_crabpot_agrees() {
+    assert!(matches!(
+        compare_recorded(&write_difference_case(), 1, 1),
+        Err(Error::NotDifferent {
+            probe: Probe::Write(_),
+            upstream: 1,
+            crabpot: 1,
+        })
+    ));
+}
+
+/// A write into a folder only crabpot makes cannot be told by upstream, which
+/// exits [`probe::ERROR`]; the case records that and it is not an error.
+#[test]
+fn a_recorded_difference_may_be_a_probe_upstream_could_not_tell() {
+    let case = Case {
+        upstream: vec![Some(probe::ERROR)],
+        ..write_difference_case()
+    };
+
+    compare_recorded(&case, probe::ERROR, probe::ALLOWED).unwrap();
+    assert!(matches!(
+        compare_recorded(&case, probe::ALLOWED, probe::ALLOWED),
+        Err(Error::Changed { .. })
+    ));
+    assert!(matches!(
+        compare_recorded(&case, probe::ERROR, probe::ERROR),
+        Err(Error::Erred {
+            runner: "crabpot",
+            ..
+        })
+    ));
+}
+
+/// Remembers the environment each run was given.
+struct Recording<'a>(&'static str, &'a RefCell<Vec<Env>>);
+
+impl Runner for Recording<'_> {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    fn run(&self, _settings: &Path, _probe: &Probe, env: &Env) -> Result<u8, Error> {
+        self.1.borrow_mut().push(env.clone());
+        Ok(probe::ALLOWED)
+    }
+
+    fn refuses(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<bool, Error> {
+        unreachable!("a compared case is not a refused one")
+    }
+}
+
+#[test]
+fn both_runners_get_the_environment_the_case_sets() {
+    let seen = RefCell::new(Vec::new());
+    let case = Case {
+        env: Env::from([("CLAUDE_CODE_TMPDIR".to_owned(), "/r/fresh".to_owned())]),
+        ..case()
+    };
+
+    compare(
+        &case,
+        Path::new("/r/settings.json"),
+        &|| Ok(()),
+        &Recording("upstream", &seen),
+        &Recording("crabpot", &seen),
+    )
+    .unwrap();
+
+    let seen = seen.into_inner();
+    assert_eq!(seen.len(), 4, "two probes under two runners");
+    assert!(seen.iter().all(|env| *env == case.env), "{seen:?}");
 }
 
 #[test]
@@ -147,11 +242,11 @@ impl Runner for Never {
         self.0
     }
 
-    fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+    fn run(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<u8, Error> {
         unreachable!("{} ran a case that means another platform", self.0)
     }
 
-    fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+    fn refuses(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<bool, Error> {
         unreachable!("{} ran a case that means another platform", self.0)
     }
 }
@@ -250,11 +345,11 @@ fn a_case_ends_when_a_runner_panics_under_it() {
             self.0
         }
 
-        fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+        fn run(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<u8, Error> {
             panic!("the runner is broken")
         }
 
-        fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+        fn refuses(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<bool, Error> {
             unreachable!("the case is not a refused one")
         }
     }
@@ -293,7 +388,7 @@ impl Runner for Dialer {
         "dialer"
     }
 
-    fn run(&self, settings: &Path, probe: &Probe) -> Result<u8, Error> {
+    fn run(&self, settings: &Path, probe: &Probe, _env: &Env) -> Result<u8, Error> {
         let Probe::ConnectUnix(path) = probe else {
             return Ok(probe::ALLOWED);
         };
@@ -304,7 +399,7 @@ impl Runner for Dialer {
         }
     }
 
-    fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+    fn refuses(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<bool, Error> {
         Ok(false)
     }
 }
@@ -402,12 +497,12 @@ impl Runner for Spoiling<'_> {
         self.0
     }
 
-    fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+    fn run(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<u8, Error> {
         assert!(self.1.replace(false), "{} ran on a spoiled fixture", self.0);
         Ok(probe::ALLOWED)
     }
 
-    fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+    fn refuses(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<bool, Error> {
         unreachable!("a compared case is not a refused one")
     }
 }
@@ -501,11 +596,11 @@ impl Runner for Refusing {
         self.0
     }
 
-    fn run(&self, _settings: &Path, _probe: &Probe) -> Result<u8, Error> {
+    fn run(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<u8, Error> {
         unreachable!("a refused case is not run")
     }
 
-    fn refuses(&self, _settings: &Path, _probe: &Probe) -> Result<bool, Error> {
+    fn refuses(&self, _settings: &Path, _probe: &Probe, _env: &Env) -> Result<bool, Error> {
         Ok(self.1)
     }
 }

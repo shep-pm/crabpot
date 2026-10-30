@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::Value;
 
-use crate::case::Probe;
+use crate::case::{Env, Probe};
 
 use super::wrapper::exit_code;
 use super::{Error, Upstream, gated, sandboxes_in_range, spell_for_upstream};
@@ -217,7 +217,12 @@ fn attempt(upstream: &Upstream, staged: &Staged) -> Result<(), String> {
     let probe = Probe::Read(staged.probe.display().to_string());
     let mut last = String::new();
     for attempt in 1..=ATTEMPTS {
-        match gated(|| exit_code(upstream.command(staged.settings(), &probe), "upstream")) {
+        match gated(|| {
+            exit_code(
+                upstream.command(staged.settings(), &probe, &Env::new()),
+                "upstream",
+            )
+        }) {
             Ok(_) => return Ok(()),
             Err(error) => {
                 eprintln!("report: warm-up attempt {attempt} of {ATTEMPTS}: {error}");

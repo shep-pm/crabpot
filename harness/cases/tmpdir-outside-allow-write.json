@@ -1,0 +1,12 @@
+{
+  "files": {},
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": []},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "env": {"CLAUDE_CODE_TMPDIR": "$ROOT/fresh-tmp"},
+  "platforms": ["macos", "linux"],
+  "probes": [
+    {"kind": "write", "path": "$ROOT/fresh-tmp/out", "upstream": 2}
+  ]
+}

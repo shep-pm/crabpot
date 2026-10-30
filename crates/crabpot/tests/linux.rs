@@ -263,16 +263,22 @@ fn sigusr2_reaches_the_command() {
 const LAUNCHER_WAIT: Duration = Duration::from_secs(30);
 
 /// What arrives on `lines`, or a failure that ends `launcher` first, so no
-/// sandbox outlives the test.
-fn within_wait(lines: &mpsc::Receiver<String>, launcher: &mut Child, what: &str) -> String {
+/// sandbox outlives the test. `stderr` is what a background thread reads from
+/// the launcher's stderr, which the sandboxed command may hold open after the
+/// launcher is killed, so it is collected for a bounded time and not to its end.
+fn within_wait(
+    lines: &mpsc::Receiver<String>,
+    stderr: &mpsc::Receiver<String>,
+    launcher: &mut Child,
+    what: &str,
+) -> String {
     match lines.recv_timeout(LAUNCHER_WAIT) {
         Ok(text) => text,
         Err(_) => {
             let _ = launcher.kill();
-            let mut stderr = String::new();
-            if let Some(mut pipe) = launcher.stderr.take() {
-                let _ = pipe.read_to_string(&mut stderr);
-            }
+            let stderr = stderr
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap_or_else(|_| "(still open after the launcher was killed)".to_owned());
             panic!("the launcher gave no {what} in {LAUNCHER_WAIT:?}; stderr: {stderr}");
         }
     }
@@ -292,6 +298,7 @@ fn signal_a_ready_launcher(signal: &str) -> (String, ExitStatus) {
         .spawn()
         .unwrap();
     let stdout = launcher.stdout.take().unwrap();
+    let mut stderr_pipe = launcher.stderr.take().unwrap();
     let (sender, lines) = mpsc::channel();
     thread::spawn(move || {
         let mut stdout = BufReader::new(stdout);
@@ -302,10 +309,17 @@ fn signal_a_ready_launcher(signal: &str) -> (String, ExitStatus) {
         let _ = stdout.read_to_string(&mut rest);
         let _ = sender.send(rest);
     });
-    assert_eq!(within_wait(&lines, &mut launcher, "ready line"), "ready\n");
+    let (stderr_sender, stderr) = mpsc::channel();
+    thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr_pipe.read_to_string(&mut text);
+        let _ = stderr_sender.send(text);
+    });
+    let ready = within_wait(&lines, &stderr, &mut launcher, "ready line");
+    assert_eq!(ready, "ready\n");
 
     send(signal, &launcher);
-    let rest = within_wait(&lines, &mut launcher, "end after the signal");
+    let rest = within_wait(&lines, &stderr, &mut launcher, "end after the signal");
     (rest, launcher.wait().unwrap())
 }
 

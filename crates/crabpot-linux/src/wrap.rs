@@ -27,7 +27,7 @@ pub const INFO_FD: u32 = 8;
 /// it, to [`INFO_FD`]. They go after `bwrap` itself, and only on a command whose
 /// caller has given it that descriptor with
 /// `info::attach`: bwrap refuses a descriptor that is
-/// not open. `--info-fd` is what every bwrap crabpot supports has, where
+/// not open. `--info-fd` is what every bwrap crabpot supports, where
 /// `--json-status-fd` is newer.
 #[must_use]
 pub fn info_words() -> [OsString; 2] {
@@ -149,14 +149,14 @@ mod tests {
         );
     }
 
-    /// bwrap applies its mounts in the order it reads them, and the sandbox's
-    /// own `/dev` and `/proc` are the last mounts in the plan. No write bind,
-    /// not one of the whole root, lands over them.
     #[test]
     fn the_info_words_name_the_descriptor_the_launcher_passes() {
         assert_eq!(info_words(), ["--info-fd", "8"].map(OsString::from));
     }
 
+    /// bwrap applies its mounts in the order it reads them, and the sandbox's
+    /// own `/dev` and `/proc` are the last mounts in the plan. No write bind,
+    /// not one of the whole root, lands over them.
     #[test]
     fn the_private_mounts_follow_every_bind() {
         let mut config = Config::default();

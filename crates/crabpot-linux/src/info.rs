@@ -94,7 +94,11 @@ fn read_report(mut reader: impl Read, found: impl FnOnce(u32)) {
     let mut seen = Vec::new();
     let mut chunk = [0_u8; 256];
     loop {
-        let read = reader.read(&mut chunk).unwrap_or(0);
+        let read = match reader.read(&mut chunk) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => 0,
+            Ok(read) => read,
+        };
         seen.extend_from_slice(&chunk[..read]);
         let ended = read == 0 || seen.contains(&b'}');
         if let Some(pid) = pid_in(&seen, ended)
@@ -195,6 +199,26 @@ mod tests {
         let reader = Pieces(vec![b"{\n    \"child-p", b"id\": 7\n}\n"]);
 
         assert_eq!(pid_read(reader), Some(7));
+    }
+
+    /// A reader that is interrupted before each piece, as a signal does.
+    struct Interrupted(Pieces, bool);
+
+    impl Read for Interrupted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.1 = !self.1;
+            if self.1 {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.0.read(buf)
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_retried_not_taken_for_the_end() {
+        let reader = Interrupted(Pieces(vec![b"{\n    \"child-pid\": 42", b"42\n}\n"]), false);
+
+        assert_eq!(pid_read(reader), Some(4242));
     }
 
     #[test]

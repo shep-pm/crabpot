@@ -5,6 +5,16 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.10] - 2026-10-30
+
+### Fixed
+
+- Forward host shutdown signals to the command
+- Forward Linux signals past bwrap monitors
+- Retain shutdown signals during helper startup
+- Hold signals from bwrap until the helper forwards them
+
+
 ## [0.5.9] - 2026-10-30
 
 ### Fixed

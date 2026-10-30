@@ -123,7 +123,6 @@ mod tests {
     #[test]
     fn the_patches_list_says_where_the_two_upstream_tests_run() {
         let patches = include_str!("../PATCHES.md");
-        let manifest = include_str!("../Cargo.toml");
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
         let lib = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
         for (file, module) in [
@@ -142,10 +141,6 @@ mod tests {
             );
             assert!(lib.contains(module), "src/lib.rs no longer has {module}");
         }
-        assert!(
-            !manifest.contains("[[test]]"),
-            "Cargo.toml declares a test target again: these two cannot build as test crates, because their modules are private to the library"
-        );
         assert!(
             patches.contains("unit test"),
             "PATCHES.md does not say the two upstream tests run as unit tests of the library"

@@ -79,3 +79,53 @@ mod tests {
         assert!(runner(None).readable());
     }
 }
+
+#[cfg(all(test, windows))]
+mod native_tests {
+    use super::*;
+    use crate::test::{runner_file, sandbox_status};
+
+    #[test]
+    fn a_grant_for_the_sandbox_account_opens_the_runner() {
+        let file = runner_file("account", "S-1-5-19");
+        let status = sandbox_status(Some("S-1-5-19"), Some("S-1-5-20"));
+
+        assert_eq!(Runner::of(file.exe.clone(), None).dacl_allows, Some(false));
+        assert_eq!(
+            Runner::of(file.exe.clone(), Some(&status)).dacl_allows,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_grant_for_the_sandbox_group_opens_the_runner() {
+        let file = runner_file("group", "S-1-5-19");
+        let status = sandbox_status(Some("S-1-5-20"), Some("S-1-5-19"));
+
+        assert_eq!(
+            Runner::of(file.exe.clone(), Some(&status)).dacl_allows,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_grant_for_the_real_user_does_not_open_the_runner_for_the_sandbox() {
+        let file = runner_file("real-user", "S-1-5-19");
+        let mut status = sandbox_status(Some("S-1-5-20"), None);
+        status.real_user_sid = Some("S-1-5-19".to_owned());
+
+        assert_eq!(
+            Runner::of(file.exe.clone(), Some(&status)).dacl_allows,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_access_list_leaves_the_runner_check_unknown() {
+        let exe = std::env::current_exe()
+            .expect("this test binary")
+            .join("missing.exe");
+
+        assert_eq!(Runner::of(exe.clone(), None).dacl_allows, None);
+    }
+}

@@ -34,13 +34,14 @@ use super::sys;
 /// Where the sandbox's `max_user_namespaces` limit is written.
 const MAX_USER_NAMESPACES: &str = "/proc/sys/user/max_user_namespaces";
 
-/// The signals a helper passes on to what it runs: the ones a host ends a
-/// command with.
-const FORWARDED: [Signal; 4] = [
+// Keep this set aligned with the wrapper's listeners in crates/crabpot/src/run.rs.
+const FORWARDED: [Signal; 6] = [
     Signal::SIGINT,
     Signal::SIGTERM,
     Signal::SIGHUP,
     Signal::SIGQUIT,
+    Signal::SIGUSR1,
+    Signal::SIGUSR2,
 ];
 
 /// Runs the command `argv` names as a child of a new PID 1. With a `relay` it

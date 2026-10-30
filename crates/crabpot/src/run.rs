@@ -270,17 +270,26 @@ pub(crate) fn execute(command: Command) -> i32 {
     runtime.block_on(run(command))
 }
 
-/// Spawns `command`, waits for it with SIGINT and SIGTERM forwarded to it, and
+/// Spawns `command`, waits for it with host shutdown signals forwarded to it, and
 /// returns the status the wrapper exits with.
 #[cfg(unix)]
 async fn run(command: Command) -> i32 {
     // Listening comes before spawning, so no signal falls in between.
-    let listeners = match (
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::terminate()),
-    ) {
-        (Ok(interrupt), Ok(terminate)) => [("INT", interrupt), ("TERM", terminate)],
-        (Err(e), _) | (_, Err(e)) => {
+    // Keep this set aligned with FORWARDED in crates/crabpot-linux/src/helper/init.rs.
+    let listeners = [
+        ("INT", SignalKind::interrupt()),
+        ("TERM", SignalKind::terminate()),
+        ("HUP", SignalKind::hangup()),
+        ("QUIT", SignalKind::quit()),
+        ("USR1", SignalKind::user_defined1()),
+        ("USR2", SignalKind::user_defined2()),
+    ]
+    .into_iter()
+    .map(|(name, kind)| signal(kind).map(|stream| (name, stream)))
+    .collect::<io::Result<Vec<_>>>();
+    let listeners = match listeners {
+        Ok(listeners) => listeners,
+        Err(e) => {
             eprintln!("crabpot: cannot listen for signals: {e}");
             return 1;
         }
@@ -584,15 +593,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn sigterm_sent_to_the_wrapper_reaches_the_command() {
+    fn host_shutdown_signals_sent_to_the_wrapper_reach_the_command() {
         // The command signals its parent, which is this process, and then
         // waits long enough for the wrapper to forward the signal back.
-        let script = r#"trap 'exit 7' TERM
-            kill -TERM $PPID
-            n=0
-            while [ $n -lt 2000000 ]; do n=$((n+1)); done
-            exit 9"#;
+        for signal in ["INT", "TERM", "HUP", "QUIT", "USR1", "USR2"] {
+            let script = format!(
+                r#"trap 'exit 7' {signal}
+                kill -{signal} $PPID
+                n=0
+                while [ $n -lt 2000000 ]; do n=$((n+1)); done
+                exit 9"#
+            );
 
-        assert_eq!(run(shell(script)), 7);
+            assert_eq!(run(shell(&script)), 7, "{signal}");
+        }
     }
 }

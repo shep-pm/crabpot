@@ -45,7 +45,7 @@ crabpot-windows.workspace = true
 # The three srt-win queries a Windows status reads print JSON.
 serde.workspace = true
 serde_json.workspace = true
-# The wrapper waits on its child and on SIGINT and SIGTERM, and no more.
+# The wrapper waits on its child and forwards host shutdown signals.
 tokio = { version = "1", default-features = false, features = ["rt", "process", "signal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

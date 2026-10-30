@@ -1,13 +1,82 @@
-# crabpot
+<p align="center">
+  <img src="https://raw.githubusercontent.com/shep-pm/crabpot/main/assets/crabpot-logo.png" alt="A crab sitting in a crab pot" width="220">
+</p>
 
-[![crates.io](https://img.shields.io/crates/v/crabpot.svg)](https://crates.io/crates/crabpot)
-[![License](https://img.shields.io/crates/l/crabpot.svg)](https://github.com/shep-pm/crabpot#license)
+<h1 align="center">crabpot</h1>
 
-Native Rust sandbox runtime for AI agents, rewritten from Anthropic's sandbox-runtime.
+<p align="center">Native Rust sandbox runtime for AI agents, rewritten from Anthropic's sandbox-runtime.</p>
 
-crabpot enforces filesystem and network restrictions on any process at the OS level, without a container. It is a port of [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (`srt`) to Rust, with no Node runtime.
+<p align="center">
+  <a href="https://crates.io/crates/crabpot"><img src="https://img.shields.io/crates/v/crabpot.svg" alt="crates.io"></a>
+  <a href="https://docs.rs/crabpot"><img src="https://img.shields.io/docsrs/crabpot" alt="docs.rs"></a>
+  <a href="https://github.com/shep-pm/crabpot/actions/workflows/test.yml"><img src="https://github.com/shep-pm/crabpot/actions/workflows/test.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/MSRV-1.88-blue" alt="MSRV 1.88">
+  <a href="https://github.com/shep-pm/crabpot#license"><img src="https://img.shields.io/crates/l/crabpot.svg" alt="License"></a>
+</p>
 
-It runs on macOS (`sandbox-exec`), Linux (bubblewrap and seccomp) and Windows (a separate sandbox user behind a WFP fence). Use it as a library, with `Sandbox::start` and then `Sandbox::command`, or as the `crabpot` command, which takes upstream's `-s/--settings`, `-c`, `-d` and `--`.
+crabpot restricts what a process can read, write and reach on the network, using the OS's own sandbox and no container. It is a port of [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (`srt`) to Rust, with no Node runtime, and reads the same settings file.
+
+| Platform | How it confines a process |
+|---|---|
+| macOS | `sandbox-exec` with a generated profile |
+| Linux | bubblewrap and seccomp (`bwrap` must be on `PATH`) |
+| Windows | a separate sandbox user behind a WFP firewall fence, after a [one-time install](#windows-setup) |
+
+On every platform, network traffic goes through a filtering proxy that only lets the allowed domains through.
+
+## Install
+
+```sh
+cargo install crabpot   # the command
+cargo add crabpot       # the library
+```
+
+## Use it
+
+Write a settings file, upstream's format:
+
+```json
+{
+  "network": {
+    "allowedDomains": ["github.com", "*.github.com"],
+    "deniedDomains": []
+  },
+  "filesystem": {
+    "denyRead": ["~/.ssh"],
+    "allowWrite": ["."],
+    "denyWrite": [".env"]
+  }
+}
+```
+
+Then run a command under it. With no `-s`, crabpot reads `~/.srt-settings.json`, as upstream does.
+
+```sh
+crabpot -s settings.json -- git pull
+crabpot -s settings.json -c 'npm install && npm test'
+```
+
+`-d` prints debug output. Or use the library:
+
+```rust
+use std::path::Path;
+use std::process::Command;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // On Linux and Windows the sandbox runs this binary again as a helper.
+    crabpot::run_from_args();
+
+    let config = crabpot::Config::from_file(Path::new("settings.json"))?;
+    let sandbox = crabpot::Sandbox::start(&config)?;
+    let status = sandbox
+        .command(Command::new("curl").arg("https://example.com"))?
+        .status()?;
+    println!("{status}");
+    Ok(())
+}
+```
+
+`Sandbox::start` refuses with a typed `StartError` that names what is missing. The sandbox's grants and proxy last until it drops.
 
 ## Windows setup
 

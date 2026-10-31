@@ -46,7 +46,7 @@ use self::leaf::present;
 #[non_exhaustive]
 pub struct Config {
     /// What a command may reach.
-    #[serde(deserialize_with = "Network::deserialize")]
+    #[serde(deserialize_with = "NetworkShape::deserialize")]
     pub network: Network,
     /// What a command may read and write.
     pub filesystem: Filesystem,
@@ -81,51 +81,39 @@ pub struct Git {
 ///
 /// Deserializing one refuses unsupported TCP and publish grants.
 // Wire format: changing the camelCase settings keys is a breaking change.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", remote = "Self")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Network {
     /// `allowedDomains`: the hosts the proxy lets a command reach.
-    #[serde(deserialize_with = "allowed_domains::deserialize")]
     pub allowed_domains: Vec<DomainEntry>,
     /// `deniedDomains`: the hosts the proxy refuses, which beat `allowedDomains`.
-    #[serde(deserialize_with = "denied_domains::deserialize")]
     pub denied_domains: Vec<DomainEntry>,
     /// `strictAllowlist`: read as a boolean. An unlisted host is refused whether
     /// it is on or off, because crabpot has no way to widen `allowedDomains`.
-    #[serde(default, deserialize_with = "strict_allowlist::deserialize")]
     pub strict_allowlist: Option<bool>,
     /// `deniedResolvedAddresses`: the addresses and ranges an allowed name may
     /// not resolve to, beside the built-in set.
-    #[serde(default, deserialize_with = "denied_resolved_addresses::deserialize")]
     pub denied_resolved_addresses: Option<Vec<AddressRange>>,
     /// `allowUnixSockets`: the Unix socket paths a command may use, which the
     /// macOS profile opens for binding and for dialing.
-    #[serde(default, deserialize_with = "allow_unix_sockets::deserialize")]
     pub allow_unix_sockets: Option<Vec<String>>,
     /// `allowLocalBinding`: whether the command may bind, accept on and dial
     /// any local port.
-    #[serde(default, deserialize_with = "allow_local_binding::deserialize")]
     pub allow_local_binding: Option<bool>,
     /// `publish`: IP literals and ports a command may bind and accept on.
     /// A key of crabpot's own, honoured on macOS only. Seatbelt grants each
     /// port on every local address. The command chooses its bind address.
-    #[serde(default, deserialize_with = "publish::deserialize")]
     pub publish: Option<Vec<SocketAddr>>,
     /// `allowTcp`: hosts and ports a command may dial directly. A key of
     /// crabpot's own, refused when nonempty on every platform until supported.
-    #[serde(default, deserialize_with = "allow_tcp::deserialize")]
     pub allow_tcp: Option<Vec<TcpDestination>>,
     /// `allowMachLookup`: the Mach services a command may look up, which the
     /// macOS profile applies.
-    #[serde(default, deserialize_with = "allow_mach_lookup::deserialize")]
     pub allow_mach_lookup: Option<Vec<String>>,
     /// `denyMachLookup`: the Mach services a command may not look up, which
     /// the macOS profile denies last, over every allow. A key of crabpot's own.
-    #[serde(default, deserialize_with = "deny_mach_lookup::deserialize")]
     pub deny_mach_lookup: Option<Vec<String>>,
     /// `mitmProxy`: the domains sent to an upstream proxy over a Unix socket.
-    #[serde(default, deserialize_with = "present")]
     pub mitm_proxy: Option<MitmProxy>,
 }
 
@@ -269,9 +257,37 @@ impl<'de> Deserialize<'de> for Config {
     }
 }
 
+// Config validates all fields before refusing unsupported grants.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", remote = "Network")]
+struct NetworkShape {
+    #[serde(deserialize_with = "allowed_domains::deserialize")]
+    allowed_domains: Vec<DomainEntry>,
+    #[serde(deserialize_with = "denied_domains::deserialize")]
+    denied_domains: Vec<DomainEntry>,
+    #[serde(default, deserialize_with = "strict_allowlist::deserialize")]
+    strict_allowlist: Option<bool>,
+    #[serde(default, deserialize_with = "denied_resolved_addresses::deserialize")]
+    denied_resolved_addresses: Option<Vec<AddressRange>>,
+    #[serde(default, deserialize_with = "allow_unix_sockets::deserialize")]
+    allow_unix_sockets: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "allow_local_binding::deserialize")]
+    allow_local_binding: Option<bool>,
+    #[serde(default, deserialize_with = "publish::deserialize")]
+    publish: Option<Vec<SocketAddr>>,
+    #[serde(default, deserialize_with = "allow_tcp::deserialize")]
+    allow_tcp: Option<Vec<TcpDestination>>,
+    #[serde(default, deserialize_with = "allow_mach_lookup::deserialize")]
+    allow_mach_lookup: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deny_mach_lookup::deserialize")]
+    deny_mach_lookup: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present")]
+    mitm_proxy: Option<MitmProxy>,
+}
+
 impl<'de> Deserialize<'de> for Network {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let network = Self::deserialize(deserializer)?;
+        let network = NetworkShape::deserialize(deserializer)?;
         if network
             .allow_tcp
             .as_ref()

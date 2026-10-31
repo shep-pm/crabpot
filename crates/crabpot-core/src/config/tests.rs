@@ -84,12 +84,19 @@ fn deserializing_network_directly_refuses_unsupported_allow_tcp() {
         "deniedDomains": [],
         "allowTcp": ["10.0.0.5:3306"],
     });
-    let error = serde_json::from_value::<Network>(settings).unwrap_err();
+    let errors = [
+        Network::deserialize(&settings).unwrap_err().to_string(),
+        serde_json::from_value::<Network>(settings)
+            .unwrap_err()
+            .to_string(),
+    ];
 
-    assert_eq!(
-        error.to_string(),
-        "settings key `network.allowTcp` is not supported yet"
-    );
+    for error in errors {
+        assert_eq!(
+            error,
+            "settings key `network.allowTcp` is not supported yet"
+        );
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -100,12 +107,16 @@ fn deserializing_network_directly_refuses_unsupported_publish() {
         "deniedDomains": [],
         "publish": ["127.0.0.1:8001"],
     });
-    let error = serde_json::from_value::<Network>(settings).unwrap_err();
+    let errors = [
+        Network::deserialize(&settings).unwrap_err().to_string(),
+        serde_json::from_value::<Network>(settings)
+            .unwrap_err()
+            .to_string(),
+    ];
 
-    assert_eq!(
-        error.to_string(),
-        "settings key `network.publish` is not supported yet"
-    );
+    for error in errors {
+        assert_eq!(error, "settings key `network.publish` is not supported yet");
+    }
 }
 
 #[test]
@@ -120,7 +131,7 @@ fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
             "[::1]:65535"
         ]),
     );
-    let network = Network::deserialize(&settings["network"]).unwrap();
+    let network = NetworkShape::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()
@@ -151,7 +162,7 @@ fn allow_tcp_keeps_ipv6_scopes_as_distinct_destinations() {
         "network.allowTcp",
         json!(["[fe80::1%2]:22", "[fe80::1%3]:22"]),
     );
-    let network = Network::deserialize(&settings["network"]).unwrap();
+    let network = NetworkShape::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()

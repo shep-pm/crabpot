@@ -115,9 +115,8 @@ fn confine_outer(child: Pid) -> Result<(), InitError> {
     })
 }
 
-/// Unshares the PID and mount namespaces. A process without `CAP_SYS_ADMIN` is
-/// refused, so it makes a user namespace first, where it has the capability,
-/// and maps its own ids to themselves. It returns whether it made one.
+/// Prepares loopback and the relay, then unshares the PID and mount namespaces.
+/// Returns whether the helper made a user namespace, mapping its ids to themselves.
 fn enter_namespaces(relay: Option<&Path>, loopback: &[IpAddr]) -> Result<bool, InitError> {
     if let Some(&address) = loopback.first() {
         unshare_user(CloneFlags::CLONE_NEWNET)?;

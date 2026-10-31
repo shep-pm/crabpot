@@ -40,6 +40,18 @@ fn the_default_config_shape_loads() {
     );
 }
 
+#[test]
+fn publish_refuses_a_hostname_and_names_the_entry() {
+    let entry = "database.example.com:3306";
+    match Config::from_json(&with("network.publish", json!([entry]))) {
+        Err(ConfigError::Invalid { key, reason }) => {
+            assert_eq!(key, "network.publish");
+            assert!(reason.contains(entry), "{reason}");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+}
+
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[

@@ -17,5 +17,6 @@ pub(crate) mod deny_read;
 pub(crate) mod deny_write;
 pub(crate) mod enable_weaker_network_isolation;
 pub(crate) mod mitm_proxy;
+pub(crate) mod publish;
 pub(crate) mod strict_allowlist;
 pub(crate) mod windows;

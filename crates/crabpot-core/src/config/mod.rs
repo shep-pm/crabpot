@@ -17,6 +17,7 @@ mod tests;
 
 use std::fs;
 use std::io;
+use std::net::SocketAddr;
 use std::path::Path;
 
 use serde::{Deserialize, Deserializer};
@@ -32,7 +33,7 @@ pub use crate::path_entries::PathEntry;
 use self::keys::{
     allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
     allowed_domains, denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_read,
-    deny_write, enable_weaker_network_isolation, mitm_proxy, strict_allowlist,
+    deny_write, enable_weaker_network_isolation, mitm_proxy, publish, strict_allowlist,
 };
 use self::leaf::present;
 
@@ -101,6 +102,10 @@ pub struct Network {
     /// any local port.
     #[serde(default, deserialize_with = "allow_local_binding::deserialize")]
     pub allow_local_binding: Option<bool>,
+    /// `publish`: IP literals and ports a command may bind and accept on.
+    /// A key of crabpot's own, honoured on macOS only.
+    #[serde(default, deserialize_with = "publish::deserialize")]
+    pub publish: Option<Vec<SocketAddr>>,
     /// `allowMachLookup`: the Mach services a command may look up, which the
     /// macOS profile applies.
     #[serde(default, deserialize_with = "allow_mach_lookup::deserialize")]

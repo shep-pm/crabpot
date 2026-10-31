@@ -88,19 +88,38 @@ impl Drop for Published {
     }
 }
 
-/// Listens on every address in `addresses` and gives `command` the inside end of
-/// the socket pair as [`PUBLISH_FD`](crate::wrap::PUBLISH_FD).
+/// The inside end of the socket pair, before a command is given it.
+#[derive(Debug)]
+pub struct Inside(OwnedFd);
+
+impl Inside {
+    /// The descriptor number the end has in `command`'s child, which the helper
+    /// takes as `--publish-fd`.
+    #[must_use]
+    pub fn fd(&self) -> u32 {
+        u32::try_from(self.0.as_raw_fd()).unwrap_or(u32::MAX)
+    }
+
+    /// Gives `command` the end under [`Inside::fd`].
+    pub fn attach(self, command: &mut Command) {
+        sys::keep_in_child(command, self.0);
+    }
+}
+
+/// Listens on every address in `addresses`. The inside end of the socket pair
+/// sits above every descriptor the launcher can have inherited, so the command
+/// keeps what it was handed.
 ///
 /// # Errors
 ///
 /// [`PublishError::Bind`] for the first address the host cannot listen on, and
 /// [`PublishError::Channel`] when the pair, the thread or the descriptor copy
 /// fails.
-pub fn publish(addresses: &[SocketAddr], command: &mut Command) -> Result<Published, PublishError> {
+pub fn publish(addresses: &[SocketAddr]) -> Result<(Published, Inside), PublishError> {
     let (published, inside) = serve(addresses)?;
-    sys::pass_in_child(command, inside, crate::wrap::PUBLISH_FD)
-        .map_err(|error| PublishError::Channel(error.kind()))?;
-    Ok(published)
+    let inside =
+        sys::copy_above_reserved(inside).map_err(|error| PublishError::Channel(error.kind()))?;
+    Ok((published, Inside(inside)))
 }
 
 /// Listens on every address in `addresses`, and returns the inside end of the
@@ -238,6 +257,13 @@ mod tests {
         let mut answer = [0; 4];
         client.read_exact(&mut answer).unwrap();
         assert_eq!(&answer, b"pong");
+    }
+
+    #[test]
+    fn the_inside_end_is_above_the_descriptors_a_launcher_can_inherit() {
+        let (_published, inside) = publish(&[LOCAL]).unwrap();
+
+        assert!(inside.fd() >= 10, "{}", inside.fd());
     }
 
     #[test]

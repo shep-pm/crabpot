@@ -131,12 +131,17 @@ impl Sandbox {
                 OsString::from(fd.to_string()),
             ]);
         }
-        if !self.publish.is_empty() {
+        let published = if self.publish.is_empty() {
+            None
+        } else {
+            let (published, inside) = crabpot_linux::net::publish::publish(&self.publish)
+                .map_err(|e| WrapError::Publish(e.to_string()))?;
             words.extend([
                 OsString::from(PUBLISH_FD_FLAG),
-                crabpot_linux::wrap::PUBLISH_FD.to_string().into(),
+                OsString::from(inside.fd().to_string()),
             ]);
-        }
+            Some((published, inside))
+        };
         for address in loopback.iter().chain(&self.published_addresses(loopback)) {
             words.extend([OsString::from(LOOPBACK_FLAG), address.to_string().into()]);
         }
@@ -156,9 +161,8 @@ impl Sandbox {
         let rendered = crabpot_linux::argv::render(&bwrap_words, &words, &std::env::temp_dir())
             .map_err(|e| WrapError::Bwrap(e.to_string()))?;
         let mut wrapped = rendered.command;
-        if !self.publish.is_empty() {
-            let published = crabpot_linux::net::publish::publish(&self.publish, &mut wrapped)
-                .map_err(|e| WrapError::Publish(e.to_string()))?;
+        if let Some((published, inside)) = published {
+            inside.attach(&mut wrapped);
             self.published
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -367,7 +371,8 @@ mod tests {
         let helper = crate::args::parse_helper(args).unwrap().unwrap();
         let init = crate::args::parse_init(&helper.args).unwrap();
 
-        assert_eq!(init.publish_fd, Some(crabpot_linux::wrap::PUBLISH_FD));
+        // Above the descriptors a launcher can have inherited.
+        assert!(init.publish_fd >= Some(10), "{:?}", init.publish_fd);
         // Loopback and wildcard addresses need nothing added to `lo`.
         assert_eq!(init.loopback, Vec::<IpAddr>::new());
     }

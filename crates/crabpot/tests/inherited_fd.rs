@@ -1,10 +1,12 @@
 //! A descriptor the launcher inherits on fd 3 reaches the sandboxed command, as
-//! shep's shepherd channel does. The cases drive the `crabpot` binary.
+//! shep's shepherd channel does, and so does one on fd 7 when `network.publish`
+//! is set. The cases drive the `crabpot` binary.
 
 #![cfg(target_os = "linux")]
 
 use std::fs;
 use std::io::Read;
+use std::net::{Ipv4Addr, TcpListener};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -14,15 +16,22 @@ const CRABPOT: &str = env!("CARGO_BIN_EXE_crabpot");
 /// A folder of the case's own, holding permissive-enough settings, since cases
 /// of this binary run in parallel.
 fn home(case: &str) -> PathBuf {
+    home_publishing(case, "")
+}
+
+/// [`home`], with `publish` as the settings' `network.publish` entries.
+fn home_publishing(case: &str, publish: &str) -> PathBuf {
     let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("inherited-fd-{case}-{}", std::process::id()));
     fs::create_dir_all(&home).unwrap();
     fs::write(
         home.join("settings.json"),
-        r#"{
-            "network": {"allowedDomains": [], "deniedDomains": []},
-            "filesystem": {"denyRead": [], "allowWrite": [], "denyWrite": []}
-        }"#,
+        format!(
+            r#"{{
+            "network": {{"allowedDomains": [], "deniedDomains": [], "publish": [{publish}]}},
+            "filesystem": {{"denyRead": [], "allowWrite": [], "denyWrite": []}}
+        }}"#
+        ),
     )
     .unwrap();
     home
@@ -83,5 +92,29 @@ fn a_descriptor_inherited_on_fd_3_stays_open_after_startup() {
         listing.trim_end().ends_with(&*marker.to_string_lossy()),
         "{listing}"
     );
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn a_descriptor_inherited_on_fd_7_reaches_the_command_when_network_publish_is_set() {
+    let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let home = home_publishing("publish-fd-7", &format!(r#""127.0.0.1:{port}""#));
+    let (ours, theirs) = UnixStream::pair().unwrap();
+
+    let output = launch(
+        &home,
+        "7<&0 </dev/null",
+        Stdio::from(std::os::fd::OwnedFd::from(theirs)),
+        "echo from the command >&7",
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let mut line = String::new();
+    (&ours).read_to_string(&mut line).unwrap();
+    assert_eq!(line, "from the command\n");
     fs::remove_dir_all(home).unwrap();
 }

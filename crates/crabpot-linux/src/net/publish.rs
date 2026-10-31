@@ -62,7 +62,8 @@ impl fmt::Display for PublishError {
 impl core::error::Error for PublishError {}
 
 /// The host's listeners for one command's published addresses, served until it
-/// drops. The port is free again once it has.
+/// drops or the sandbox's end of the socket pair has closed, which every process
+/// holding it exiting does. The port is free again once either has.
 #[derive(Debug)]
 pub struct Published {
     addresses: Vec<SocketAddr>,
@@ -140,7 +141,10 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
     }
     let (outside, inside) = socketpair(
         AddressFamily::Unix,
-        SockType::Datagram,
+        // A sequenced packet pair keeps each message whole, and reports a hang-up
+        // when every copy of the other end has closed, which a datagram pair
+        // does not.
+        SockType::SeqPacket,
         None,
         // The inside end stays blocking: the relay reads it with no poll. The
         // sending end never blocks, because it sends with `MSG_DONTWAIT`.
@@ -162,7 +166,7 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
 }
 
 /// Passes each connection the listeners accept into the sandbox, until `woken`
-/// reports its peer has hung up.
+/// reports its peer has hung up, or the sandbox's end of the pair has closed.
 fn accept_all(listeners: &[(TcpListener, SocketAddr)], woken: &UnixStream, outside: &OwnedFd) {
     loop {
         let mut polls: Vec<_> = listeners
@@ -170,16 +174,18 @@ fn accept_all(listeners: &[(TcpListener, SocketAddr)], woken: &UnixStream, outsi
             .map(|(listener, _)| PollFd::new(listener.as_fd(), PollFlags::POLLIN))
             .collect();
         polls.push(PollFd::new(woken.as_fd(), PollFlags::POLLIN));
+        polls.push(PollFd::new(outside.as_fd(), PollFlags::POLLIN));
         match poll(&mut polls, PollTimeout::NONE) {
             Err(Errno::EINTR) => continue,
             Err(_) => return,
             Ok(_) => {}
         }
-        let ready: Vec<bool> = polls
+        let mut ready: Vec<bool> = polls
             .iter()
             .map(|polled| polled.revents().is_some_and(|events| !events.is_empty()))
             .collect();
-        if ready.last().copied().unwrap_or(true) {
+        // Nothing is ever sent to this end, so any event on it is the hang-up.
+        if ready.pop().unwrap_or(true) || ready.pop().unwrap_or(true) {
             return;
         }
         for ((listener, address), ready) in listeners.iter().zip(ready) {
@@ -351,6 +357,29 @@ mod tests {
         connecting.store(false, Ordering::Relaxed);
         clients.join().unwrap();
         assert!(result.is_ok(), "the drop never returned");
+    }
+
+    #[test]
+    fn the_port_is_freed_once_the_inside_end_is_gone() {
+        let (published, inside) = serve(&[LOCAL]).unwrap();
+        let address = published.addresses()[0];
+
+        drop(inside);
+
+        let deadline = std::time::Instant::now() + STEP;
+        loop {
+            match TcpStream::connect_timeout(&address, STEP) {
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => break,
+                _ => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the listener outlived the sandbox"
+                    );
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        drop(published);
     }
 
     #[test]

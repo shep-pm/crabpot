@@ -234,7 +234,8 @@ impl Sandbox {
     /// On Linux each call also listens on the addresses of `network.publish`,
     /// with `SO_REUSEPORT`, and relays what connects to the same address inside
     /// the command's network namespace. The listeners last until the sandbox
-    /// drops.
+    /// drops, or until the command's sandbox has ended and the returned
+    /// [`Command`] is gone, whichever comes first.
     ///
     /// # Errors
     ///

@@ -93,7 +93,12 @@ mod tests {
 
     #[test]
     fn the_helper_receives_each_loopback_address_before_the_command() {
-        let sandbox = Sandbox::start(&Config::default()).unwrap();
+        let sandbox = match Sandbox::start(&Config::default()) {
+            Ok(sandbox) => sandbox,
+            // The machine has no bwrap to wrap a command in.
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => return,
+            Err(error) => panic!("{error}"),
+        };
         let addresses = ["10.0.0.5".parse().unwrap(), "fd00::5".parse().unwrap()];
         let mut command = Command::new("echo");
         command.arg("--loopback");

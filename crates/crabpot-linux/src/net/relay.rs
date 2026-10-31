@@ -5,7 +5,8 @@
 use core::time::Duration;
 use std::io;
 use std::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddrV4, SocketAddrV6, TcpListener, TcpStream,
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, SocketAddrV6, TcpListener,
+    TcpStream,
 };
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -31,7 +32,7 @@ fn backlog() -> Backlog {
 
 /// How long an accept that failed waits before the next, so a descriptor limit
 /// does not spin the relay.
-const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+pub(super) const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 /// Listens on `port` for every address of the machine: IPv6 with IPv4 mapped
 /// onto it, as upstream's `TCP6-LISTEN:<port>,ipv6only=0,fork,reuseaddr,backlog=4096`
@@ -84,8 +85,36 @@ fn listen_on_any(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
 /// A listening socket of `family` on `address` and `port`. An IPv6 socket
 /// that listens on the unspecified address takes IPv4 too.
 fn listen_on(family: AddressFamily, address: IpAddr, port: u16) -> Result<OwnedFd, Errno> {
+    listen_with(family, address, port, false)
+}
+
+/// Listens on `address` with `SO_REUSEPORT`, so another socket of the same user
+/// that sets it may listen on the same address and port.
+///
+/// # Errors
+///
+/// The error number of the call that failed. `EADDRINUSE` when a socket without
+/// `SO_REUSEPORT` holds the port.
+pub(super) fn listen_shared(address: SocketAddr) -> Result<TcpListener, Errno> {
+    let family = if address.is_ipv4() {
+        AddressFamily::Inet
+    } else {
+        AddressFamily::Inet6
+    };
+    listen_with(family, address.ip(), address.port(), true).map(TcpListener::from)
+}
+
+fn listen_with(
+    family: AddressFamily,
+    address: IpAddr,
+    port: u16,
+    reuse_port: bool,
+) -> Result<OwnedFd, Errno> {
     let fd = socket(family, SockType::Stream, SockFlag::empty(), None)?;
     setsockopt(&fd, sockopt::ReuseAddr, &true)?;
+    if reuse_port {
+        setsockopt(&fd, sockopt::ReusePort, &true)?;
+    }
     match address {
         IpAddr::V6(ip) => {
             setsockopt(&fd, sockopt::Ipv6V6Only, &!ip.is_unspecified())?;

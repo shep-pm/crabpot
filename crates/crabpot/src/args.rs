@@ -223,6 +223,10 @@ pub(crate) const RELAY_FLAG: &str = "--relay";
 /// The flag that adds a loopback address, with an optional TCP relay port.
 pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
 
+/// The flag that gives `init` the descriptor the launcher passes published
+/// connections to the sandbox on.
+pub(crate) const PUBLISH_FD_FLAG: &str = "--publish-fd";
+
 /// Asks the helper to acknowledge startup through the inherited descriptor it names.
 pub(crate) const REPORT_STARTED_FLAG: &str = "--report-started";
 
@@ -230,6 +234,7 @@ pub(crate) const REPORT_STARTED_FLAG: &str = "--report-started";
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Init<'a> {
     pub(crate) report_started: Option<u32>,
+    pub(crate) publish_fd: Option<u32>,
     pub(crate) relay: Option<&'a Path>,
     pub(crate) loopback: Vec<IpAddr>,
     pub(crate) tcp: Vec<SocketAddr>,
@@ -239,12 +244,14 @@ pub(crate) struct Init<'a> {
 /// Reads helper options until the command or `--` begins its arguments.
 pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
     let mut report_started = None;
+    let mut publish_fd = None;
     let mut relay = None;
     let mut loopback = Vec::new();
     let mut tcp = Vec::new();
     while let Some(arg) = args.first() {
         let flag = match arg.to_str() {
             Some(REPORT_STARTED_FLAG) => REPORT_STARTED_FLAG,
+            Some(PUBLISH_FD_FLAG) => PUBLISH_FD_FLAG,
             Some(RELAY_FLAG) => RELAY_FLAG,
             Some(LOOPBACK_FLAG) => LOOPBACK_FLAG,
             Some("--") => {
@@ -256,13 +263,16 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
         let value = args.get(1).ok_or(ArgsError::MissingValue(flag))?;
         if flag == RELAY_FLAG {
             relay = Some(Path::new(value));
-        } else if flag == REPORT_STARTED_FLAG {
-            report_started = Some(
-                value
-                    .to_str()
-                    .and_then(|text| text.parse().ok())
-                    .ok_or_else(|| ArgsError::InvalidDescriptor(value.clone()))?,
-            );
+        } else if flag == REPORT_STARTED_FLAG || flag == PUBLISH_FD_FLAG {
+            let descriptor = value
+                .to_str()
+                .and_then(|text| text.parse().ok())
+                .ok_or_else(|| ArgsError::InvalidDescriptor(value.clone()))?;
+            if flag == REPORT_STARTED_FLAG {
+                report_started = Some(descriptor);
+            } else {
+                publish_fd = Some(descriptor);
+            }
         } else {
             let text = value.to_string_lossy();
             if let Ok(address) = text.parse::<SocketAddr>() {
@@ -281,6 +291,7 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
     }
     Ok(Init {
         report_started,
+        publish_fd,
         relay,
         loopback,
         tcp,
@@ -605,6 +616,30 @@ mod tests {
         for value in ["x", "-1", "", "1.5", "4294967296"] {
             assert_eq!(
                 parse_init(&os(&["--report-started", value, "sh"])),
+                Err(ArgsError::InvalidDescriptor(value.into()))
+            );
+        }
+    }
+
+    #[test]
+    fn init_takes_the_publish_descriptor_before_the_command() {
+        let args = os(&["--publish-fd", "7", "--relay", "/s", "--", "sh"]);
+        let init = parse_init(&args).unwrap();
+        assert_eq!(init.publish_fd, Some(7));
+        assert_eq!(init.command, &args[5..]);
+
+        assert_eq!(parse_init(&os(&["sh"])).unwrap().publish_fd, None);
+    }
+
+    #[test]
+    fn init_refuses_a_missing_or_non_numeric_publish_descriptor() {
+        assert_eq!(
+            parse_init(&os(&["--publish-fd"])),
+            Err(ArgsError::MissingValue(PUBLISH_FD_FLAG))
+        );
+        for value in ["x", "-1", "", "1.5", "4294967296"] {
+            assert_eq!(
+                parse_init(&os(&["--publish-fd", value, "sh"])),
                 Err(ArgsError::InvalidDescriptor(value.into()))
             );
         }

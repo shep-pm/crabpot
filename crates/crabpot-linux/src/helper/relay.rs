@@ -5,11 +5,16 @@
 //! before any filter is installed, so it keeps `AF_UNIX`, which is the one
 //! thing the command is denied. The helper waits for it to listen, so the
 //! command never runs before the ports answer.
+//!
+//! It also receives the connections the launcher accepts for `network.publish`.
+//! Each arrives as a descriptor with the address it came in on. The relay dials
+//! that address inside the network namespace and copies both ways.
 
+use core::time::Duration;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
-use std::os::fd::OwnedFd;
+use std::io::{self, Read, Write};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 use std::thread;
 
@@ -23,6 +28,10 @@ use crate::net::relay::{bind, bind_loopback, serve, serve_tunnel};
 use crate::net::ssh;
 use crate::net::{HTTP_PORT, SOCKS_PORT};
 
+/// How long dialing a published address inside the sandbox may take. The
+/// address is on this host, so a command that has not accepted by then is stuck.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// What the relay writes to the helper once both ports listen.
 const READY: u8 = b'+';
 
@@ -30,20 +39,26 @@ const READY: u8 = b'+';
 const FAILED: u8 = b'-';
 
 /// Forks the relay for the proxy socket at `socket` and returns once it
-/// listens on [`HTTP_PORT`] and [`SOCKS_PORT`].
+/// listens on [`HTTP_PORT`] and [`SOCKS_PORT`]. With a `published` descriptor it
+/// goes to the relay, and this process closes its copy.
 ///
 /// # Errors
 ///
 /// A step that failed, or [`InitError::Relay`] when the relay could not listen
 /// or ended before it did.
-pub(super) fn start(socket: &Path, tcp: &[SocketAddr]) -> Result<(), InitError> {
+pub(super) fn start(
+    socket: &Path,
+    tcp: &[SocketAddr],
+    published: Option<OwnedFd>,
+) -> Result<(), InitError> {
     let (report, announce) = pipe().map_err(|reason| InitError::step(Step::Relay, reason))?;
     match sys::fork().map_err(|reason| InitError::step(Step::Fork, reason))? {
         ForkResult::Child => {
             drop(report);
-            run(announce, socket, tcp)
+            run(announce, socket, tcp, published)
         }
         ForkResult::Parent { .. } => {
+            drop(published);
             // Only the relay's copy of the write end is left open, so its
             // close is the end of what the relay has to say.
             drop(announce);
@@ -69,7 +84,7 @@ fn await_ready(mut report: File) -> Result<(), InitError> {
 }
 
 /// The relay process: listens, says so, and forwards until it is killed.
-fn run(announce: OwnedFd, socket: &Path, tcp: &[SocketAddr]) -> ! {
+fn run(announce: OwnedFd, socket: &Path, tcp: &[SocketAddr], published: Option<OwnedFd>) -> ! {
     // It ends with the helper, however the helper ends.
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
     // It holds the proxy credential in its environment, which no other process
@@ -107,6 +122,9 @@ fn run(announce: OwnedFd, socket: &Path, tcp: &[SocketAddr]) -> ! {
     for listener in proxies {
         let socket = socket.clone();
         thread::spawn(move || serve(&listener, &socket));
+    }
+    if let Some(channel) = published {
+        thread::spawn(move || serve_published(&channel));
     }
     // The relay ends with the helper, and has nothing else to do until then.
     loop {
@@ -147,4 +165,74 @@ fn detach() {
     let _ = dup2_stdin(&null);
     let _ = dup2_stdout(&null);
     let _ = dup2_stderr(&null);
+}
+
+/// Dials and copies each connection that arrives on `channel`, until the
+/// launcher hangs up or the channel fails.
+fn serve_published(channel: &OwnedFd) {
+    loop {
+        match sys::receive_connection(channel.as_fd()) {
+            Ok(accepted) => {
+                thread::spawn(move || forward_published(accepted));
+            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Copies between the host's `accepted` connection and the command's listener
+/// on the address it came in on. A command that is not listening there yet
+/// leaves the connection to close when this returns.
+fn forward_published(accepted: sys::Accepted) {
+    let client = TcpStream::from(accepted.connection);
+    let Some(command) = dial(accepted.address) else {
+        return;
+    };
+    let _ = client.set_nonblocking(false);
+    let _ = copy_both_ways(&client, &command);
+}
+
+/// A connection to the first of the addresses a command listening on `published`
+/// answers on, inside the sandbox.
+fn dial(published: SocketAddr) -> Option<TcpStream> {
+    inside(published)
+        .into_iter()
+        .find_map(|address| TcpStream::connect_timeout(&address, DIAL_TIMEOUT).ok())
+}
+
+/// Where a command that bound `published` is reached from inside the sandbox.
+/// A wildcard is reached on loopback, and a command bound to IPv4 only answers
+/// an IPv6 wildcard's clients there too.
+fn inside(published: SocketAddr) -> Vec<SocketAddr> {
+    let port = published.port();
+    match published.ip() {
+        ip if ip.is_ipv4() && ip.is_unspecified() => vec![(Ipv4Addr::LOCALHOST, port).into()],
+        ip if ip.is_unspecified() => vec![
+            (Ipv6Addr::LOCALHOST, port).into(),
+            (Ipv4Addr::LOCALHOST, port).into(),
+        ],
+        _ => vec![published],
+    }
+}
+
+/// Copies each way until both are done, passing an end of input on to the other
+/// side, then closes both so neither end holds the connection's threads.
+fn copy_both_ways(left: &TcpStream, right: &TcpStream) -> io::Result<()> {
+    let (mut from_left, mut to_right) = (left.try_clone()?, right.try_clone()?);
+    let onward = thread::spawn(move || {
+        let copied = io::copy(&mut from_left, &mut to_right);
+        let _ = to_right.shutdown(Shutdown::Write);
+        copied
+    });
+    let (mut from_right, mut to_left) = (right.try_clone()?, left.try_clone()?);
+    let back = io::copy(&mut from_right, &mut to_left);
+    let _ = to_left.shutdown(Shutdown::Write);
+    let _ = left.shutdown(Shutdown::Both);
+    let _ = right.shutdown(Shutdown::Both);
+    back?;
+    onward
+        .join()
+        .map_err(|_| io::Error::other("the published copy panicked"))??;
+    Ok(())
 }

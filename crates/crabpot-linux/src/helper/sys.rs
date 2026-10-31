@@ -8,8 +8,9 @@
 use core::ffi::c_int;
 use core::sync::atomic::{AtomicI32, Ordering};
 use std::io;
-use std::net::IpAddr;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::io::IoSliceMut;
+use std::net::{IpAddr, SocketAddr};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -17,8 +18,8 @@ use nix::errno::Errno;
 use nix::net::if_::if_nametoindex;
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, sigaction};
 use nix::sys::socket::{
-    AddressFamily, MsgFlags, NetlinkAddr, SockFlag, SockProtocol, SockType, bind, recv, sendto,
-    socket,
+    AddressFamily, ControlMessageOwned, MsgFlags, NetlinkAddr, SockFlag, SockProtocol, SockType,
+    bind, recv, recvmsg, sendto, socket,
 };
 use nix::unistd::{self, ForkResult, Pid};
 
@@ -165,7 +166,7 @@ pub(super) fn block_in_child(command: &mut Command, signals: SigSet) {
     }
 }
 
-/// Copies `fd` to the lowest free descriptor above the reserved 3, 8 and 9, so
+/// Copies `fd` to the lowest free descriptor above the reserved 3, 7, 8 and 9, so
 /// that a descriptor the launcher inherited cannot be the copy's number.
 pub(crate) fn copy_above_reserved(fd: OwnedFd) -> io::Result<OwnedFd> {
     let copied = nix::fcntl::fcntl(&fd, nix::fcntl::FcntlArg::F_DUPFD_CLOEXEC(10))?;
@@ -232,5 +233,87 @@ pub(crate) fn notify_started(fd: u32) -> io::Result<()> {
         };
         libc::close(fd);
         result
+    }
+}
+
+/// The longest text of a socket address, with room to spare.
+const ADDRESS_TEXT: usize = 64;
+
+/// A connection the launcher accepted on the host, and the published address it
+/// came in on.
+#[derive(Debug)]
+pub(crate) struct Accepted {
+    pub(crate) connection: OwnedFd,
+    pub(crate) address: SocketAddr,
+}
+
+/// Makes the descriptor `fd` the launcher left open for this process an
+/// [`OwnedFd`], so closing it is dropping it.
+///
+/// # Errors
+///
+/// `EBADF` when `fd` is not open.
+pub(crate) fn adopt_inherited(fd: u32) -> io::Result<OwnedFd> {
+    let fd = RawFd::try_from(fd).map_err(|_| io::ErrorKind::InvalidInput)?;
+    // SAFETY: `F_GETFD` takes no pointer and changes nothing, and a number that
+    // is no descriptor is reported as `EBADF`.
+    Errno::result(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
+    // SAFETY: `F_GETFD` just showed `fd` is open, and the launcher handed it to
+    // this process alone: nothing else in it owns that number.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Waits for the next connection the launcher passed on `socket`, which is the
+/// address datagram its descriptor came with.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidData`] for a datagram with no descriptor or an
+/// address that is not text of one, which the sender never makes; the next call
+/// reads the datagram after it. Any other error ends the stream.
+pub(crate) fn receive_connection(socket: BorrowedFd<'_>) -> io::Result<Accepted> {
+    let mut text = [0_u8; ADDRESS_TEXT];
+    let mut space = nix::cmsg_space!([RawFd; 1]);
+    let mut iov = [IoSliceMut::new(&mut text)];
+    let message = loop {
+        match recvmsg::<()>(
+            socket.as_raw_fd(),
+            &mut iov,
+            Some(&mut space),
+            MsgFlags::MSG_CMSG_CLOEXEC,
+        ) {
+            Err(Errno::EINTR) => {}
+            other => break other?,
+        }
+    };
+    let length = message.bytes;
+    let mut descriptors = Vec::new();
+    for control in message.cmsgs()? {
+        if let ControlMessageOwned::ScmRights(raw) = control {
+            // SAFETY: the kernel made each number in an `SCM_RIGHTS` message a
+            // fresh descriptor of this process, which nothing else owns.
+            descriptors.extend(
+                raw.into_iter()
+                    .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }),
+            );
+        }
+    }
+    let address = core::str::from_utf8(&text[..length])
+        .ok()
+        .and_then(|text| text.parse().ok());
+    match (descriptors.pop(), address) {
+        (None, _) if length == 0 => Err(io::ErrorKind::UnexpectedEof.into()),
+        (Some(connection), Some(address)) => Ok(Accepted {
+            connection,
+            address,
+        }),
+        (None, _) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a published connection came with no descriptor",
+        )),
+        (Some(_), None) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a published connection came with no address",
+        )),
     }
 }

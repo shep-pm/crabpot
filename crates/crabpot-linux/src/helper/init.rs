@@ -17,6 +17,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -103,13 +104,36 @@ pub fn init_with_tcp(
     tcp: &[SocketAddr],
     argv: &[OsString],
 ) -> Result<i32, InitError> {
+    init_with_publish(relay, loopback, tcp, None, argv)
+}
+
+/// Runs [`init_with_tcp`] with the connections the launcher accepts for
+/// `network.publish`. They arrive on the descriptor `publish` numbers, which
+/// the relay owns from here on, so the command does not inherit it.
+///
+/// # Errors
+///
+/// Returns [`InitError::PublishWithoutRelay`] when there is no relay to take
+/// them, [`InitError::Publish`] when the descriptor is not open, and the errors
+/// of [`init_with_tcp`] otherwise.
+pub fn init_with_publish(
+    relay: Option<&Path>,
+    loopback: &[IpAddr],
+    tcp: &[SocketAddr],
+    publish: Option<u32>,
+    argv: &[OsString],
+) -> Result<i32, InitError> {
     if argv.is_empty() {
         return Err(InitError::NoCommand);
     }
     if relay.is_none() && !tcp.is_empty() {
         return Err(InitError::TcpWithoutRelay);
     }
-    let own_user_namespace = enter_namespaces(relay, loopback, tcp)?;
+    if relay.is_none() && publish.is_some() {
+        return Err(InitError::PublishWithoutRelay);
+    }
+    let published = publish.map(adopt_published).transpose()?;
+    let own_user_namespace = enter_namespaces(relay, loopback, tcp, published)?;
     // No other process of the user's may read or trace the helper before its
     // children take over, whatever the namespaces hold.
     set_dumpable()?;
@@ -120,6 +144,13 @@ pub fn init_with_tcp(
         }
         ForkResult::Child => namespace_init(argv, own_user_namespace),
     }
+}
+
+fn adopt_published(fd: u32) -> Result<OwnedFd, InitError> {
+    sys::adopt_inherited(fd).map_err(|error| InitError::Publish {
+        fd,
+        reason: error.kind(),
+    })
 }
 
 /// Installs the `namespaces` filter on the helper that stays outside the
@@ -138,6 +169,7 @@ fn enter_namespaces(
     relay: Option<&Path>,
     loopback: &[IpAddr],
     tcp: &[SocketAddr],
+    published: Option<OwnedFd>,
 ) -> Result<bool, InitError> {
     if let Some(address) = loopback
         .first()
@@ -159,7 +191,7 @@ fn enter_namespaces(
         }
     }
     if let Some(socket) = relay {
-        relay::start(socket, tcp)?;
+        relay::start(socket, tcp, published)?;
     }
     let flags = CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
     if !loopback.is_empty() || !tcp.is_empty() {
@@ -336,6 +368,16 @@ pub enum InitError {
     /// TCP grants were given with no relay to listen on them, so no connection
     /// to one would ever be answered.
     TcpWithoutRelay,
+    /// A published-connection descriptor was given with no relay to receive
+    /// on it, so no connection to a published address would be answered.
+    PublishWithoutRelay,
+    /// The descriptor the launcher passes published connections on is not open.
+    Publish {
+        /// The descriptor number the launcher named.
+        fd: u32,
+        /// How checking it failed.
+        reason: io::ErrorKind,
+    },
     /// A step failed with an error number.
     Step {
         /// What the helper was doing.
@@ -380,6 +422,15 @@ impl fmt::Display for InitError {
             Self::TcpWithoutRelay => {
                 write!(f, "TCP grants need a relay to listen on them")
             }
+            Self::PublishWithoutRelay => {
+                write!(f, "published connections need a relay to receive them")
+            }
+            Self::Publish { fd, reason } => {
+                write!(
+                    f,
+                    "cannot use descriptor {fd} for published connections: {reason}"
+                )
+            }
             Self::Step { step, reason } => write!(f, "cannot {step}: {reason}"),
             Self::Map { path, reason } => write!(f, "cannot write {path}: {reason}"),
             Self::Loopback { address, reason } => {
@@ -414,6 +465,36 @@ mod tests {
         assert_eq!(
             init_with_tcp(None, &[], &tcp, &argv),
             Err(InitError::TcpWithoutRelay)
+        );
+    }
+
+    #[test]
+    fn published_connections_without_a_relay_are_refused_before_any_namespace_is_made() {
+        let argv = [OsString::from("true")];
+
+        assert_eq!(
+            init_with_publish(None, &[], &[], Some(7), &argv),
+            Err(InitError::PublishWithoutRelay)
+        );
+    }
+
+    #[test]
+    fn a_published_descriptor_that_is_not_open_is_named() {
+        let socket = Path::new("/nonexistent/proxy.sock");
+        let argv = [OsString::from("true")];
+
+        // Descriptor numbers this high are not open in a test process.
+        let error = init_with_publish(Some(socket), &[], &[], Some(900_000), &argv).unwrap_err();
+
+        assert!(
+            matches!(error, InitError::Publish { fd: 900_000, .. }),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("cannot use descriptor 900000"),
+            "{error}"
         );
     }
 

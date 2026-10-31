@@ -17,6 +17,9 @@
 //!
 //! With extra loopback addresses, `init_with_loopback` first makes a user and
 //! network namespace and configures `lo`. The relay shares that network namespace.
+//!
+//! With `init_with_publish` the relay also receives the connections the launcher
+//! accepts on the host for `network.publish` and dials them inside.
 
 #[cfg(target_os = "linux")]
 mod connect;
@@ -34,4 +37,6 @@ pub(crate) mod sys;
 pub use connect::{ConnectError, connect};
 pub use exec::{ExecError, exec};
 #[cfg(target_os = "linux")]
-pub use init::{InitError, Step, hold_signals, init, init_with_loopback, init_with_tcp};
+pub use init::{
+    InitError, Step, hold_signals, init, init_with_loopback, init_with_publish, init_with_tcp,
+};

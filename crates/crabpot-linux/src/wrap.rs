@@ -23,6 +23,13 @@ pub struct Wrapped {
 /// One digit, as [`BWRAP_ARGS_FD`](crate::argv::BWRAP_ARGS_FD) is, and below it.
 pub const INFO_FD: u32 = 8;
 
+/// The descriptor the launcher hands the helper the inside end of the published
+/// connections' socket pair as, when `network.publish` names addresses.
+///
+/// One digit and below [`INFO_FD`], so the descriptors the launcher copies to
+/// numbers from 10 up cannot be it.
+pub const PUBLISH_FD: u32 = 7;
+
 /// The words that make bwrap write the sandbox's `child-pid`, as the host sees
 /// it, to [`INFO_FD`]. They go after `bwrap` itself, and only on a command whose
 /// caller has given it that descriptor with

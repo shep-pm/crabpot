@@ -8,6 +8,8 @@
 //! ([`ssh`]).
 
 pub mod env;
+#[cfg(target_os = "linux")]
+pub mod publish;
 #[cfg(unix)]
 pub mod relay;
 pub mod ssh;

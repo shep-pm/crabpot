@@ -93,7 +93,9 @@ impl Sandbox {
     /// cannot spell, which is a Linux answer too. On Linux, [`StartError::UnresolvedTcp`]
     /// names an `network.allowTcp` host that returns no address, and
     /// [`StartError::ScopedTcp`] one that is an IPv6 literal with an interface
-    /// scope. On Windows the status checks
+    /// scope. On Linux, [`StartError::ScopedPublish`] names a `network.publish`
+    /// entry with an interface scope, and [`StartError::PublishedProxyPort`] one
+    /// with a port the proxy relay holds inside the sandbox. On Windows the status checks
     /// of [`windows_preflight_for`](crate::windows_preflight_for) run first, then
     /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
     /// none nor current, [`StartError::LoopbackMismatch`] for a session whose
@@ -130,6 +132,8 @@ impl Sandbox {
             crabpot_core::tmpdir::prepare(Path::new(&tmpdir), origin)?;
             #[cfg(target_os = "linux")]
             let tcp = linux::resolve_tcp(config)?;
+            #[cfg(target_os = "linux")]
+            let publish = linux::resolve_publish(config)?;
             #[cfg(target_os = "macos")]
             let tcp = Vec::new();
             let proxy = Proxy::start_with_tcp(
@@ -179,7 +183,7 @@ impl Sandbox {
                     mount_points: wrapped.mount_points,
                     helper,
                     args_files: Mutex::new(Vec::new()),
-                    publish: config.network.publish.clone().unwrap_or_default(),
+                    publish,
                     published: Mutex::new(Vec::new()),
                     tcp,
                     facts: Facts::for_sandbox(config),
@@ -363,6 +367,19 @@ pub enum StartError {
         /// The configured literal with its `%<scope_id>`.
         host: String,
     },
+    /// Linux: a `network.publish` IPv6 entry carries an interface scope, which
+    /// names an interface of the host and has no meaning in the sandbox's network
+    /// namespace.
+    ScopedPublish {
+        /// The configured entry with its `%<scope_id>`.
+        address: std::net::SocketAddr,
+    },
+    /// Linux: a `network.publish` entry has the port of the relay for the
+    /// sandbox's proxy, which holds it inside on every address.
+    PublishedProxyPort {
+        /// The configured entry.
+        address: std::net::SocketAddr,
+    },
     /// Windows: every loopback port of the proxy port range is taken, so the
     /// proxy has no port to listen on. Each sandbox takes two ports there.
     ProxyRangeFull {
@@ -541,6 +558,15 @@ impl fmt::Display for StartError {
             Self::ScopedTcp { host } => write!(
                 f,
                 "network.allowTcp host {host} has an interface scope, which the sandbox's network cannot use"
+            ),
+            Self::ScopedPublish { address } => write!(
+                f,
+                "network.publish entry {address} has an interface scope, which the sandbox's network cannot use"
+            ),
+            Self::PublishedProxyPort { address } => write!(
+                f,
+                "network.publish entry {address} has port {}, which the sandbox's proxy relay holds, so a command could not bind it",
+                address.port()
             ),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
             Self::ProxyRangeFull { first, last } => write!(

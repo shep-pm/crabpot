@@ -10,6 +10,7 @@ use crabpot_core::config::Config;
 use crabpot_core::proxy::{TcpGrant, username_for};
 use crabpot_linux::info::Info;
 use crabpot_linux::net::env::HostPorts;
+use crabpot_linux::net::{HTTP_PORT, SOCKS_PORT};
 use crabpot_linux::startup::{Pipe, Startup};
 
 use crate::args::{
@@ -66,6 +67,31 @@ pub(super) fn resolve_tcp(config: &Config) -> Result<Vec<TcpGrant>, StartError> 
         }
     }
     Ok(grants)
+}
+
+/// The addresses `network.publish` names, as the host listens on them and the
+/// helper dials them inside.
+///
+/// The relay holds the proxy ports on every address of the sandbox, so the
+/// command could not bind a published port that is one of them. An interface
+/// scope is a number of the host's, and means another interface in the
+/// sandbox's own network. An IPv4-mapped address is the IPv4 address it wraps,
+/// which an IPv6-only bind would refuse.
+pub(super) fn resolve_publish(config: &Config) -> Result<Vec<SocketAddr>, StartError> {
+    let mut resolved: Vec<SocketAddr> = Vec::new();
+    for &address in config.network.publish.as_deref().unwrap_or_default() {
+        if matches!(address, SocketAddr::V6(v6) if v6.scope_id() != 0) {
+            return Err(StartError::ScopedPublish { address });
+        }
+        if [HTTP_PORT, SOCKS_PORT].contains(&address.port()) {
+            return Err(StartError::PublishedProxyPort { address });
+        }
+        let address = SocketAddr::new(address.ip().to_canonical(), address.port());
+        if !resolved.contains(&address) {
+            resolved.push(address);
+        }
+    }
+    Ok(resolved)
 }
 
 impl Sandbox {
@@ -232,6 +258,76 @@ mod tests {
         assert_eq!(
             init.command,
             [OsString::from("echo"), OsString::from("--loopback")]
+        );
+    }
+
+    fn publishing(entries: &[&str]) -> Config {
+        Config::from_json(
+            &serde_json::json!({
+                "network": {"allowedDomains": [], "deniedDomains": [], "publish": entries},
+                "filesystem": {"denyRead": [], "allowWrite": [], "denyWrite": []}
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_published_port_the_proxy_relay_holds_inside_refuses_the_sandbox_naming_it() {
+        for entry in ["127.0.0.1:3128", "[::]:1080", "10.0.0.5:3128"] {
+            let error = resolve_publish(&publishing(&[entry])).unwrap_err();
+
+            assert!(
+                matches!(&error, StartError::PublishedProxyPort { address } if address.to_string() == entry),
+                "{entry}: {error}"
+            );
+            assert!(error.to_string().contains(entry), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_scoped_ipv6_publish_entry_refuses_the_sandbox_naming_it() {
+        let error = resolve_publish(&publishing(&["[fe80::1%2]:8001"])).unwrap_err();
+
+        assert!(
+            matches!(&error, StartError::ScopedPublish { address } if address.to_string() == "[fe80::1%2]:8001"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("fe80::1%2"), "{error}");
+    }
+
+    #[test]
+    fn an_ipv4_mapped_publish_entry_is_the_ipv4_address_once() {
+        let published = resolve_publish(&publishing(&[
+            "[::ffff:10.0.0.5]:8001",
+            "10.0.0.5:8001",
+            "[::ffff:0.0.0.0]:8002",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            published,
+            [
+                "10.0.0.5:8001".parse::<SocketAddr>().unwrap(),
+                "0.0.0.0:8002".parse().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn other_publish_entries_pass_as_written() {
+        let entries = [
+            "127.0.0.1:8001",
+            "[::1]:8001",
+            "[::]:8002",
+            "[2001:db8::1]:80",
+        ];
+
+        let published = resolve_publish(&publishing(&entries)).unwrap();
+
+        assert_eq!(
+            published,
+            entries.map(|entry| entry.parse::<SocketAddr>().unwrap())
         );
     }
 

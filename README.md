@@ -65,8 +65,10 @@ and an empty list asks for nothing on every platform:
   so a second sandbox can publish the same port during a cutover. A port nothing
   holds a listener on inside closes that one connection. An address the host
   cannot listen on, such as a port held without `SO_REUSEPORT`, refuses the
-  sandbox and names it. Windows refuses a nonempty list until publication is
-  supported there.
+  sandbox and names it, as does an IPv6 entry with an interface scope such as
+  `[fe80::1%2]:8001`, or a port of 3128 or 1080, which the sandbox's proxy relay
+  holds. An IPv4-mapped entry such as `[::ffff:10.0.0.5]:80` is the IPv4 address
+  it wraps. Windows refuses a nonempty list until publication is supported there.
 - `network.allowTcp`, for example `["10.0.0.5:3306", "db.example.com:5432"]`,
   names hosts and ports the command may dial directly on Linux. crabpot resolves
   each host once at startup and refuses the sandbox if a name does not resolve.

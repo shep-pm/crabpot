@@ -60,8 +60,10 @@ impl Info {
     /// it.
     #[must_use]
     pub fn report(&self) -> Report {
+        // Acquiring completion first makes the reader's earlier PID store visible.
+        let ended = self.ended.load(Ordering::Acquire);
         match self.child.load(Ordering::Acquire) {
-            0 if self.ended.load(Ordering::Acquire) => Report::Missing,
+            0 if ended => Report::Missing,
             0 => Report::Pending,
             pid => Report::Pid(pid),
         }

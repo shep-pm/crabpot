@@ -12,6 +12,7 @@
 use core::fmt;
 use core::net::Ipv6Addr;
 use std::ffi::OsString;
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use crabpot_core::proxy::basic_for;
@@ -94,6 +95,36 @@ fn command() -> String {
     )
 }
 
+/// Opens a `CONNECT` tunnel without consuming any payload bytes
+///
+/// # Errors
+///
+/// Returns socket errors, or `InvalidData` for an incomplete or oversized response head.
+pub fn handshake<S: Read + Write>(tunnel: &mut S, target: &str, basic: &str) -> io::Result<Answer> {
+    const MAX_HEAD_BYTES: usize = 16 * 1024;
+    tunnel.write_all(request(target, basic).as_bytes())?;
+    tunnel.flush()?;
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() >= MAX_HEAD_BYTES {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        match tunnel.read(&mut byte) {
+            Ok(0) => return Err(io::ErrorKind::InvalidData.into()),
+            Ok(_) => head.push(byte[0]),
+            Err(reason) if reason.kind() == io::ErrorKind::Interrupted => {}
+            Err(reason) => return Err(reason),
+        }
+    }
+    Ok(answer(
+        String::from_utf8_lossy(&head)
+            .lines()
+            .next()
+            .unwrap_or_default(),
+    ))
+}
+
 /// What the proxy answered a `CONNECT` with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
@@ -101,6 +132,11 @@ pub enum Answer {
     Open,
     /// The refusal, as the status line named it.
     Refused(String),
+}
+
+/// Whether `code` is a 2xx status, as `mitm.rs` accepts for its own `CONNECT`.
+fn is_success(code: &str) -> bool {
+    code.len() == 3 && code.starts_with('2') && code.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// The `Answer` to the proxy's status line `line`.
@@ -111,7 +147,7 @@ pub fn answer(line: &str) -> Answer {
         .or_else(|| line.strip_prefix("HTTP/1.0 "))
         .map(|rest| rest.trim_end());
     match status {
-        Some(status) if status.split(' ').next() == Some("200") => Answer::Open,
+        Some(status) if status.split(' ').next().is_some_and(is_success) => Answer::Open,
         Some(status) => Answer::Refused(status.to_owned()),
         None => Answer::Refused(format!("its answer was {line:?}")),
     }
@@ -200,6 +236,73 @@ mod tests {
             .find(|(var, _)| *var == name)
             .map(|(_, value)| value.to_string_lossy().into_owned())
             .unwrap_or_else(|| panic!("{name} is not set"))
+    }
+
+    struct Connection {
+        incoming: io::Cursor<Vec<u8>>,
+        outgoing: Vec<u8>,
+    }
+
+    impl Read for Connection {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.incoming.read(buf)
+        }
+    }
+
+    impl Write for Connection {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.outgoing.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_connect_handshake_leaves_the_servers_greeting_in_the_stream() {
+        let mut connection = Connection {
+            incoming: io::Cursor::new(
+                b"HTTP/1.1 200 Connection Established\r\n\r\nready\0".to_vec(),
+            ),
+            outgoing: Vec::new(),
+        };
+
+        assert_eq!(
+            handshake(&mut connection, "db.example:5432", "c3J0OnRva2Vu").unwrap(),
+            Answer::Open
+        );
+        let mut payload = Vec::new();
+        connection.read_to_end(&mut payload).unwrap();
+        assert_eq!(payload, b"ready\0");
+        assert_eq!(connection.outgoing, b"CONNECT db.example:5432 HTTP/1.1\r\nHost: db.example:5432\r\nProxy-Authorization: Basic c3J0OnRva2Vu\r\n\r\n");
+    }
+
+    #[test]
+    fn a_connect_handshake_reports_refusals_and_incomplete_heads() {
+        let mut connection = Connection {
+            incoming: io::Cursor::new(
+                b"HTTP/1.1 403 host is not on the allow list\r\n\r\n".to_vec(),
+            ),
+            outgoing: Vec::new(),
+        };
+        assert_eq!(
+            handshake(&mut connection, "db.example:5432", "credential").unwrap(),
+            Answer::Refused("403 host is not on the allow list".to_owned())
+        );
+
+        for head in [b"HTTP/1.1 200 OK\r\n".to_vec(), vec![b'x'; 16 * 1024 + 1]] {
+            let mut connection = Connection {
+                incoming: io::Cursor::new(head),
+                outgoing: Vec::new(),
+            };
+            assert_eq!(
+                handshake(&mut connection, "db.example:5432", "credential")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
     }
 
     #[test]
@@ -307,6 +410,11 @@ mod tests {
     #[test]
     fn the_proxy_says_what_it_refused_with() {
         assert_eq!(answer("HTTP/1.1 200 Connection Established"), Answer::Open);
+        assert_eq!(answer("HTTP/1.1 204 No Content"), Answer::Open);
+        assert_eq!(
+            answer("HTTP/1.1 2000 Too Long"),
+            Answer::Refused("2000 Too Long".to_owned())
+        );
         assert_eq!(
             answer("HTTP/1.1 403 host is not on the allow list"),
             Answer::Refused("403 host is not on the allow list".to_owned())

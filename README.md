@@ -59,15 +59,22 @@ and an empty list asks for nothing on every platform:
   sandbox rule. `allowLocalBinding: true` already covers these ports. Linux and
   Windows refuse a nonempty list until publication is supported there.
 - `network.allowTcp`, for example `["10.0.0.5:3306", "db.example.com:5432"]`,
-  names hosts and ports the command may dial directly. Nonempty lists are
-  currently refused on every platform. On macOS, Seatbelt cannot restrict the
-  grant to the requested host: `*:<port>` would admit every host on that port.
+  names hosts and ports the command may dial directly on Linux. crabpot resolves
+  each host once at startup and refuses the sandbox if a name does not resolve.
+  A relay listens on those addresses and ports inside the sandbox and opens
+  authenticated `CONNECT` tunnels through the proxy. `deniedDomains` still wins.
+  Name resolution inside the sandbox is unchanged: dial the address, or a name
+  the command already resolves. Windows refuses nonempty lists. On macOS,
+  Seatbelt cannot restrict the grant to the requested host: `*:<port>` would
+  admit every host on that port, so macOS refuses nonempty lists too.
 
 `publish` requires IP literals. `allowTcp` accepts DNS names or IP literals.
 IPv6 literals use brackets, as in `[::1]:8001`. Both require a port from 1 to
 65535 and reject duplicates, with an error naming the entry.
 IPv4 literals use four decimal octets without leading zeros. `allowTcp` retains
-numeric IPv6 scopes, as in `[fe80::1%2]:22`.
+numeric IPv6 scopes, as in `[fe80::1%2]:22`. Linux refuses such an entry at
+startup, naming it: a scope is an interface index of the host, which means
+nothing in the sandbox's network namespace.
 
 Then run a command under it. With no `-s`, crabpot reads `~/.srt-settings.json`, as upstream does.
 

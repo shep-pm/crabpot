@@ -22,9 +22,6 @@ use std::thread;
 
 use crate::net::ssh::{self, Answer, SshError};
 
-/// A request head longer than this is not the proxy's answer.
-const MAX_HEAD_BYTES: usize = 16 * 1024;
-
 /// How many bytes are copied at a time.
 const CHUNK: usize = 8 * 1024;
 
@@ -50,33 +47,17 @@ pub fn connect(args: &[OsString]) -> Result<(), ConnectError> {
 
     let mut tunnel = TcpStream::connect((Ipv4Addr::LOCALHOST, relay))
         .map_err(|reason| ConnectError::Relay(reason.kind()))?;
-    tunnel
-        .write_all(ssh::request(&target, &basic).as_bytes())
-        .map_err(|reason| ConnectError::Tunnel(reason.kind()))?;
-    match ssh::answer(&head(&mut tunnel)?) {
+    let answer = ssh::handshake(&mut tunnel, &target, &basic).map_err(|reason| {
+        if reason.kind() == io::ErrorKind::InvalidData {
+            ConnectError::Head
+        } else {
+            ConnectError::Tunnel(reason.kind())
+        }
+    })?;
+    match answer {
         Answer::Open => copy(tunnel),
         Answer::Refused(reason) => Err(ConnectError::Refused { target, reason }),
     }
-}
-
-/// Reads the proxy's answer, one byte at a time so nothing past the end of its
-/// head is taken out of the tunnel before the copying starts.
-fn head(tunnel: &mut TcpStream) -> Result<String, ConnectError> {
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if head.len() >= MAX_HEAD_BYTES {
-            return Err(ConnectError::Head);
-        }
-        match tunnel.read(&mut byte) {
-            Ok(0) => return Err(ConnectError::Head),
-            Ok(_) => head.push(byte[0]),
-            Err(reason) if reason.kind() == io::ErrorKind::Interrupted => {}
-            Err(reason) => return Err(ConnectError::Tunnel(reason.kind())),
-        }
-    }
-    let answer = String::from_utf8_lossy(&head);
-    Ok(answer.lines().next().unwrap_or_default().to_owned())
 }
 
 /// Copies stdin to the tunnel and the tunnel to stdout, until the tunnel ends.

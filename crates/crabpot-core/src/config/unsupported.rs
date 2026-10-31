@@ -17,14 +17,15 @@
 use serde_json::Value;
 
 use super::error::ConfigError;
+#[cfg(not(target_os = "linux"))]
 use super::keys::allow_tcp;
 #[cfg(not(target_os = "macos"))]
 use super::keys::publish;
 
 /// Dotted paths, in the order they are checked.
 pub(super) const PATHS: &[&str] = &[
-    // No platform implements direct TCP grants. Seatbelt cannot restrict one
-    // to the requested host.
+    // Seatbelt cannot restrict a direct grant to the requested host.
+    #[cfg(not(target_os = "linux"))]
     allow_tcp::PATH,
     // Local port publication is only implemented by the macOS profile.
     #[cfg(not(target_os = "macos"))]

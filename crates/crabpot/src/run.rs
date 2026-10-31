@@ -98,8 +98,8 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
     let helper = helper.unwrap_or_else(|e| fail(e));
     match helper.mode {
         HelperMode::Init => {
-            let (relay, command) = args::split_relay(&helper.args);
-            helper_init(relay, command)
+            let init = args::parse_init(&helper.args).unwrap_or_else(|e| fail(e));
+            helper_init(init)
         }
         HelperMode::Connect => helper_connect(&helper.args),
         HelperMode::Relay => fail(format!(
@@ -110,15 +110,15 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
 }
 
 #[cfg(target_os = "linux")]
-fn helper_init(relay: Option<&Path>, command: &[OsString]) -> ! {
-    match crabpot_linux::helper::init(relay, command) {
+fn helper_init(init: args::Init<'_>) -> ! {
+    match crabpot_linux::helper::init_with_loopback(init.relay, &init.loopback, init.command) {
         Ok(status) => std::process::exit(status),
         Err(e) => fail(e),
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn helper_init(_relay: Option<&Path>, _command: &[OsString]) -> ! {
+fn helper_init(_init: args::Init<'_>) -> ! {
     fail("the helper runs only on Linux")
 }
 

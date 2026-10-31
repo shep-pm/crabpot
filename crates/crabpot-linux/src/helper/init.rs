@@ -16,6 +16,7 @@ use core::fmt;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::net::IpAddr;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -74,13 +75,24 @@ pub fn hold_signals(command: &mut Command) -> &mut Command {
 /// A [`InitError`] names the step that failed, or says the command could not
 /// be started.
 pub fn init(relay: Option<&Path>, argv: &[OsString]) -> Result<i32, InitError> {
+    init_with_loopback(relay, &[], argv)
+}
+
+/// Runs [`init`] with extra loopback addresses in a new user and network namespace.
+/// The relay joins that network namespace before the command's PID namespace is made.
+///
+/// # Errors
+///
+/// An [`InitError`] names the failed step or loopback address.
+pub fn init_with_loopback(
+    relay: Option<&Path>,
+    loopback: &[IpAddr],
+    argv: &[OsString],
+) -> Result<i32, InitError> {
     if argv.is_empty() {
         return Err(InitError::NoCommand);
     }
-    if let Some(socket) = relay {
-        relay::start(socket)?;
-    }
-    let own_user_namespace = enter_namespaces()?;
+    let own_user_namespace = enter_namespaces(relay, loopback)?;
     // No other process of the user's may read or trace the helper before its
     // children take over, whatever the namespaces hold.
     set_dumpable()?;
@@ -103,14 +115,32 @@ fn confine_outer(child: Pid) -> Result<(), InitError> {
     })
 }
 
-/// Unshares the PID and mount namespaces. A process without `CAP_SYS_ADMIN` is
-/// refused, so it makes a user namespace first, where it has the capability,
-/// and maps its own ids to themselves. It returns whether it made one.
-fn enter_namespaces() -> Result<bool, InitError> {
+/// Prepares loopback and the relay, then unshares the PID and mount namespaces.
+/// Returns whether the helper made a user namespace, mapping its ids to themselves.
+fn enter_namespaces(relay: Option<&Path>, loopback: &[IpAddr]) -> Result<bool, InitError> {
+    if let Some(&address) = loopback.first() {
+        unshare_user(CloneFlags::CLONE_NEWNET)?;
+        sys::loopback_up().map_err(|reason| InitError::Loopback { address, reason })?;
+        for &address in loopback {
+            sys::add_loopback(address).map_err(|reason| InitError::Loopback { address, reason })?;
+        }
+    }
+    if let Some(socket) = relay {
+        relay::start(socket)?;
+    }
     let flags = CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
+    if !loopback.is_empty() {
+        unshare(flags).map_err(|reason| InitError::step(Step::Unshare, reason))?;
+        return Ok(true);
+    }
     if unshare(flags).is_ok() {
         return Ok(false);
     }
+    unshare_user(flags)?;
+    Ok(true)
+}
+
+fn unshare_user(flags: CloneFlags) -> Result<(), InitError> {
     // The ids are read before the unshare: in the new namespace they are
     // unmapped until the maps below are written.
     let (uid, gid) = (getuid(), getgid());
@@ -120,7 +150,7 @@ fn enter_namespaces() -> Result<bool, InitError> {
     write_proc("/proc/self/setgroups", "deny")?;
     write_proc("/proc/self/uid_map", &format!("{uid} {uid} 1"))?;
     write_proc("/proc/self/gid_map", &format!("{gid} {gid} 1"))?;
-    Ok(true)
+    Ok(())
 }
 
 fn write_proc(path: &'static str, contents: &str) -> Result<(), InitError> {
@@ -232,7 +262,7 @@ fn reap_until(target: Pid) -> i32 {
 /// A step the helper takes before it runs the command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// Unsharing the PID and mount namespaces, with a user namespace.
+    /// Unsharing the helper's namespaces, optionally with a user namespace.
     Unshare,
     /// Making the process not dumpable.
     Dumpable,
@@ -253,7 +283,7 @@ pub enum Step {
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Unshare => "unshare the PID and mount namespaces",
+            Self::Unshare => "unshare the helper's namespaces",
             Self::Dumpable => "make the process not dumpable",
             Self::Fork => "fork",
             Self::PrivateMounts => "make the mounts private",
@@ -284,6 +314,13 @@ pub enum InitError {
         /// How writing it failed.
         reason: io::ErrorKind,
     },
+    /// Bringing up loopback or adding an address failed in the new network namespace.
+    Loopback {
+        /// The address the helper was preparing.
+        address: IpAddr,
+        /// The error number the call returned.
+        reason: Errno,
+    },
     /// The relay for the sandbox's proxy ports did not start: it could not
     /// listen, or ended first.
     Relay(String),
@@ -306,6 +343,9 @@ impl fmt::Display for InitError {
             Self::NoCommand => write!(f, "no command specified"),
             Self::Step { step, reason } => write!(f, "cannot {step}: {reason}"),
             Self::Map { path, reason } => write!(f, "cannot write {path}: {reason}"),
+            Self::Loopback { address, reason } => {
+                write!(f, "cannot configure loopback address {address}: {reason}")
+            }
             Self::Relay(reason) => write!(f, "cannot start the relay: {reason}"),
             Self::Filter(reason) => f.write_str(reason),
             Self::Exec(error) => fmt::Display::fmt(error, f),
@@ -349,6 +389,19 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "cannot mount /proc: EPERM: Operation not permitted"
+        );
+    }
+
+    #[test]
+    fn a_loopback_failure_names_the_address_being_configured() {
+        let error = InitError::Loopback {
+            address: "10.9.9.9".parse().unwrap(),
+            reason: Errno::EPERM,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "cannot configure loopback address 10.9.9.9: EPERM: Operation not permitted"
         );
     }
 

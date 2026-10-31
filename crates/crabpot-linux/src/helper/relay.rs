@@ -1,4 +1,4 @@
-//! The relay the helper forks before it makes its namespaces (ADR-0014).
+//! The relay in the command's network namespace, outside its PID namespace (ADR-0014).
 //!
 //! It is the helper's child in the PID namespace bwrap made, so the command,
 //! which gets one of its own below it, cannot see or signal it. It is forked

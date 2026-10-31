@@ -14,6 +14,9 @@
 //! the helper with status 1 before the command runs. The `connect` mode is the
 //! other way the binary is re-entered: a sandboxed ssh starts it for its
 //! `ProxyCommand`.
+//!
+//! With extra loopback addresses, `init_with_loopback` first makes a user and
+//! network namespace and configures `lo`. The relay shares that network namespace.
 
 #[cfg(target_os = "linux")]
 mod connect;
@@ -31,4 +34,4 @@ pub(crate) mod sys;
 pub use connect::{ConnectError, connect};
 pub use exec::{ExecError, exec};
 #[cfg(target_os = "linux")]
-pub use init::{InitError, Step, hold_signals, init};
+pub use init::{InitError, Step, hold_signals, init, init_with_loopback};

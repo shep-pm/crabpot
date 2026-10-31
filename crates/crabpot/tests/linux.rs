@@ -385,6 +385,113 @@ fn in_sandbox(script: &str) -> Output {
     output
 }
 
+fn helper_in_bwrap(options: &[&str], script: &str) -> Output {
+    let proxy = crabpot_core::proxy::Proxy::start(&[], &[], &[], false, None).unwrap();
+    let bwrap = crabpot_linux::deps::check_here().unwrap();
+    let wrapped = crabpot_linux::wrap::words(
+        &bwrap,
+        &crabpot_core::config::Config::default(),
+        std::path::Path::new(CRABPOT),
+        proxy.mux_socket(),
+        crabpot_linux::deps::is_root_with_setfcap_here(),
+    )
+    .unwrap();
+    Command::new(&wrapped.words[0])
+        .args(&wrapped.words[1..])
+        .args([
+            "--",
+            "sh",
+            "-c",
+            "readlink /proc/self/ns/net; exec \"$@\"",
+            "sh",
+            CRABPOT,
+            "--crabpot-helper",
+            "init",
+            "--relay",
+        ])
+        .arg(proxy.mux_socket())
+        .args(options)
+        .args(["python3", "-c", script])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn loopback_addresses_are_dialable_in_a_new_network_namespace_with_the_proxy() {
+    let output = helper_in_bwrap(
+        &[
+            "--loopback",
+            "10.9.9.9",
+            "--loopback",
+            "10.9.9.10",
+            "--loopback",
+            "fd00::5",
+        ],
+        r#"
+import os, socket
+print(os.readlink('/proc/self/ns/net'))
+for family, address in [(socket.AF_INET, '10.9.9.9'), (socket.AF_INET, '10.9.9.10'), (socket.AF_INET6, 'fd00::5')]:
+    with socket.socket(family, socket.SOCK_STREAM) as server:
+        server.settimeout(5)
+        server.bind((address, 0))
+        server.listen()
+        with socket.create_connection((address, server.getsockname()[1]), timeout=5) as client:
+            connection, _ = server.accept()
+            with connection:
+                connection.settimeout(5)
+                client.sendall(b'ping')
+                assert connection.recv(4) == b'ping'
+    print('dialed ' + address)
+with socket.create_connection(('127.0.0.1', 3128), timeout=5) as proxy:
+    proxy.sendall(b'CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n')
+    with proxy.makefile('rb') as response:
+        assert response.readline() == b'HTTP/1.1 407 Proxy Authentication Required\r\n'
+print('proxy reached')
+assert sorted(p for p in os.listdir('/proc') if p.isdigit()) == ['1', '2']
+"#,
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    let lines: Vec<_> = text.lines().collect();
+    assert_ne!(lines[0], lines[1], "{text}");
+    assert_eq!(
+        &lines[2..],
+        [
+            "dialed 10.9.9.9",
+            "dialed 10.9.9.10",
+            "dialed fd00::5",
+            "proxy reached"
+        ]
+    );
+}
+
+#[test]
+fn without_loopback_the_helper_keeps_bwraps_network_namespace() {
+    let output = helper_in_bwrap(&[], "import os; print(os.readlink('/proc/self/ns/net'))");
+
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert_eq!(lines[0], lines[1], "{text}");
+}
+
+#[test]
+fn a_loopback_address_that_cannot_be_added_is_named() {
+    let output = helper_in_bwrap(
+        &["--loopback", "10.9.9.9", "--loopback", "10.9.9.9"],
+        "print('ran')",
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("10.9.9.9"),
+        "{output:?}"
+    );
+    assert!(!stdout(&output).contains("ran"), "{output:?}");
+}
+
 #[test]
 fn the_relay_forwards_an_http_connect_to_the_proxy() {
     // No credential, so the proxy refuses the tunnel, and its refusal is the

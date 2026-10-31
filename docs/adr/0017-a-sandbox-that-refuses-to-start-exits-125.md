@@ -10,8 +10,9 @@ failure. This supersedes ADR-0013's exit status 1 and its rule that refusals
 match upstream's status. The differential harness accepts crabpot's 125 and
 upstream's 1 when neither ran its probe.
 
-Argument parsing, settings loading, sandbox startup, runtime and signal
-listener setup, and spawning the wrapped command all refuse with 125.
+Parsing the wrapper's command line, settings loading, sandbox startup, runtime
+and signal listener setup, and spawning the wrapped command all refuse with 125.
+The exceptions below keep 1.
 On Linux, helper initialization errors also exit 125, except `InitError::Exec`,
 which keeps 1 for a command that could not start. If bwrap ends without
 reporting a pid, the wrapper exits 125 whatever bwrap's status was.
@@ -23,6 +24,23 @@ before that acknowledgement exit 125, including failures after a PID report.
 On macOS and Windows, only refusals before spawning the wrapped command change.
 Post-spawn failures from `sandbox-exec` or `srt-win` retain their own exit status.
 `windows-install` and `windows-uninstall` keep 0 and 1 because they run no command.
+That includes a command line they do not parse.
+
+The remaining paths that keep 1 all go through `fail` in `crates/crabpot/src/run.rs`:
+
+- The Linux helper's own argument-parse errors, for `--crabpot-helper` and for the
+  `init` arguments.
+- The helper's `relay` mode, which is not supported yet.
+- A failed `connect` tunnel, which is the sandboxed ssh's `ProxyCommand`
+  and not a wrapped command.
+- The helper entry points on a host that is not Linux.
+- `InitError::Exec`, above.
+
+The first, second and fourth fail before the helper's startup acknowledgement.
+When the wrapper started that helper, it sees no acknowledgement and still exits
+125, so a supervisor never reads their 1. They keep 1 for a host or a person that
+runs the helper directly, where there is no wrapper to refuse. `connect` and `Exec`
+run after the sandbox has started, and the exit status is the helper's own.
 
 The command's own exit code passes through, including 1 and 125. A supervisor
 reads a command that itself exits 125 as a refusal, the same trade `env` makes.

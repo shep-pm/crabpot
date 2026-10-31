@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-10-31
+
+### Added
+
+- Parse published socket addresses
+- Validate direct TCP destinations
+- Refuse unsupported TCP and publish grants
+
+### Fixed
+
+- Reject invalid and duplicate published ports
+- Validate numeric TCP hosts and preserve IPv6 scopes
+
+
 ### Fixes
 
 - Reject malformed numeric `allowTcp` hosts instead of treating them as DNS names ([#290])

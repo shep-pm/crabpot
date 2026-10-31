@@ -123,7 +123,9 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
         AddressFamily::Unix,
         SockType::Datagram,
         None,
-        SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
+        // The inside end stays blocking: the relay reads it with no poll. The
+        // sending end never blocks, because it sends with `MSG_DONTWAIT`.
+        SockFlag::SOCK_CLOEXEC,
     )
     .map_err(|error| channel(error.into()))?;
     let (wake, woken) = UnixStream::pair().map_err(channel)?;
@@ -238,6 +240,25 @@ mod tests {
         let mut answer = [0; 4];
         client.read_exact(&mut answer).unwrap();
         assert_eq!(&answer, b"pong");
+    }
+
+    #[test]
+    fn the_inside_end_waits_for_a_connection_instead_of_failing() {
+        let (published, inside) = serve(&[LOCAL]).unwrap();
+        let address = published.addresses()[0];
+        let reader = std::fs::File::from(inside.try_clone().unwrap());
+        let (arrived, accepted) = std::sync::mpsc::channel();
+        // The way the relay reads: no poll first, so a read with nothing queued
+        // must wait and not return `WouldBlock`.
+        thread::spawn(move || {
+            let _ = arrived.send(sys::receive_connection(reader.as_fd()).map(|got| got.address));
+        });
+        let _client = TcpStream::connect_timeout(&address, STEP).unwrap();
+
+        let received = accepted.recv_timeout(STEP).expect("the read never ended");
+
+        assert_eq!(received.unwrap(), address);
+        drop(inside);
     }
 
     #[test]

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-31
+
+### Added
+
+- Allow resolved TCP destinations on their ports
+- Relay direct TCP grants through CONNECT
+
+
 ## [0.7.0] - 2026-10-31
 
 

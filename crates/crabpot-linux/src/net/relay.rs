@@ -118,10 +118,10 @@ fn forward_tunnel(
     tunnel: Option<(&str, &str)>,
 ) -> io::Result<()> {
     let mut proxy = UnixStream::connect(socket)?;
-    if let Some((target, basic)) = tunnel {
-        if let Answer::Refused(reason) = ssh::handshake(&mut proxy, target, basic)? {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
-        }
+    if let Some((target, basic)) = tunnel
+        && let Answer::Refused(reason) = ssh::handshake(&mut proxy, target, basic)?
+    {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
     }
     let (mut from_client, mut to_proxy) = (client.try_clone()?, proxy.try_clone()?);
     let upstream = thread::spawn(move || {
@@ -185,6 +185,65 @@ mod tests {
         let mut answer = Vec::new();
         client.read_to_end(&mut answer).unwrap();
         answer
+    }
+
+    #[test]
+    fn a_tcp_grant_carries_payload_and_half_closes_through_connect() {
+        use crabpot_core::proxy::{Proxy, TcpGrant, basic_for};
+
+        let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = server.local_addr().unwrap();
+        let proxy = Proxy::start_with_tcp(
+            &[],
+            &[],
+            &[],
+            false,
+            None,
+            &[TcpGrant {
+                host: "database.example".to_owned(),
+                address,
+            }],
+        )
+        .unwrap();
+        let (sent, received) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut client, _) = server.accept().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // A greeting can arrive in the same read as the CONNECT response.
+            client.write_all(b"ready:").unwrap();
+            let mut payload = Vec::new();
+            client.read_to_end(&mut payload).unwrap();
+            client.write_all(&payload).unwrap();
+            sent.send(payload).unwrap();
+        });
+        let listener = bind(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let socket = proxy.mux_socket().to_owned();
+        let basic = basic_for("srt", proxy.token());
+        thread::spawn(move || serve_tunnel(&listener, &socket, &address.to_string(), &basic));
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client.write_all(b"ping\0").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+
+        assert_eq!(answer, b"ready:ping\0");
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(5)).unwrap(),
+            b"ping\0"
+        );
     }
 
     #[test]

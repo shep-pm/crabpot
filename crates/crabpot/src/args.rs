@@ -479,6 +479,39 @@ mod tests {
     }
 
     #[test]
+    fn init_reads_tcp_ports_and_deduplicates_loopback_addresses() {
+        let args = os(&[
+            "--loopback",
+            "10.0.0.5:5432",
+            "--loopback",
+            "10.0.0.5:5433",
+            "--loopback",
+            "[fd00::5]:5432",
+            "--",
+            "echo",
+            "--loopback",
+        ]);
+        let init = parse_init(&args).unwrap();
+
+        assert_eq!(
+            init.loopback,
+            [
+                "10.0.0.5".parse::<IpAddr>().unwrap(),
+                "fd00::5".parse().unwrap()
+            ]
+        );
+        assert_eq!(
+            init.tcp,
+            [
+                "10.0.0.5:5432".parse::<SocketAddr>().unwrap(),
+                "10.0.0.5:5433".parse().unwrap(),
+                "[fd00::5]:5432".parse().unwrap()
+            ]
+        );
+        assert_eq!(init.command, os(&["echo", "--loopback"]));
+    }
+
+    #[test]
     fn init_reads_repeated_loopback_addresses_before_the_command() {
         let args = os(&[
             "--loopback",

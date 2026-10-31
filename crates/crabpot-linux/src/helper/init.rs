@@ -140,7 +140,11 @@ fn enter_namespaces(
         unshare_user(CloneFlags::CLONE_NEWNET)?;
         sys::loopback_up().map_err(|reason| InitError::Loopback { address, reason })?;
         for &address in loopback {
-            sys::add_loopback(address).map_err(|reason| InitError::Loopback { address, reason })?;
+            if let Err(reason) = sys::add_loopback(address)
+                && reason != Errno::EEXIST
+            {
+                return Err(InitError::Loopback { address, reason });
+            }
         }
     }
     if let Some(socket) = relay {

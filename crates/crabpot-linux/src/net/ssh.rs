@@ -232,6 +232,73 @@ mod tests {
             .unwrap_or_else(|| panic!("{name} is not set"))
     }
 
+    struct Connection {
+        incoming: io::Cursor<Vec<u8>>,
+        outgoing: Vec<u8>,
+    }
+
+    impl Read for Connection {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.incoming.read(buf)
+        }
+    }
+
+    impl Write for Connection {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.outgoing.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_connect_handshake_leaves_the_servers_greeting_in_the_stream() {
+        let mut connection = Connection {
+            incoming: io::Cursor::new(
+                b"HTTP/1.1 200 Connection Established\r\n\r\nready\0".to_vec(),
+            ),
+            outgoing: Vec::new(),
+        };
+
+        assert_eq!(
+            handshake(&mut connection, "db.example:5432", "c3J0OnRva2Vu").unwrap(),
+            Answer::Open
+        );
+        let mut payload = Vec::new();
+        connection.read_to_end(&mut payload).unwrap();
+        assert_eq!(payload, b"ready\0");
+        assert_eq!(connection.outgoing, b"CONNECT db.example:5432 HTTP/1.1\r\nHost: db.example:5432\r\nProxy-Authorization: Basic c3J0OnRva2Vu\r\n\r\n");
+    }
+
+    #[test]
+    fn a_connect_handshake_reports_refusals_and_incomplete_heads() {
+        let mut connection = Connection {
+            incoming: io::Cursor::new(
+                b"HTTP/1.1 403 host is not on the allow list\r\n\r\n".to_vec(),
+            ),
+            outgoing: Vec::new(),
+        };
+        assert_eq!(
+            handshake(&mut connection, "db.example:5432", "credential").unwrap(),
+            Answer::Refused("403 host is not on the allow list".to_owned())
+        );
+
+        for head in [b"HTTP/1.1 200 OK\r\n".to_vec(), vec![b'x'; 16 * 1024 + 1]] {
+            let mut connection = Connection {
+                incoming: io::Cursor::new(head),
+                outgoing: Vec::new(),
+            };
+            assert_eq!(
+                handshake(&mut connection, "db.example:5432", "credential")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
     #[test]
     fn the_credential_is_not_in_the_command_text() {
         let token = "f00dfacecafe0123";

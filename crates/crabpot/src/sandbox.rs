@@ -33,7 +33,7 @@ use crabpot_linux::net::env::HostPorts;
 use crabpot_macos::env::Facts;
 
 #[cfg(target_os = "linux")]
-use crate::args::{HELPER_FLAG, HelperMode, RELAY_FLAG};
+use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG};
 use crate::windows::ProfileState;
 
 /// A sandbox started from a [`Config`]. Wrap each command that is to run in it
@@ -259,7 +259,7 @@ impl Sandbox {
         }
         #[cfg(target_os = "linux")]
         {
-            self.linux_command(command, false)
+            self.linux_command(command, false, &[])
         }
         #[cfg(windows)]
         {
@@ -284,21 +284,30 @@ impl Sandbox {
         &self,
         command: &Command,
     ) -> Result<(Command, Info), WrapError> {
-        let mut wrapped = self.linux_command(command, true)?;
+        let mut wrapped = self.linux_command(command, true, &[])?;
         let info = crabpot_linux::info::attach(&mut wrapped)
             .map_err(|e| WrapError::Bwrap(e.to_string()))?;
         Ok((wrapped, info))
     }
 
-    fn linux_command(&self, command: &Command, report: bool) -> Result<Command, WrapError> {
+    fn linux_command(
+        &self,
+        command: &Command,
+        report: bool,
+        loopback: &[std::net::IpAddr],
+    ) -> Result<Command, WrapError> {
         let mut words = vec![
             self.helper.clone().into_os_string(),
             OsString::from(HELPER_FLAG),
             OsString::from(HelperMode::Init.word()),
             OsString::from(RELAY_FLAG),
             self.proxy.mux_socket().as_os_str().to_owned(),
-            command.get_program().to_owned(),
         ];
+        for address in loopback {
+            words.extend([OsString::from(LOOPBACK_FLAG), address.to_string().into()]);
+        }
+        words.push(OsString::from("--"));
+        words.push(command.get_program().to_owned());
         words.extend(command.get_args().map(OsString::from));
         let mut bwrap_words = self.words.clone();
         if report {

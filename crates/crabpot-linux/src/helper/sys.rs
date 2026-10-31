@@ -8,16 +8,99 @@
 use core::ffi::c_int;
 use core::sync::atomic::{AtomicI32, Ordering};
 use std::io;
+use std::net::IpAddr;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use nix::errno::Errno;
+use nix::net::if_::if_nametoindex;
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, sigaction};
+use nix::sys::socket::{
+    AddressFamily, MsgFlags, NetlinkAddr, SockFlag, SockProtocol, SockType, bind, recv, sendto,
+    socket,
+};
 use nix::unistd::{self, ForkResult, Pid};
 
 /// The process the installed handler passes a signal to, or 0 for none.
 static FORWARD_TO: AtomicI32 = AtomicI32::new(0);
+
+/// Brings up `lo` in the calling process's network namespace.
+pub(super) fn loopback_up() -> Result<(), Errno> {
+    let index = if_nametoindex("lo")?;
+    // `ifinfomsg`: family, padding, type, index, flags, changed flags.
+    let mut link = vec![0; 4];
+    link.extend_from_slice(&index.to_ne_bytes());
+    link.extend_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
+    link.extend_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
+    netlink_request(libc::RTM_NEWLINK, 0, &link)
+}
+
+/// Adds `address` to `lo` as a host route, ready for immediate binding.
+pub(super) fn add_loopback(address: IpAddr) -> Result<(), Errno> {
+    let (family, prefix, octets) = match address {
+        IpAddr::V4(address) => (libc::AF_INET, 32, address.octets().to_vec()),
+        IpAddr::V6(address) => (libc::AF_INET6, 128, address.octets().to_vec()),
+    };
+    // `ifaddrmsg`: family, prefix, flags, scope, index. No IPv6 DAD wait on isolated loopback.
+    let mut addr = vec![family as u8, prefix, libc::IFA_F_NODAD as u8, 0];
+    addr.extend_from_slice(&if_nametoindex("lo")?.to_ne_bytes());
+    for kind in [libc::IFA_LOCAL, libc::IFA_ADDRESS] {
+        // Both address lengths make the attribute a multiple of netlink's four-byte alignment.
+        addr.extend_from_slice(&((4 + octets.len()) as u16).to_ne_bytes());
+        addr.extend_from_slice(&kind.to_ne_bytes());
+        addr.extend_from_slice(&octets);
+    }
+    netlink_request(
+        libc::RTM_NEWADDR,
+        libc::NLM_F_CREATE | libc::NLM_F_EXCL,
+        &addr,
+    )
+}
+
+fn netlink_request(kind: u16, flags: i32, payload: &[u8]) -> Result<(), Errno> {
+    let fd = socket(
+        AddressFamily::Netlink,
+        SockType::Raw,
+        SockFlag::SOCK_CLOEXEC,
+        SockProtocol::NetlinkRoute,
+    )?;
+    bind(fd.as_raw_fd(), &NetlinkAddr::new(0, 0))?;
+    let header_len = size_of::<libc::nlmsghdr>();
+    let mut request = Vec::new();
+    request.extend_from_slice(&((header_len + payload.len()) as u32).to_ne_bytes());
+    request.extend_from_slice(&kind.to_ne_bytes());
+    request
+        .extend_from_slice(&((libc::NLM_F_REQUEST | libc::NLM_F_ACK | flags) as u16).to_ne_bytes());
+    request.extend_from_slice(&1_u32.to_ne_bytes());
+    request.extend_from_slice(&0_u32.to_ne_bytes());
+    request.extend_from_slice(payload);
+    sendto(
+        fd.as_raw_fd(),
+        &request,
+        &NetlinkAddr::new(0, 0),
+        MsgFlags::empty(),
+    )?;
+
+    // This unicast socket requests only acknowledgements, each with a signed error after its header.
+    let mut reply = [0; 256];
+    let len = recv(fd.as_raw_fd(), &mut reply, MsgFlags::empty())?;
+    if len < header_len + 4 || u16::from_ne_bytes([reply[4], reply[5]]) != libc::NLMSG_ERROR as u16
+    {
+        return Err(Errno::EPROTO);
+    }
+    let code = i32::from_ne_bytes([
+        reply[header_len],
+        reply[header_len + 1],
+        reply[header_len + 2],
+        reply[header_len + 3],
+    ]);
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(Errno::from_raw(-code))
+    }
+}
 
 /// Splits this process in two, as `fork(2)` does.
 pub(super) fn fork() -> Result<ForkResult, Errno> {

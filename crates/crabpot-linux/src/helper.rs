@@ -31,4 +31,4 @@ pub(crate) mod sys;
 pub use connect::{ConnectError, connect};
 pub use exec::{ExecError, exec};
 #[cfg(target_os = "linux")]
-pub use init::{InitError, Step, hold_signals, init};
+pub use init::{InitError, Step, hold_signals, init, init_with_loopback};

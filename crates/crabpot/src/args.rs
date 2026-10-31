@@ -3,6 +3,7 @@
 
 use core::fmt;
 use std::ffi::OsString;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use crate::windows::install::{InstallOptions, UninstallOptions};
@@ -88,6 +89,8 @@ pub(crate) enum ArgsError {
     NoCommand,
     /// `--crabpot-helper` was followed by a word that names no mode.
     UnknownHelperMode(OsString),
+    /// `--loopback` was followed by something other than an IP address.
+    InvalidLoopback(OsString),
 }
 
 impl fmt::Display for ArgsError {
@@ -100,6 +103,7 @@ impl fmt::Display for ArgsError {
             Self::Unsupported(what) => write!(f, "{what} is not supported yet"),
             Self::NoCommand => write!(f, "no command specified"),
             Self::UnknownHelperMode(mode) => write!(f, "unknown helper mode {mode:?}"),
+            Self::InvalidLoopback(address) => write!(f, "invalid loopback address {address:?}"),
         }
     }
 }
@@ -212,13 +216,49 @@ fn flag<'a>(
 /// `init` leaves it out to run a command with no relay.
 pub(crate) const RELAY_FLAG: &str = "--relay";
 
-/// Splits `init`'s arguments into the relay's socket, when they start with
-/// [`RELAY_FLAG`] and a path, and the command that follows.
-pub(crate) fn split_relay(args: &[OsString]) -> (Option<&Path>, &[OsString]) {
-    match args {
-        [flag, socket, command @ ..] if flag == RELAY_FLAG => (Some(Path::new(socket)), command),
-        _ => (None, args),
+/// The flag that adds an IP address to the sandbox's loopback.
+pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
+
+/// The helper's options and the command's untouched arguments.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Init<'a> {
+    pub(crate) relay: Option<&'a Path>,
+    pub(crate) loopback: Vec<IpAddr>,
+    pub(crate) command: &'a [OsString],
+}
+
+/// Reads helper options until the command or `--` begins its arguments.
+pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
+    let mut relay = None;
+    let mut loopback = Vec::new();
+    while let Some(arg) = args.first() {
+        let flag = match arg.to_str() {
+            Some(RELAY_FLAG) => RELAY_FLAG,
+            Some(LOOPBACK_FLAG) => LOOPBACK_FLAG,
+            Some("--") => {
+                args = &args[1..];
+                break;
+            }
+            _ => break,
+        };
+        let value = args.get(1).ok_or(ArgsError::MissingValue(flag))?;
+        if flag == RELAY_FLAG {
+            relay = Some(Path::new(value));
+        } else {
+            loopback.push(
+                value
+                    .to_str()
+                    .and_then(|value| value.parse().ok())
+                    .ok_or_else(|| ArgsError::InvalidLoopback(value.clone()))?,
+            );
+        }
+        args = &args[2..];
     }
+    Ok(Init {
+        relay,
+        loopback,
+        command: args,
+    })
 }
 
 /// Reads the arguments after the program's name. The first one that is not an
@@ -429,23 +469,83 @@ mod tests {
     }
 
     #[test]
-    fn init_takes_the_relay_socket_before_the_command() {
-        let args = os(&["--relay", "/tmp/p.sock", "--relay", "x"]);
+    fn init_reads_repeated_loopback_addresses_before_the_command() {
+        let args = os(&[
+            "--loopback",
+            "10.9.9.9",
+            "--loopback",
+            "fd00::5",
+            "sh",
+            "--loopback",
+        ]);
+        let init = parse_init(&args).unwrap();
+
+        assert_eq!(init.relay, None);
         assert_eq!(
-            split_relay(&args),
-            (Some(Path::new("/tmp/p.sock")), &args[2..]),
-            "only the first is the helper's"
+            init.loopback,
+            [
+                "10.9.9.9".parse::<std::net::IpAddr>().unwrap(),
+                "fd00::5".parse().unwrap()
+            ]
+        );
+        assert_eq!(init.command, &args[4..]);
+    }
+
+    #[test]
+    fn init_reads_loopback_addresses_on_either_side_of_the_relay() {
+        let args = os(&[
+            "--loopback",
+            "10.0.0.5",
+            "--relay",
+            "proxy.sock",
+            "--loopback",
+            "::5",
+            "echo",
+            "ok",
+        ]);
+        let init = parse_init(&args).unwrap();
+
+        assert_eq!(init.relay, Some(Path::new("proxy.sock")));
+        assert_eq!(
+            init.loopback,
+            [
+                "10.0.0.5".parse::<IpAddr>().unwrap(),
+                "::5".parse().unwrap()
+            ]
+        );
+        assert_eq!(init.command, &args[6..]);
+    }
+
+    #[test]
+    fn init_refuses_a_malformed_or_missing_loopback_address() {
+        for address in ["10.9.9.999", "10.9.9.9/32", "localhost", ""] {
+            assert_eq!(
+                parse_init(&os(&["--loopback", address, "sh"])),
+                Err(ArgsError::InvalidLoopback(address.into()))
+            );
+        }
+        assert_eq!(
+            parse_init(&os(&["--loopback"])),
+            Err(ArgsError::MissingValue(LOOPBACK_FLAG))
+        );
+    }
+
+    #[test]
+    fn init_takes_the_relay_socket_before_the_command() {
+        let args = os(&["--relay", "/tmp/p.sock", "--", "--relay", "x"]);
+        let init = parse_init(&args).unwrap();
+        assert_eq!(
+            (init.relay, init.command),
+            (Some(Path::new("/tmp/p.sock")), &args[3..])
         );
 
         let args = os(&["sh", "-c", "exit 3"]);
-        assert_eq!(split_relay(&args), (None, &args[..]));
+        let init = parse_init(&args).unwrap();
+        assert_eq!((init.relay, init.command), (None, &args[..]));
+        assert!(init.loopback.is_empty());
 
         let args = os(&["--relay"]);
-        assert_eq!(
-            split_relay(&args),
-            (None, &args[..]),
-            "a flag with no socket is a command's name"
-        );
+        assert_eq!(parse_init(&args), Err(ArgsError::MissingValue(RELAY_FLAG)));
     }
 
     /// The Linux half spells the re-entry into the `connect` mode for ssh's

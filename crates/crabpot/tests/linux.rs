@@ -645,7 +645,15 @@ fn connect_mode_reports_a_refused_host() {
 
 #[test]
 fn allow_tcp_exchanges_bytes_with_a_host_address() {
-    let address = host_address();
+    tcp_round_trip("host", host_address(), None);
+}
+
+#[test]
+fn allow_tcp_exchanges_bytes_with_an_address_resolved_at_startup() {
+    tcp_round_trip("resolved", std::net::Ipv4Addr::LOCALHOST, Some("localhost"));
+}
+
+fn tcp_round_trip(case: &str, address: std::net::Ipv4Addr, host: Option<&str>) {
     let server = TcpListener::bind((address, 0)).unwrap();
     let destination = server.local_addr().unwrap();
     let (done, answered) = mpsc::channel();
@@ -663,7 +671,11 @@ fn allow_tcp_exchanges_bytes_with_a_host_address() {
         client.write_all(b"pong").unwrap();
         done.send(()).unwrap();
     });
-    let settings = settings_allowing_tcp("host", &[destination.to_string()]);
+    let entry = match host {
+        Some(host) => format!("{host}:{}", destination.port()),
+        None => destination.to_string(),
+    };
+    let settings = settings_allowing_tcp(case, &[entry]);
     let output = run_with_tcp(
         &settings,
         &format!(

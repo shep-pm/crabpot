@@ -72,8 +72,8 @@ fn a_descriptor_inherited_on_fd_3_stays_open_after_startup() {
 
     let output = launch(
         &home,
-        &format!("3<'{}'", marker.display()),
-        Stdio::null(),
+        "3<&0 </dev/null",
+        Stdio::from(fs::File::open(&marker).unwrap()),
         "ls -l /proc/self/fd/3",
     );
 

@@ -10,7 +10,7 @@ use crabpot_core::config::Config;
 use crabpot_core::proxy::{TcpGrant, username_for};
 use crabpot_linux::info::Info;
 use crabpot_linux::net::env::HostPorts;
-use crabpot_linux::startup::Startup;
+use crabpot_linux::startup::{Pipe, Startup};
 
 use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG, REPORT_STARTED_FLAG};
 
@@ -76,18 +76,18 @@ impl Sandbox {
         &self,
         command: &Command,
     ) -> Result<(Command, Info, Startup), WrapError> {
-        let mut wrapped = self.linux_command(command, true, &[])?;
+        let pipe = Pipe::open().map_err(|e| WrapError::Bwrap(e.to_string()))?;
+        let mut wrapped = self.linux_command(command, Some(pipe.fd()), &[])?;
         let info = crabpot_linux::info::attach(&mut wrapped)
             .map_err(|e| WrapError::Bwrap(e.to_string()))?;
-        let startup = crabpot_linux::startup::attach(&mut wrapped)
-            .map_err(|e| WrapError::Bwrap(e.to_string()))?;
+        let startup = pipe.attach(&mut wrapped);
         Ok((wrapped, info, startup))
     }
 
     pub(super) fn linux_command(
         &self,
         command: &Command,
-        report: bool,
+        report: Option<u32>,
         loopback: &[IpAddr],
     ) -> Result<Command, WrapError> {
         let mut words = vec![
@@ -97,8 +97,11 @@ impl Sandbox {
             OsString::from(RELAY_FLAG),
             self.proxy.mux_socket().as_os_str().to_owned(),
         ];
-        if report {
-            words.push(OsString::from(REPORT_STARTED_FLAG));
+        if let Some(fd) = report {
+            words.extend([
+                OsString::from(REPORT_STARTED_FLAG),
+                OsString::from(fd.to_string()),
+            ]);
         }
         for address in loopback {
             words.extend([OsString::from(LOOPBACK_FLAG), address.to_string().into()]);
@@ -113,7 +116,7 @@ impl Sandbox {
         words.push(command.get_program().to_owned());
         words.extend(command.get_args().map(OsString::from));
         let mut bwrap_words = self.words.clone();
-        if report {
+        if report.is_some() {
             bwrap_words.splice(1..1, crabpot_linux::wrap::info_words());
         }
         let rendered = crabpot_linux::argv::render(&bwrap_words, &words, &std::env::temp_dir())
@@ -181,7 +184,7 @@ mod tests {
         let addresses = ["10.0.0.5".parse().unwrap(), "fd00::5".parse().unwrap()];
         let mut command = Command::new("echo");
         command.arg("--loopback");
-        let wrapped = sandbox.linux_command(&command, false, &addresses).unwrap();
+        let wrapped = sandbox.linux_command(&command, None, &addresses).unwrap();
         let args: Vec<_> = wrapped
             .get_args()
             .skip_while(|arg| *arg != HELPER_FLAG)

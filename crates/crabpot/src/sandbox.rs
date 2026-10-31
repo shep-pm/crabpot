@@ -263,7 +263,7 @@ impl Sandbox {
         }
         #[cfg(target_os = "linux")]
         {
-            self.linux_command(command, false, &[])
+            self.linux_command(command, None, &[])
         }
         #[cfg(windows)]
         {

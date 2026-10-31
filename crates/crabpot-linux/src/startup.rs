@@ -6,6 +6,7 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 use std::fs::File;
 use std::io::{self, Read};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::process::Command;
 use std::sync::Arc;
 use std::thread;
@@ -14,9 +15,6 @@ use nix::fcntl::OFlag;
 use nix::unistd::pipe2;
 
 use crate::helper::sys;
-
-/// The first descriptor after standard I/O, inherited through bwrap by the helper.
-pub const FD: u32 = 3;
 
 /// Whether the helper has acknowledged startup through its inherited pipe.
 #[derive(Debug, Clone)]
@@ -56,32 +54,63 @@ impl Startup {
     }
 }
 
-/// Gives `command` the acknowledgement pipe as [`FD`].
-///
-/// Bwrap passes inherited descriptors to its command, whose helper must call [`notify`].
-///
-/// # Errors
-///
-/// The pipe or descriptor-copy error when the process has no descriptors left.
-pub fn attach(command: &mut Command) -> io::Result<Startup> {
-    let (read, write) = pipe2(OFlag::O_CLOEXEC).map_err(io::Error::from)?;
-    sys::pass_in_child(command, write, FD)?;
-    Ok(Startup::watch(File::from(read)))
+/// The acknowledgement pipe, before a command is given its write end.
+#[derive(Debug)]
+pub struct Pipe {
+    read: OwnedFd,
+    write: OwnedFd,
 }
 
-/// Acknowledges helper startup and closes [`FD`] before any descendants run.
+impl Pipe {
+    /// Opens the pipe. The write end sits above every descriptor the launcher
+    /// can have inherited, so the command keeps what it was handed.
+    ///
+    /// # Errors
+    ///
+    /// The pipe or descriptor-copy error when the process has no descriptors left.
+    pub fn open() -> io::Result<Self> {
+        let (read, write) = pipe2(OFlag::O_CLOEXEC).map_err(io::Error::from)?;
+        Ok(Self {
+            read,
+            write: sys::copy_above_reserved(write)?,
+        })
+    }
+
+    /// The write end's descriptor number in `command`'s child, which the helper
+    /// passes to [`notify`].
+    #[must_use]
+    pub fn fd(&self) -> u32 {
+        u32::try_from(self.write.as_raw_fd()).unwrap_or(u32::MAX)
+    }
+
+    /// Gives `command` the write end under [`Pipe::fd`].
+    ///
+    /// Bwrap passes inherited descriptors to its command, whose helper must call [`notify`].
+    pub fn attach(self, command: &mut Command) -> Startup {
+        sys::keep_in_child(command, self.write);
+        Startup::watch(File::from(self.read))
+    }
+}
+
+/// Acknowledges helper startup through `fd` and closes it before any descendants run.
 ///
 /// # Errors
 ///
-/// The write error when [`FD`] is closed or its reader has gone away.
-pub fn notify() -> io::Result<()> {
-    sys::notify_started(FD)
+/// The write error when `fd` is closed or its reader has gone away.
+pub fn notify(fd: u32) -> io::Result<()> {
+    sys::notify_started(fd)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_write_end_is_above_the_descriptors_a_launcher_can_inherit() {
+        let pipe = Pipe::open().unwrap();
+        assert!(pipe.fd() >= 10, "{}", pipe.fd());
+    }
 
     #[test]
     fn only_a_helper_acknowledgement_counts_as_started() {

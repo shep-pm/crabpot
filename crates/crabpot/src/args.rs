@@ -92,6 +92,8 @@ pub(crate) enum ArgsError {
     /// `--loopback` was followed by something other than an IP address or an
     /// `IP:port` socket address.
     InvalidLoopback(OsString),
+    /// `--report-started` was followed by something other than a descriptor number.
+    InvalidDescriptor(OsString),
 }
 
 impl fmt::Display for ArgsError {
@@ -105,6 +107,7 @@ impl fmt::Display for ArgsError {
             Self::NoCommand => write!(f, "no command specified"),
             Self::UnknownHelperMode(mode) => write!(f, "unknown helper mode {mode:?}"),
             Self::InvalidLoopback(address) => write!(f, "invalid loopback address {address:?}"),
+            Self::InvalidDescriptor(value) => write!(f, "invalid descriptor {value:?}"),
         }
     }
 }
@@ -220,13 +223,13 @@ pub(crate) const RELAY_FLAG: &str = "--relay";
 /// The flag that adds a loopback address, with an optional TCP relay port.
 pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
 
-/// Asks the helper to acknowledge startup through its inherited descriptor.
+/// Asks the helper to acknowledge startup through the inherited descriptor it names.
 pub(crate) const REPORT_STARTED_FLAG: &str = "--report-started";
 
 /// The helper's options and the command's untouched arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Init<'a> {
-    pub(crate) report_started: bool,
+    pub(crate) report_started: Option<u32>,
     pub(crate) relay: Option<&'a Path>,
     pub(crate) loopback: Vec<IpAddr>,
     pub(crate) tcp: Vec<SocketAddr>,
@@ -235,17 +238,13 @@ pub(crate) struct Init<'a> {
 
 /// Reads helper options until the command or `--` begins its arguments.
 pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
-    let mut report_started = false;
+    let mut report_started = None;
     let mut relay = None;
     let mut loopback = Vec::new();
     let mut tcp = Vec::new();
     while let Some(arg) = args.first() {
         let flag = match arg.to_str() {
-            Some(REPORT_STARTED_FLAG) => {
-                report_started = true;
-                args = &args[1..];
-                continue;
-            }
+            Some(REPORT_STARTED_FLAG) => REPORT_STARTED_FLAG,
             Some(RELAY_FLAG) => RELAY_FLAG,
             Some(LOOPBACK_FLAG) => LOOPBACK_FLAG,
             Some("--") => {
@@ -257,6 +256,13 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
         let value = args.get(1).ok_or(ArgsError::MissingValue(flag))?;
         if flag == RELAY_FLAG {
             relay = Some(Path::new(value));
+        } else if flag == REPORT_STARTED_FLAG {
+            report_started = Some(
+                value
+                    .to_str()
+                    .and_then(|text| text.parse().ok())
+                    .ok_or_else(|| ArgsError::InvalidDescriptor(value.clone()))?,
+            );
         } else {
             let text = value.to_string_lossy();
             if let Ok(address) = text.parse::<SocketAddr>() {
@@ -578,6 +584,30 @@ mod tests {
             parse_init(&os(&["--loopback"])),
             Err(ArgsError::MissingValue(LOOPBACK_FLAG))
         );
+    }
+
+    #[test]
+    fn init_takes_the_startup_descriptor_before_the_command() {
+        let args = os(&["--report-started", "12", "--relay", "/s", "--", "sh"]);
+        let init = parse_init(&args).unwrap();
+        assert_eq!(init.report_started, Some(12));
+        assert_eq!(init.command, &args[5..]);
+
+        assert_eq!(parse_init(&os(&["sh"])).unwrap().report_started, None);
+    }
+
+    #[test]
+    fn init_refuses_a_missing_or_non_numeric_startup_descriptor() {
+        assert_eq!(
+            parse_init(&os(&["--report-started"])),
+            Err(ArgsError::MissingValue(REPORT_STARTED_FLAG))
+        );
+        for value in ["x", "-1", "", "1.5", "4294967296"] {
+            assert_eq!(
+                parse_init(&os(&["--report-started", value, "sh"])),
+                Err(ArgsError::InvalidDescriptor(value.into()))
+            );
+        }
     }
 
     #[test]

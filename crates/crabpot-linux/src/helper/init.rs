@@ -139,10 +139,18 @@ fn enter_namespaces(
     loopback: &[IpAddr],
     tcp: &[SocketAddr],
 ) -> Result<bool, InitError> {
-    if let Some(&address) = loopback.first() {
+    if let Some(address) = loopback
+        .first()
+        .copied()
+        .or_else(|| tcp.first().map(SocketAddr::ip))
+    {
         unshare_user(CloneFlags::CLONE_NEWNET)?;
         sys::loopback_up().map_err(|reason| InitError::Loopback { address, reason })?;
         for &address in loopback {
+            sys::add_loopback(address).map_err(|reason| InitError::Loopback { address, reason })?;
+        }
+        // Grants may share an address, and may name one loopback already has.
+        for address in tcp.iter().map(SocketAddr::ip) {
             if let Err(reason) = sys::add_loopback(address)
                 && reason != Errno::EEXIST
             {
@@ -154,7 +162,7 @@ fn enter_namespaces(
         relay::start(socket, tcp)?;
     }
     let flags = CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
-    if !loopback.is_empty() {
+    if !loopback.is_empty() || !tcp.is_empty() {
         unshare(flags).map_err(|reason| InitError::step(Step::Unshare, reason))?;
         return Ok(true);
     }

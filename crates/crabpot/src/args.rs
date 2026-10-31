@@ -220,9 +220,13 @@ pub(crate) const RELAY_FLAG: &str = "--relay";
 /// The flag that adds a loopback address, with an optional TCP relay port.
 pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
 
+/// Asks the helper to acknowledge startup through its inherited descriptor.
+pub(crate) const REPORT_STARTED_FLAG: &str = "--report-started";
+
 /// The helper's options and the command's untouched arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Init<'a> {
+    pub(crate) report_started: bool,
     pub(crate) relay: Option<&'a Path>,
     pub(crate) loopback: Vec<IpAddr>,
     pub(crate) tcp: Vec<SocketAddr>,
@@ -231,11 +235,17 @@ pub(crate) struct Init<'a> {
 
 /// Reads helper options until the command or `--` begins its arguments.
 pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
+    let mut report_started = false;
     let mut relay = None;
     let mut loopback = Vec::new();
     let mut tcp = Vec::new();
     while let Some(arg) = args.first() {
         let flag = match arg.to_str() {
+            Some(REPORT_STARTED_FLAG) => {
+                report_started = true;
+                args = &args[1..];
+                continue;
+            }
             Some(RELAY_FLAG) => RELAY_FLAG,
             Some(LOOPBACK_FLAG) => LOOPBACK_FLAG,
             Some("--") => {
@@ -249,22 +259,22 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
             relay = Some(Path::new(value));
         } else {
             let text = value.to_string_lossy();
-            let address = if let Ok(address) = text.parse::<SocketAddr>() {
+            if let Ok(address) = text.parse::<SocketAddr>() {
+                // Several grants may share an address, so a repeat is no error.
                 if !tcp.contains(&address) {
                     tcp.push(address);
                 }
-                address.ip()
             } else {
-                text.parse()
-                    .map_err(|_| ArgsError::InvalidLoopback(value.clone()))?
-            };
-            if !loopback.contains(&address) {
-                loopback.push(address);
+                loopback.push(
+                    text.parse()
+                        .map_err(|_| ArgsError::InvalidLoopback(value.clone()))?,
+                );
             }
         }
         args = &args[2..];
     }
     Ok(Init {
+        report_started,
         relay,
         loopback,
         tcp,
@@ -480,8 +490,10 @@ mod tests {
     }
 
     #[test]
-    fn init_reads_tcp_ports_and_deduplicates_loopback_addresses() {
+    fn init_reads_tcp_ports_apart_from_loopback_addresses() {
         let args = os(&[
+            "--loopback",
+            "10.0.0.7",
             "--loopback",
             "10.0.0.5:5432",
             "--loopback",
@@ -494,13 +506,7 @@ mod tests {
         ]);
         let init = parse_init(&args).unwrap();
 
-        assert_eq!(
-            init.loopback,
-            [
-                "10.0.0.5".parse::<IpAddr>().unwrap(),
-                "fd00::5".parse().unwrap()
-            ]
-        );
+        assert_eq!(init.loopback, ["10.0.0.7".parse::<IpAddr>().unwrap()]);
         assert_eq!(
             init.tcp,
             [

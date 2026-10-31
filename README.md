@@ -83,6 +83,8 @@ crabpot -s settings.json -- git pull
 crabpot -s settings.json -c 'npm install && npm test'
 ```
 
+A sandbox refusal exits 125; anything else is the command's own exit code.
+
 `-d` prints debug output. Or use the library:
 
 ```rust

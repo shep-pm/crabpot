@@ -60,8 +60,10 @@ impl Info {
     /// it.
     #[must_use]
     pub fn report(&self) -> Report {
+        // Acquiring completion first makes the reader's earlier PID store visible.
+        let ended = self.ended.load(Ordering::Acquire);
         match self.child.load(Ordering::Acquire) {
-            0 if self.ended.load(Ordering::Acquire) => Report::Missing,
+            0 if ended => Report::Missing,
             0 => Report::Pending,
             pid => Report::Pid(pid),
         }
@@ -74,10 +76,10 @@ impl Info {
 ///
 /// # Errors
 ///
-/// The error of the `pipe2` call, when the process has no descriptors left.
+/// The pipe or descriptor-copy error when the process has no descriptors left.
 pub fn attach(command: &mut Command) -> io::Result<Info> {
     let (read, write) = pipe2(OFlag::O_CLOEXEC).map_err(io::Error::from)?;
-    sys::pass_in_child(command, write, INFO_FD);
+    sys::pass_in_child(command, write, INFO_FD)?;
     Ok(Info::watch(File::from(read)))
 }
 

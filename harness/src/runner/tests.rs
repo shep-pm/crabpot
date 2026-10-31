@@ -565,22 +565,52 @@ fn a_status_the_probe_did_not_report_is_not_a_probe_outcome() {
 
 #[test]
 #[cfg(unix)]
-fn a_wrapper_that_exits_1_without_its_probe_refuses() {
-    assert!(refusal(sh("echo 'crabpot: bad settings' >&2; exit 1"), "crabpot").unwrap());
+fn crabpot_refuses_with_125_without_its_probe() {
+    assert!(
+        refusal(
+            sh("echo 'crabpot: bad settings' >&2; exit 125"),
+            "crabpot",
+            125
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn upstream_refuses_with_1_without_its_probe() {
+    assert!(refusal(sh("exit 1"), "upstream", 1).unwrap());
+}
+
+#[test]
+#[cfg(unix)]
+fn a_crabpot_exit_of_1_without_its_probe_is_unreported() {
+    assert!(matches!(
+        refusal(
+            sh("echo 'crabpot: bad settings' >&2; exit 1"),
+            "crabpot",
+            125
+        ),
+        Err(Error::Unreported {
+            runner: "crabpot",
+            status: 1
+        })
+    ));
 }
 
 #[test]
 #[cfg(unix)]
 fn a_wrapper_whose_probe_ran_did_not_refuse() {
-    assert!(!refusal(sh("echo 'probe exited 0'; exit 0"), "upstream").unwrap());
-    assert!(!refusal(sh("echo 'probe exited 1'; exit 1"), "upstream").unwrap());
+    assert!(!refusal(sh("echo 'probe exited 0'; exit 0"), "upstream", 1).unwrap());
+    assert!(!refusal(sh("echo 'probe exited 1'; exit 1"), "upstream", 1).unwrap());
+    assert!(!refusal(sh("echo 'probe exited 125'; exit 125"), "crabpot", 125).unwrap());
 }
 
 #[test]
 #[cfg(unix)]
 fn a_wrapper_that_fails_in_another_way_is_not_a_refusal() {
     assert!(matches!(
-        refusal(sh("exit 71"), "upstream"),
+        refusal(sh("exit 71"), "upstream", 1),
         Err(Error::Unreported {
             runner: "upstream",
             status: 71

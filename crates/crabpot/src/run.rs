@@ -39,6 +39,8 @@ const TARGET_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_mil
 /// Where upstream looks for settings when `-s` names none, under `$HOME`.
 const DEFAULT_SETTINGS: &str = ".srt-settings.json";
 
+const REFUSED: i32 = 125;
+
 /// Takes over the process when its first argument is `--crabpot`: runs the
 /// command the rest of the arguments name inside a sandbox, and exits with its
 /// status. Any other arguments leave it a no-op, so a host calls it first
@@ -111,10 +113,20 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
 
 #[cfg(target_os = "linux")]
 fn helper_init(init: args::Init<'_>) -> ! {
+    if init.report_started
+        && let Err(error) = crabpot_linux::startup::notify()
+    {
+        eprintln!("crabpot: cannot report helper startup: {error}");
+        std::process::exit(REFUSED);
+    }
     match crabpot_linux::helper::init_with_tcp(init.relay, &init.loopback, &init.tcp, init.command)
     {
         Ok(status) => std::process::exit(status),
-        Err(e) => fail(e),
+        Err(e @ crabpot_linux::helper::InitError::Exec(_)) => fail(e),
+        Err(e) => {
+            eprintln!("crabpot: {e}");
+            std::process::exit(REFUSED)
+        }
     }
 }
 
@@ -153,7 +165,8 @@ fn fail(reason: impl core::fmt::Display) -> ! {
 /// and 1 when it is refused or fails.
 ///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
-/// that is refused prints why to stderr and exits 1. On Unix, a SIGINT,
+/// that is refused prints why to stderr and exits 125. Otherwise, the command's
+/// exit code passes through, including 1 and 125. On Unix, a SIGINT,
 /// SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 or SIGUSR2 is passed on to the command,
 /// and a console Ctrl-C is the command's to answer: the wrapper keeps waiting
 /// for it to end.
@@ -187,7 +200,7 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
         }
         Err(e) => {
             eprintln!("crabpot: {e}");
-            1
+            REFUSED
         }
     }
 }
@@ -237,8 +250,8 @@ fn prepare(
     };
     #[cfg(target_os = "linux")]
     let (wrapped, target) = {
-        let (wrapped, info) = sandbox.command_reporting(&command)?;
-        (wrapped, ForwardTarget::Helper(info))
+        let (wrapped, info, startup) = sandbox.command_reporting(&command)?;
+        (wrapped, ForwardTarget::Helper { info, startup })
     };
     #[cfg(not(target_os = "linux"))]
     let (wrapped, target) = (sandbox.command(&command)?, ForwardTarget::Child);
@@ -290,7 +303,7 @@ fn execute(command: Command, target: ForwardTarget) -> i32 {
         Ok(runtime) => runtime,
         Err(e) => {
             eprintln!("crabpot: cannot start the async runtime: {e}");
-            return 1;
+            return REFUSED;
         }
     };
     #[cfg(unix)]
@@ -313,7 +326,10 @@ enum ForwardTarget {
     /// The helper, which only it forwards signals on to the command: bwrap's
     /// processes do not, and a signal that ends them kills the sandbox.
     #[cfg(target_os = "linux")]
-    Helper(crabpot_linux::info::Info),
+    Helper {
+        info: crabpot_linux::info::Info,
+        startup: crabpot_linux::startup::Startup,
+    },
 }
 
 #[cfg(unix)]
@@ -325,7 +341,7 @@ impl ForwardTarget {
             #[cfg(any(not(target_os = "linux"), test))]
             Self::Child => Some(child),
             #[cfg(target_os = "linux")]
-            Self::Helper(info) => match info.report() {
+            Self::Helper { info, .. } => match info.report() {
                 // bwrap reports its namespace init, and the helper is the first
                 // process that starts.
                 Report::Pid(init) => first_child(init),
@@ -393,14 +409,14 @@ async fn run(command: Command, target: ForwardTarget) -> i32 {
         Ok(listeners) => listeners,
         Err(e) => {
             eprintln!("crabpot: cannot listen for signals: {e}");
-            return 1;
+            return REFUSED;
         }
     };
     let mut child = match spawn(command) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("crabpot: cannot run the command: {e}");
-            return 1;
+            return REFUSED;
         }
     };
     let forwarders: Vec<JoinHandle<()>> = match child.id() {
@@ -421,6 +437,21 @@ async fn run(command: Command, target: ForwardTarget) -> i32 {
     for forwarder in forwarders {
         forwarder.abort();
     }
+    #[cfg(target_os = "linux")]
+    if status.is_ok()
+        && let ForwardTarget::Helper { startup, .. } = target
+    {
+        loop {
+            match startup.report() {
+                crabpot_linux::startup::Report::Started => break,
+                crabpot_linux::startup::Report::Missing => return REFUSED,
+                // The reader may still be draining the helper's acknowledgement.
+                crabpot_linux::startup::Report::Pending => {
+                    tokio::time::sleep(TARGET_RETRY_INTERVAL).await
+                }
+            }
+        }
+    }
     exit_after_wait(status)
 }
 
@@ -436,7 +467,7 @@ async fn run(command: Command) -> i32 {
         Ok(child) => child,
         Err(e) => {
             eprintln!("crabpot: cannot run the command: {e}");
-            return 1;
+            return REFUSED;
         }
     };
     let status = child.wait().await;
@@ -569,7 +600,11 @@ mod tests {
 
         assert_eq!(run_status(args(&["--", "sh", "-c", "exit 4"])), 4);
         assert_eq!(run_status(args(&["-c", "exit 5"])), 5);
-        assert_eq!(run_status(args(&["-d"])), 1, "no command is refused");
+    }
+
+    #[test]
+    fn a_command_line_without_a_command_exits_125() {
+        assert_eq!(run_status([OsString::from("-d")]), 125);
     }
 
     #[cfg(not(windows))]
@@ -622,14 +657,13 @@ mod tests {
     }
 
     #[test]
-    fn the_four_file_refusals_exit_1() {
+    fn the_four_file_refusals_exit_125() {
         let dir = Dir::new("refusals");
         let empty = dir.0.join("empty.json");
         let invalid = dir.0.join("invalid.json");
         fs::write(&empty, "  \n").unwrap();
         fs::write(&invalid, "{not json").unwrap();
-        // A command that ran would exit 7, so 1 is the refusal and not the
-        // command.
+        // A command that ran would exit 7.
         let command = shell_argv("exit 7");
 
         for (name, settings) in [
@@ -645,8 +679,13 @@ mod tests {
             ];
             args.extend(command.iter().cloned());
 
-            assert_eq!(run_status(args), 1, "{name}");
+            assert_eq!(run_status(args), 125, "{name}");
         }
+    }
+
+    #[test]
+    fn a_command_line_that_does_not_parse_exits_125() {
+        assert_eq!(run_status([OsString::from("--unknown")]), 125);
     }
 
     #[test]
@@ -680,12 +719,14 @@ mod tests {
 
     #[test]
     fn a_childs_exit_code_passes_through() {
-        assert_eq!(run(shell("exit 3")), 3);
+        for code in [0, 1, 3, 125] {
+            assert_eq!(run(shell(&format!("exit {code}"))), code);
+        }
     }
 
     #[test]
-    fn a_command_that_cannot_spawn_is_a_failure() {
-        assert_eq!(run(Command::new("/no/such/program")), 1);
+    fn a_command_that_cannot_spawn_exits_125() {
+        assert_eq!(run(Command::new("/no/such/program")), 125);
     }
 
     #[cfg(target_os = "linux")]

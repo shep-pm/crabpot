@@ -6,6 +6,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc;
@@ -32,8 +33,15 @@ fn the_helper_runs_the_command_and_passes_its_exit_status() {
     assert_eq!(direct.status.code(), Some(7), "{direct:?}");
     assert_eq!(direct.stdout, b"ran\n");
 
-    let sandboxed = crabpot(&["--", "sh", "-c", "exit 5"]);
-    assert_eq!(sandboxed.status.code(), Some(5), "{sandboxed:?}");
+    for code in [0, 1, 5, 125] {
+        let sandboxed = crabpot(&[
+            "--",
+            "sh",
+            "-c",
+            &format!("test ! -e /proc/self/fd/3 || exit 99; exit {code}"),
+        ]);
+        assert_eq!(sandboxed.status.code(), Some(code), "{sandboxed:?}");
+    }
 
     let missing = crabpot(&["--crabpot-helper", "init", "/no/such/program"]);
     assert_eq!(missing.status.code(), Some(1), "{missing:?}");
@@ -41,6 +49,79 @@ fn the_helper_runs_the_command_and_passes_its_exit_status() {
         String::from_utf8_lossy(&missing.stderr).contains("/no/such/program"),
         "{missing:?}"
     );
+}
+
+#[test]
+fn a_bwrap_that_ends_without_reporting_a_pid_exits_125() {
+    bwrap_that_never_starts_the_helper(false);
+}
+
+#[test]
+fn a_bwrap_that_reports_a_pid_but_never_starts_the_helper_exits_125() {
+    bwrap_that_never_starts_the_helper(true);
+}
+
+fn bwrap_that_never_starts_the_helper(reports_pid: bool) {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "bwrap-without-helper-{reports_pid}-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let bwrap = root.join("bwrap");
+    fs::write(
+        &bwrap,
+        r#"#!/bin/sh
+case "$1" in
+    --version) echo 'bubblewrap 0.9.0'; exit 0 ;;
+    --unshare-user) exit 0 ;;
+esac
+if [ "$CRABPOT_TEST_BWRAP_REPORT" = 1 ]; then
+    echo '{"child-pid": 4242}' >&8
+fi
+echo 'bwrap ended without starting the helper' >&2
+exit "$CRABPOT_TEST_BWRAP_EXIT"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&bwrap, fs::Permissions::from_mode(0o700)).unwrap();
+    let settings = root.join("settings.json");
+    fs::write(
+        &settings,
+        r#"{
+            "network": {"allowedDomains": [], "deniedDomains": []},
+            "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+        }"#,
+    )
+    .unwrap();
+
+    for code in [0, 1, 7] {
+        let output = Command::new(CRABPOT)
+            .env("HOME", &root)
+            .env("PATH", &root)
+            .env("CRABPOT_TEST_BWRAP_EXIT", code.to_string())
+            .env(
+                "CRABPOT_TEST_BWRAP_REPORT",
+                if reports_pid { "1" } else { "0" },
+            )
+            .arg("--settings")
+            .arg(&settings)
+            .args(["--", "/bin/sh", "-c", "echo ran"])
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            output.status.code(),
+            Some(125),
+            "bwrap exit {code}: {output:?}"
+        );
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("bwrap ended without starting the helper"),
+            "{output:?}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -499,10 +580,12 @@ for family, address in [(socket.AF_INET, '10.9.9.9'), (socket.AF_INET6, 'fd00::5
 "#,
     );
 
-    assert!(output.status.success(), "{output:?}");
-    let text = stdout(&output);
-    let lines: Vec<_> = text.lines().collect();
-    assert_eq!(&lines[1..], ["bound 10.9.9.9", "bound fd00::5"], "{text}");
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("10.9.9.9"),
+        "{output:?}"
+    );
+    assert!(!stdout(&output).contains("ran"), "{output:?}");
 }
 
 #[test]
@@ -534,7 +617,7 @@ fn the_relay_forwards_socks_to_the_proxy() {
 }
 
 #[test]
-fn a_relay_that_cannot_bind_makes_the_helper_exit_1() {
+fn a_relay_that_cannot_bind_makes_the_helper_exit_125() {
     // The helper runs here with no network namespace of its own, so a listener
     // on 3128 is a port the relay cannot take. If another process holds it
     // already, that is the same.
@@ -549,7 +632,7 @@ fn a_relay_that_cannot_bind_makes_the_helper_exit_1() {
         "ran",
     ]);
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
     assert!(
         output.stdout.is_empty(),
         "the command must not run: {output:?}"

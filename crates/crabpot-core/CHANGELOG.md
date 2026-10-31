@@ -5,8 +5,6 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
 ## [0.6.0] - 2026-10-31
 
 
@@ -22,16 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reject invalid and duplicate published ports
 - Validate numeric TCP hosts and preserve IPv6 scopes
-
-
-### Fixes
-
-- Reject malformed numeric `allowTcp` hosts instead of treating them as DNS names ([#290])
-- Preserve numeric IPv6 scopes in `allowTcp` destinations and duplicate checks ([#290])
-
-### Additions
-
-- Parse `network.publish` and `network.allowTcp`, refusing grants unsupported on the current platform ([#290])
 
 ## [0.5.11] - 2026-10-31
 

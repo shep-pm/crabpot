@@ -78,6 +78,48 @@ fn publish_reads_ipv4_and_ipv6_with_their_ports() {
 }
 
 #[test]
+fn deserializing_network_directly_refuses_unsupported_allow_tcp() {
+    let settings = json!({
+        "allowedDomains": [],
+        "deniedDomains": [],
+        "allowTcp": ["10.0.0.5:3306"],
+    });
+    let errors = [
+        Network::deserialize(&settings).unwrap_err().to_string(),
+        serde_json::from_value::<Network>(settings)
+            .unwrap_err()
+            .to_string(),
+    ];
+
+    for error in errors {
+        assert_eq!(
+            error,
+            "settings key `network.allowTcp` is not supported yet"
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn deserializing_network_directly_refuses_unsupported_publish() {
+    let settings = json!({
+        "allowedDomains": [],
+        "deniedDomains": [],
+        "publish": ["127.0.0.1:8001"],
+    });
+    let errors = [
+        Network::deserialize(&settings).unwrap_err().to_string(),
+        serde_json::from_value::<Network>(settings)
+            .unwrap_err()
+            .to_string(),
+    ];
+
+    for error in errors {
+        assert_eq!(error, "settings key `network.publish` is not supported yet");
+    }
+}
+
+#[test]
 fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
     let settings = settings_with(
         "network.allowTcp",
@@ -89,7 +131,7 @@ fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
             "[::1]:65535"
         ]),
     );
-    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let network = NetworkShape::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()
@@ -120,7 +162,7 @@ fn allow_tcp_keeps_ipv6_scopes_as_distinct_destinations() {
         "network.allowTcp",
         json!(["[fe80::1%2]:22", "[fe80::1%3]:22"]),
     );
-    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let network = NetworkShape::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()
@@ -216,6 +258,22 @@ fn allow_tcp_refuses_malformed_numeric_hosts_naming_the_entry() {
             other => panic!("{entry}: expected Invalid, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn allow_tcp_refuses_ipv4_mapped_duplicates() {
+    let settings = with(
+        "network.allowTcp",
+        json!(["[::ffff:10.0.0.5]:3306", "10.0.0.5:3306"]),
+    );
+
+    assert_eq!(
+        Config::from_json(&settings),
+        Err(ConfigError::Invalid {
+            key: "network.allowTcp".to_owned(),
+            reason: "duplicate entry \"10.0.0.5:3306\"".to_owned(),
+        })
+    );
 }
 
 #[test]

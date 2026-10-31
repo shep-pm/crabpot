@@ -344,7 +344,10 @@ impl fmt::Display for InitError {
             Self::Step { step, reason } => write!(f, "cannot {step}: {reason}"),
             Self::Map { path, reason } => write!(f, "cannot write {path}: {reason}"),
             Self::Loopback { address, reason } => {
-                write!(f, "cannot configure loopback address {address}: {reason}")
+                write!(
+                    f,
+                    "cannot bring up lo or configure loopback address {address}: {reason}"
+                )
             }
             Self::Relay(reason) => write!(f, "cannot start the relay: {reason}"),
             Self::Filter(reason) => f.write_str(reason),
@@ -393,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn a_loopback_failure_names_the_address_being_configured() {
+    fn a_loopback_failure_names_bringing_up_lo_and_the_address() {
         let error = InitError::Loopback {
             address: "10.9.9.9".parse().unwrap(),
             reason: Errno::EPERM,
@@ -401,7 +404,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "cannot configure loopback address 10.9.9.9: EPERM: Operation not permitted"
+            "cannot bring up lo or configure loopback address 10.9.9.9: EPERM: Operation not permitted"
         );
     }
 

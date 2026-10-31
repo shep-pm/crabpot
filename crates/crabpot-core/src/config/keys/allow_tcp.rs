@@ -36,7 +36,7 @@ impl TcpDestination {
                     SocketAddr::V6(address) if address.scope_id() != 0 => {
                         format!("{}%{}", address.ip(), address.scope_id())
                     }
-                    _ => address.ip().to_string(),
+                    _ => address.ip().to_canonical().to_string(),
                 },
                 port: NonZeroU16::new(address.port())?,
             });

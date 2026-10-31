@@ -78,24 +78,34 @@ fn publish_reads_ipv4_and_ipv6_with_their_ports() {
 }
 
 #[test]
-fn deserializing_network_directly_refuses_unsupported_tcp_grants() {
-    for (field, entry) in [
-        ("allowTcp", "10.0.0.5:3306"),
-        #[cfg(not(target_os = "macos"))]
-        ("publish", "127.0.0.1:8001"),
-    ] {
-        let settings = json!({
-            "allowedDomains": [],
-            "deniedDomains": [],
-            field: [entry],
-        });
-        let error = serde_json::from_value::<Network>(settings).unwrap_err();
+fn deserializing_network_directly_refuses_unsupported_allow_tcp() {
+    let settings = json!({
+        "allowedDomains": [],
+        "deniedDomains": [],
+        "allowTcp": ["10.0.0.5:3306"],
+    });
+    let error = serde_json::from_value::<Network>(settings).unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            format!("settings key `network.{field}` is not supported yet")
-        );
-    }
+    assert_eq!(
+        error.to_string(),
+        "settings key `network.allowTcp` is not supported yet"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn deserializing_network_directly_refuses_unsupported_publish() {
+    let settings = json!({
+        "allowedDomains": [],
+        "deniedDomains": [],
+        "publish": ["127.0.0.1:8001"],
+    });
+    let error = serde_json::from_value::<Network>(settings).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "settings key `network.publish` is not supported yet"
+    );
 }
 
 #[test]

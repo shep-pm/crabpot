@@ -272,13 +272,21 @@ impl<'de> Deserialize<'de> for Config {
 impl<'de> Deserialize<'de> for Network {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let network = Self::deserialize(deserializer)?;
-        if network.allow_tcp.as_ref().is_some_and(|list| !list.is_empty()) {
+        if network
+            .allow_tcp
+            .as_ref()
+            .is_some_and(|list| !list.is_empty())
+        {
             return Err(serde::de::Error::custom(ConfigError::Unsupported {
                 key: allow_tcp::PATH,
             }));
         }
         #[cfg(not(target_os = "macos"))]
-        if network.publish.as_ref().is_some_and(|list| !list.is_empty()) {
+        if network
+            .publish
+            .as_ref()
+            .is_some_and(|list| !list.is_empty())
+        {
             return Err(serde::de::Error::custom(ConfigError::Unsupported {
                 key: publish::PATH,
             }));

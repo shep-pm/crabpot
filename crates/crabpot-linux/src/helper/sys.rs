@@ -8,6 +8,7 @@
 use core::ffi::c_int;
 use core::sync::atomic::{AtomicI32, Ordering};
 use std::io;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -78,5 +79,29 @@ pub(super) fn block_in_child(command: &mut Command, signals: SigSet) {
     // call on a set copied in, and the error conversion allocates nothing.
     unsafe {
         command.pre_exec(move || signals.thread_block().map_err(io::Error::from));
+    }
+}
+
+/// Has `command`'s child hold `fd` as descriptor `target`, which survives the
+/// `exec` into the program it runs. The parent's copy closes with `command`.
+pub(crate) fn pass_in_child(command: &mut Command, fd: OwnedFd, target: u32) {
+    let target = RawFd::try_from(target).unwrap_or(RawFd::MAX);
+    // SAFETY: the closure runs in the forked child before `exec`, where only
+    // async-signal-safe calls are sound. `dup2` and `fcntl` are, and neither
+    // allocates. `dup2` leaves the copy open across `exec`; when `fd` already
+    // is `target` it does nothing, so the close-on-exec flag is cleared by hand.
+    unsafe {
+        command.pre_exec(move || {
+            let raw = fd.as_raw_fd();
+            let moved = if raw == target {
+                libc::fcntl(raw, libc::F_SETFD, 0)
+            } else {
+                libc::dup2(raw, target)
+            };
+            if moved < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
 }

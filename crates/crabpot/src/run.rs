@@ -20,6 +20,9 @@ use tokio::signal::unix::{SignalKind, signal};
 #[cfg(unix)]
 use tokio::task::JoinHandle;
 
+#[cfg(target_os = "linux")]
+use crabpot_linux::info::Report;
+
 use crate::args::{self, Helper, HelperMode, Invocation, SRT_WIN_FLAG, Subcommand};
 use crate::sandbox::Sandbox;
 use crate::windows::install::{self, Machine};
@@ -172,15 +175,13 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
         None => {}
     }
     match prepare(args) {
-        Ok((_sandbox, command)) => {
+        Ok((_sandbox, command, target)) => {
             #[cfg(target_os = "linux")]
-            let (command, target) = {
+            let command = {
                 let mut command = command;
                 crabpot_linux::helper::hold_signals(&mut command);
-                (command, ForwardTarget::BwrapCommand)
+                command
             };
-            #[cfg(not(target_os = "linux"))]
-            let target = ForwardTarget::Child;
             execute(command, target)
         }
         Err(e) => {
@@ -207,8 +208,11 @@ fn run_subcommand(subcommand: Subcommand) -> i32 {
     }
 }
 
-/// The sandbox, which has to outlive the command, and the command wrapped in it.
-fn prepare(args: impl IntoIterator<Item = OsString>) -> Result<(Sandbox, Command), Box<dyn Error>> {
+/// The sandbox, which has to outlive the command, the command wrapped in it,
+/// and the process that is to get the signals meant for the command.
+fn prepare(
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<(Sandbox, Command, ForwardTarget), Box<dyn Error>> {
     let args = args::parse(args)?;
     let config = load_config(args.settings.as_deref(), env::var_os("HOME"))?;
     let sandbox = Sandbox::start(&config)?;
@@ -230,11 +234,17 @@ fn prepare(args: impl IntoIterator<Item = OsString>) -> Result<(Sandbox, Command
         command.envs(crate::windows::inherited::carried(env::vars_os()));
         command
     };
-    let wrapped = sandbox.command(&command)?;
+    #[cfg(target_os = "linux")]
+    let (wrapped, target) = {
+        let (wrapped, info) = sandbox.command_reporting(&command)?;
+        (wrapped, ForwardTarget::Helper(info))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (wrapped, target) = (sandbox.command(&command)?, ForwardTarget::Child);
     if args.debug {
         eprintln!("crabpot: running {}", debug_line(&wrapped));
     }
-    Ok((sandbox, wrapped))
+    Ok((sandbox, wrapped, target))
 }
 
 /// `command` as `--debug` prints it: the program and its arguments, with the
@@ -293,25 +303,36 @@ fn execute(command: Command, target: ForwardTarget) -> i32 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Which process a signal for the command is sent to.
+#[derive(Debug, Clone)]
 enum ForwardTarget {
+    /// The spawned child itself.
     #[cfg(any(not(target_os = "linux"), test))]
     Child,
+    /// The helper, which only it forwards signals on to the command: bwrap's
+    /// processes do not, and a signal that ends them kills the sandbox.
     #[cfg(target_os = "linux")]
-    BwrapCommand,
+    Helper(crabpot_linux::info::Info),
 }
 
 #[cfg(unix)]
 impl ForwardTarget {
-    fn pid(self, child: u32) -> Option<u32> {
+    /// The process to signal for the spawned `child`, or `None` while it is not
+    /// known yet.
+    fn pid(&self, child: u32) -> Option<u32> {
         match self {
             #[cfg(any(not(target_os = "linux"), test))]
             Self::Child => Some(child),
             #[cfg(target_os = "linux")]
-            Self::BwrapCommand => {
-                // The monitor and namespace init are bwrap; only the helper forwards signals.
-                first_child(first_child(child)?)
-            }
+            Self::Helper(info) => match info.report() {
+                // bwrap reports its namespace init, and the helper is the first
+                // process that starts.
+                Report::Pid(init) => first_child(init),
+                Report::Pending => None,
+                // The report never came: walk down from bwrap, whose first
+                // child is the init.
+                Report::Missing => first_child(first_child(child)?),
+            },
         }
     }
 }
@@ -385,6 +406,7 @@ async fn run(command: Command, target: ForwardTarget) -> i32 {
         Some(pid) => listeners
             .into_iter()
             .map(|(name, mut stream)| {
+                let target = target.clone();
                 tokio::spawn(async move {
                     while stream.recv().await.is_some() {
                         forward(name, pid, |pid| target.pid(pid)).await;

@@ -16,7 +16,7 @@ use core::fmt;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -89,10 +89,24 @@ pub fn init_with_loopback(
     loopback: &[IpAddr],
     argv: &[OsString],
 ) -> Result<i32, InitError> {
+    init_with_tcp(relay, loopback, &[], argv)
+}
+
+/// Runs [`init_with_loopback`] with relay listeners for resolved TCP grants
+///
+/// # Errors
+///
+/// Returns namespace, loopback, relay or command errors as [`init`] does.
+pub fn init_with_tcp(
+    relay: Option<&Path>,
+    loopback: &[IpAddr],
+    tcp: &[SocketAddr],
+    argv: &[OsString],
+) -> Result<i32, InitError> {
     if argv.is_empty() {
         return Err(InitError::NoCommand);
     }
-    let own_user_namespace = enter_namespaces(relay, loopback)?;
+    let own_user_namespace = enter_namespaces(relay, loopback, tcp)?;
     // No other process of the user's may read or trace the helper before its
     // children take over, whatever the namespaces hold.
     set_dumpable()?;
@@ -117,7 +131,11 @@ fn confine_outer(child: Pid) -> Result<(), InitError> {
 
 /// Prepares loopback and the relay, then unshares the PID and mount namespaces.
 /// Returns whether the helper made a user namespace, mapping its ids to themselves.
-fn enter_namespaces(relay: Option<&Path>, loopback: &[IpAddr]) -> Result<bool, InitError> {
+fn enter_namespaces(
+    relay: Option<&Path>,
+    loopback: &[IpAddr],
+    tcp: &[SocketAddr],
+) -> Result<bool, InitError> {
     if let Some(&address) = loopback.first() {
         unshare_user(CloneFlags::CLONE_NEWNET)?;
         sys::loopback_up().map_err(|reason| InitError::Loopback { address, reason })?;
@@ -126,7 +144,7 @@ fn enter_namespaces(relay: Option<&Path>, loopback: &[IpAddr]) -> Result<bool, I
         }
     }
     if let Some(socket) = relay {
-        relay::start(socket)?;
+        relay::start(socket, tcp)?;
     }
     let flags = CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
     if !loopback.is_empty() {

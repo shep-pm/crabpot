@@ -3,7 +3,7 @@
 
 use core::fmt;
 use std::ffi::OsString;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use crate::windows::install::{InstallOptions, UninstallOptions};
@@ -216,7 +216,7 @@ fn flag<'a>(
 /// `init` leaves it out to run a command with no relay.
 pub(crate) const RELAY_FLAG: &str = "--relay";
 
-/// The flag that adds an IP address to the sandbox's loopback.
+/// The flag that adds a loopback address, with an optional TCP relay port.
 pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
 
 /// The helper's options and the command's untouched arguments.
@@ -224,6 +224,7 @@ pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
 pub(crate) struct Init<'a> {
     pub(crate) relay: Option<&'a Path>,
     pub(crate) loopback: Vec<IpAddr>,
+    pub(crate) tcp: Vec<SocketAddr>,
     pub(crate) command: &'a [OsString],
 }
 
@@ -231,6 +232,7 @@ pub(crate) struct Init<'a> {
 pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
     let mut relay = None;
     let mut loopback = Vec::new();
+    let mut tcp = Vec::new();
     while let Some(arg) = args.first() {
         let flag = match arg.to_str() {
             Some(RELAY_FLAG) => RELAY_FLAG,
@@ -245,18 +247,26 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
         if flag == RELAY_FLAG {
             relay = Some(Path::new(value));
         } else {
-            loopback.push(
-                value
-                    .to_str()
-                    .and_then(|value| value.parse().ok())
-                    .ok_or_else(|| ArgsError::InvalidLoopback(value.clone()))?,
-            );
+            let text = value.to_string_lossy();
+            let address = if let Ok(address) = text.parse::<SocketAddr>() {
+                if !tcp.contains(&address) {
+                    tcp.push(address);
+                }
+                address.ip()
+            } else {
+                text.parse()
+                    .map_err(|_| ArgsError::InvalidLoopback(value.clone()))?
+            };
+            if !loopback.contains(&address) {
+                loopback.push(address);
+            }
         }
         args = &args[2..];
     }
     Ok(Init {
         relay,
         loopback,
+        tcp,
         command: args,
     })
 }

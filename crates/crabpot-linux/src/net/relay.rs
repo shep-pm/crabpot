@@ -10,6 +10,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::thread;
 
+use super::ssh::{self, Answer};
+
 use nix::errno::Errno;
 use nix::sys::socket::{
     AddressFamily, Backlog, SockFlag, SockType, SockaddrIn, SockaddrIn6, bind as bind_socket,
@@ -69,14 +71,31 @@ fn listen_on(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
 /// Accepts connections on `listener` for good, and forwards each to the Unix
 /// socket at `socket` on a thread of its own.
 pub fn serve(listener: &TcpListener, socket: &Path) {
+    accept(listener, socket, None);
+}
+
+/// Forwards each connection through an authenticated `CONNECT` to `target`.
+/// The credential is held by the relay, outside the command's PID namespace.
+pub fn serve_tunnel(listener: &TcpListener, socket: &Path, target: &str, basic: &str) {
+    accept(listener, socket, Some((target, basic)));
+}
+
+fn accept(listener: &TcpListener, socket: &Path, tunnel: Option<(&str, &str)>) {
     loop {
         match listener.accept() {
             Ok((client, _)) => {
                 let socket = socket.to_owned();
+                let tunnel = tunnel.map(|(target, basic)| (target.to_owned(), basic.to_owned()));
                 thread::spawn(move || {
                     // A connection that fails is that client's alone: it sees
                     // its end close, which is all a relay can tell it.
-                    let _ = forward(&client, &socket);
+                    let _ = forward_tunnel(
+                        &client,
+                        &socket,
+                        tunnel
+                            .as_ref()
+                            .map(|(target, basic)| (target.as_str(), basic.as_str())),
+                    );
                 });
             }
             Err(_) => thread::sleep(ACCEPT_RETRY),
@@ -88,8 +107,22 @@ pub fn serve(listener: &TcpListener, socket: &Path) {
 /// the other side. When the proxy is done, both sockets are closed, as
 /// upstream's `socat` does, so a client that keeps its end open does not hold
 /// the connection's thread and descriptors.
+#[cfg(test)]
 fn forward(client: &TcpStream, socket: &Path) -> io::Result<()> {
-    let proxy = UnixStream::connect(socket)?;
+    forward_tunnel(client, socket, None)
+}
+
+fn forward_tunnel(
+    client: &TcpStream,
+    socket: &Path,
+    tunnel: Option<(&str, &str)>,
+) -> io::Result<()> {
+    let mut proxy = UnixStream::connect(socket)?;
+    if let Some((target, basic)) = tunnel {
+        if let Answer::Refused(reason) = ssh::handshake(&mut proxy, target, basic)? {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
+        }
+    }
     let (mut from_client, mut to_proxy) = (client.try_clone()?, proxy.try_clone()?);
     let upstream = thread::spawn(move || {
         let copied = io::copy(&mut from_client, &mut to_proxy);

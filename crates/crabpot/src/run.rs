@@ -111,7 +111,8 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
 
 #[cfg(target_os = "linux")]
 fn helper_init(init: args::Init<'_>) -> ! {
-    match crabpot_linux::helper::init_with_loopback(init.relay, &init.loopback, init.command) {
+    match crabpot_linux::helper::init_with_tcp(init.relay, &init.loopback, &init.tcp, init.command)
+    {
         Ok(status) => std::process::exit(status),
         Err(e) => fail(e),
     }

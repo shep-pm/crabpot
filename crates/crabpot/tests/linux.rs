@@ -642,3 +642,53 @@ fn connect_mode_reports_a_refused_host() {
     assert!(text.contains("not-allowed.example:80"), "{text}");
     assert!(text.contains("host is not on the allow list"), "{text}");
 }
+
+#[test]
+fn allow_tcp_exchanges_bytes_with_a_host_address() {
+    let address = nix::ifaddrs::getifaddrs()
+        .unwrap()
+        .find_map(|interface| {
+            let address = interface.address?;
+            let ip = address.as_sockaddr_in()?.ip();
+            (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+        })
+        .expect("the host has a non-loopback IPv4 address");
+    let server = TcpListener::bind((address, 0)).unwrap();
+    let destination = server.local_addr().unwrap();
+    let (done, answered) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut client, _) = server.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        client.read_to_end(&mut request).unwrap();
+        assert_eq!(request, b"ping");
+        client.write_all(b"pong").unwrap();
+        done.send(()).unwrap();
+    });
+    let settings = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("allow-tcp-host.json");
+    fs::write(&settings, format!(r#"{{"network":{{"allowedDomains":[],"deniedDomains":[],"allowTcp":["{destination}"]}}}}"#)).unwrap();
+    let output = crabpot(&[
+        "-s",
+        settings.to_str().unwrap(),
+        "--",
+        "python3",
+        "-c",
+        &format!(
+            r#"
+import socket
+with socket.create_connection(('{address}', {port}), timeout=5) as client:
+    client.sendall(b'ping')
+    client.shutdown(socket.SHUT_WR)
+    assert client.recv(4) == b'pong'
+print('exchanged')
+"#,
+            port = destination.port()
+        ),
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "exchanged\n");
+    answered.recv_timeout(Duration::from_secs(10)).unwrap();
+}

@@ -1,17 +1,56 @@
 //! Linux command wrapping and helper options
 
+use std::collections::HashMap;
 use std::ffi::OsString;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::process::Command;
 use std::sync::PoisonError;
 
-use crabpot_core::proxy::username_for;
+use crabpot_core::config::Config;
+use crabpot_core::proxy::{TcpGrant, username_for};
 use crabpot_linux::info::Info;
 use crabpot_linux::net::env::HostPorts;
 
 use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG};
 
-use super::{Sandbox, WrapError, carry_over, command_line};
+use super::{Sandbox, StartError, WrapError, carry_over, command_line};
+
+pub(super) fn resolve_tcp(config: &Config) -> Result<Vec<TcpGrant>, StartError> {
+    let mut resolved: HashMap<&str, Vec<SocketAddr>> = HashMap::new();
+    let mut grants = Vec::new();
+    for destination in config.network.allow_tcp.as_deref().unwrap_or_default() {
+        let host = destination.host();
+        if !resolved.contains_key(host) {
+            let addresses: Vec<_> =
+                match format!("[{host}]:{}", destination.port()).parse::<SocketAddr>() {
+                    Ok(address) => vec![address],
+                    Err(_) => (host, destination.port())
+                        .to_socket_addrs()
+                        .map_err(|_| StartError::UnresolvedTcp {
+                            host: host.to_owned(),
+                        })?
+                        .collect(),
+                };
+            if addresses.is_empty() {
+                return Err(StartError::UnresolvedTcp {
+                    host: host.to_owned(),
+                });
+            }
+            resolved.insert(host, addresses);
+        }
+        for mut address in resolved[host].iter().copied() {
+            address.set_port(destination.port());
+            let grant = TcpGrant {
+                host: host.to_owned(),
+                address,
+            };
+            if !grants.contains(&grant) {
+                grants.push(grant);
+            }
+        }
+    }
+    Ok(grants)
+}
 
 impl Sandbox {
     /// [`Sandbox::command`], and with it what bwrap reports of the sandbox,
@@ -44,6 +83,12 @@ impl Sandbox {
         ];
         for address in loopback {
             words.extend([OsString::from(LOOPBACK_FLAG), address.to_string().into()]);
+        }
+        for grant in &self.tcp {
+            words.extend([
+                OsString::from(LOOPBACK_FLAG),
+                grant.address.to_string().into(),
+            ]);
         }
         words.push(OsString::from("--"));
         words.push(command.get_program().to_owned());
@@ -88,8 +133,6 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::StartError;
-    use crabpot_core::config::Config;
 
     #[test]
     fn the_helper_receives_each_loopback_address_before_the_command() {

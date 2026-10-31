@@ -12,6 +12,7 @@
 use core::fmt;
 use core::net::Ipv6Addr;
 use std::ffi::OsString;
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use crabpot_core::proxy::basic_for;
@@ -92,6 +93,35 @@ fn command() -> String {
     format!(
         "ssh {MUX_OVERRIDE} -o ProxyCommand=\"/bin/sh -c '\\\"\\{binary}\\\" {CONNECT_REENTRY} {HTTP_PORT} \\\"\\$1\\\" \\\"\\$2\\\"' sh '%h' %p\""
     )
+}
+
+/// Opens a `CONNECT` tunnel without consuming any payload bytes
+///
+/// # Errors
+///
+/// Returns socket errors, or `InvalidData` for an incomplete or oversized response head.
+pub fn handshake<S: Read + Write>(tunnel: &mut S, target: &str, basic: &str) -> io::Result<Answer> {
+    const MAX_HEAD_BYTES: usize = 16 * 1024;
+    tunnel.write_all(request(target, basic).as_bytes())?;
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() >= MAX_HEAD_BYTES {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        match tunnel.read(&mut byte) {
+            Ok(0) => return Err(io::ErrorKind::InvalidData.into()),
+            Ok(_) => head.push(byte[0]),
+            Err(reason) if reason.kind() == io::ErrorKind::Interrupted => {}
+            Err(reason) => return Err(reason),
+        }
+    }
+    Ok(answer(
+        String::from_utf8_lossy(&head)
+            .lines()
+            .next()
+            .unwrap_or_default(),
+    ))
 }
 
 /// What the proxy answered a `CONNECT` with.

@@ -2,7 +2,7 @@
 //! (`src/sandbox/sandbox-manager.ts`), which weighs `network.deniedDomains`
 //! before `network.allowedDomains`.
 
-use super::host;
+use super::{TcpGrant, host};
 use crate::domain::DomainEntry;
 
 /// Why a host was refused. The reason rides in the status line of the 403, as
@@ -35,6 +35,7 @@ pub(super) struct Filter {
     allowed: Vec<DomainEntry>,
     denied: Vec<DomainEntry>,
     strict: bool,
+    tcp: Vec<TcpGrant>,
 }
 
 impl Filter {
@@ -43,7 +44,13 @@ impl Filter {
             allowed: allowed.to_vec(),
             denied: denied.to_vec(),
             strict,
+            tcp: Vec::new(),
         }
+    }
+
+    pub(super) fn with_tcp(mut self, tcp: &[TcpGrant]) -> Self {
+        self.tcp = tcp.to_vec();
+        self
     }
 
     /// The host spelled as the lists judged it, which the caller dials and no
@@ -53,6 +60,21 @@ impl Filter {
             return Err(Denial::MalformedHost);
         }
         let canonical = host::canonical(host);
+        let grants: Vec<_> = self
+            .tcp
+            .iter()
+            .filter(|grant| {
+                grant.address.port() == port
+                    && host::canonical(&grant.address.ip().to_string()) == canonical
+            })
+            .collect();
+        if grants.iter().any(|grant| {
+            self.denied
+                .iter()
+                .any(|entry| entry.matches(&grant.host, port))
+        }) {
+            return Err(Denial::Denied);
+        }
         if self
             .denied
             .iter()
@@ -60,10 +82,11 @@ impl Filter {
         {
             return Err(Denial::Denied);
         }
-        if self
-            .allowed
-            .iter()
-            .any(|entry| entry.matches(&canonical, port))
+        if !grants.is_empty()
+            || self
+                .allowed
+                .iter()
+                .any(|entry| entry.matches(&canonical, port))
         {
             return Ok(canonical);
         }
@@ -96,6 +119,38 @@ mod tests {
             .map(|entry| DomainEntry::parse_denied(entry).unwrap())
             .collect();
         Filter::new(&allowed, &denied, false)
+    }
+
+    #[test]
+    fn an_allow_tcp_address_is_allowed_only_on_its_port() {
+        let filter = filter_with(&[], &[]).with_tcp(&[super::super::TcpGrant {
+            host: "db.example.com".to_owned(),
+            address: "10.0.0.5:5432".parse().unwrap(),
+        }]);
+
+        assert_eq!(filter.check("10.0.0.5", 5432).as_deref(), Ok("10.0.0.5"));
+        assert_eq!(filter.check("10.0.0.5", 5433), Err(Denial::NotAllowed));
+        assert_eq!(filter.check("10.0.0.6", 5432), Err(Denial::NotAllowed));
+        assert_eq!(
+            filter.check("db.example.com", 5432),
+            Err(Denial::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn denied_domains_beat_an_allow_tcp_grant() {
+        for denied in ["10.0.0.5", "db.example.com", "*.example.com:5432", "*"] {
+            let filter = filter_with(&["10.0.0.5"], &[denied]).with_tcp(&[TcpGrant {
+                host: "db.example.com".to_owned(),
+                address: "10.0.0.5:5432".parse().unwrap(),
+            }]);
+
+            assert_eq!(
+                filter.check("10.0.0.5", 5432),
+                Err(Denial::Denied),
+                "{denied}"
+            );
+        }
     }
 
     #[test]

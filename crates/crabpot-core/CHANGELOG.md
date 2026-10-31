@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-31
+
+### Fixed
+
+- Reject IPv4-mapped TCP grant duplicates
+- Refuse unsupported grants in Network deserialization
+- Keep unchecked Network deserialization private
+- Use the supported-key list for Network grants
+- Canonicalize mapped TCP hosts before their scope
+
+
 ## [0.9.0] - 2026-10-31
 
 

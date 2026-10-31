@@ -1,0 +1,9 @@
+{
+  "network": {
+    "allowedDomains": [],
+    "deniedDomains": [],
+    "publish": [],
+    "allowTcp": []
+  },
+  "filesystem": {"denyRead": [], "allowWrite": [], "denyWrite": []}
+}

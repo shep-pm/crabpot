@@ -41,6 +41,99 @@ fn the_default_config_shape_loads() {
 }
 
 #[test]
+fn settings_from_before_tcp_grants_still_load() {
+    assert_eq!(
+        Config::from_json(include_str!("fixtures/before-tcp-grants.json")),
+        Ok(Config::default())
+    );
+}
+
+#[test]
+fn publish_reads_ipv4_and_ipv6_with_their_ports() {
+    let settings = with(
+        "network.publish",
+        json!(["127.0.0.1:8001", "0.0.0.0:3600", "[::1]:1", "[::]:65535"]),
+    );
+    if cfg!(target_os = "macos") {
+        let config = Config::from_json(&settings).unwrap();
+        let addresses: Vec<String> = config
+            .network
+            .publish
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            addresses,
+            ["127.0.0.1:8001", "0.0.0.0:3600", "[::1]:1", "[::]:65535"]
+        );
+    } else {
+        assert_eq!(
+            Config::from_json(&settings),
+            Err(ConfigError::Unsupported {
+                key: "network.publish"
+            })
+        );
+    }
+}
+
+#[test]
+fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
+    let settings = settings_with(
+        "network.allowTcp",
+        json!([
+            "10.0.0.5:3306",
+            "DB.example.com:1",
+            "database:5432",
+            "localhost:80",
+            "[::1]:65535"
+        ]),
+    );
+    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let destinations: Vec<(String, u16)> = network
+        .allow_tcp
+        .unwrap()
+        .iter()
+        .map(|destination| (destination.host().to_owned(), destination.port()))
+        .collect();
+    assert_eq!(
+        destinations,
+        [
+            ("10.0.0.5".to_owned(), 3306),
+            ("db.example.com".to_owned(), 1),
+            ("database".to_owned(), 5432),
+            ("localhost".to_owned(), 80),
+            ("::1".to_owned(), 65535),
+        ]
+    );
+    assert_eq!(
+        Config::from_json(&settings.to_string()),
+        Err(ConfigError::Unsupported {
+            key: "network.allowTcp"
+        })
+    );
+}
+
+#[test]
+fn empty_tcp_grants_load_as_empty_lists_everywhere() {
+    let config = Config::from_json(include_str!("fixtures/empty-tcp-grants.json")).unwrap();
+    assert_eq!(config.network.publish, Some(Vec::new()));
+    assert_eq!(config.network.allow_tcp, Some(Vec::new()));
+}
+
+#[test]
+fn tcp_grants_require_lists_of_strings() {
+    for key in ["network.publish", "network.allowTcp"] {
+        for value in [json!(null), json!("127.0.0.1:80"), json!(true), json!([12])] {
+            assert!(
+                invalid_key(&with(key, value.clone())).starts_with(key),
+                "{key}: {value}"
+            );
+        }
+    }
+}
+
+#[test]
 fn publish_refuses_a_hostname_and_names_the_entry() {
     let entry = "database.example.com:3306";
     match Config::from_json(&with("network.publish", json!([entry]))) {
@@ -60,8 +153,14 @@ fn publish_refuses_bad_ports_and_duplicates_naming_the_entry() {
         (json!(["127.0.0.1:65536"]), "127.0.0.1:65536"),
         (json!(["[::1]"]), "[::1]"),
         (json!(["::1:8001"]), "::1:8001"),
-        (json!(["127.0.0.1:8001", "127.0.0.1:8001"]), "127.0.0.1:8001"),
-        (json!(["[::1]:80", "[0:0:0:0:0:0:0:1]:80"]), "[0:0:0:0:0:0:0:1]:80"),
+        (
+            json!(["127.0.0.1:8001", "127.0.0.1:8001"]),
+            "127.0.0.1:8001",
+        ),
+        (
+            json!(["[::1]:80", "[0:0:0:0:0:0:0:1]:80"]),
+            "[0:0:0:0:0:0:0:1]:80",
+        ),
     ] {
         match Config::from_json(&with("network.publish", entries.clone())) {
             Err(ConfigError::Invalid { key, reason }) => {
@@ -87,8 +186,14 @@ fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
         (json!(["db..example.com:3306"]), "db..example.com:3306"),
         (json!(["db.example.com:+3306"]), "db.example.com:+3306"),
         (json!(["10.0.0.5:3306", "10.0.0.5:3306"]), "10.0.0.5:3306"),
-        (json!(["DB.example.com:3306", "db.example.com:3306"]), "db.example.com:3306"),
-        (json!(["[::1]:80", "[0:0:0:0:0:0:0:1]:80"]), "[0:0:0:0:0:0:0:1]:80"),
+        (
+            json!(["DB.example.com:3306", "db.example.com:3306"]),
+            "db.example.com:3306",
+        ),
+        (
+            json!(["[::1]:80", "[0:0:0:0:0:0:0:1]:80"]),
+            "[0:0:0:0:0:0:0:1]:80",
+        ),
     ] {
         match Config::from_json(&with("network.allowTcp", entries.clone())) {
             Err(ConfigError::Invalid { key, reason }) => {

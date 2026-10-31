@@ -49,6 +49,24 @@ Write a settings file, upstream's format:
 }
 ```
 
+crabpot adds two optional network keys for services. Both take lists of strings,
+and an empty list asks for nothing on every platform:
+
+- `network.publish`, for example `["127.0.0.1:8001", "0.0.0.0:3600", "[::1]:8002"]`,
+  lets the command bind and accept connections on those ports on macOS. The
+  command chooses its bind address as it would unsandboxed. Seatbelt grants each
+  port on every local address, so the address in the entry does not restrict the
+  sandbox rule. `allowLocalBinding: true` already covers these ports. Linux and
+  Windows refuse a nonempty list until publication is supported there.
+- `network.allowTcp`, for example `["10.0.0.5:3306", "db.example.com:5432"]`,
+  names hosts and ports the command may dial directly. Nonempty lists are
+  currently refused on every platform. On macOS, Seatbelt cannot restrict the
+  grant to the requested host: `*:<port>` would admit every host on that port.
+
+`publish` requires IP literals. `allowTcp` accepts DNS names or IP literals.
+IPv6 literals use brackets, as in `[::1]:8001`. Both require a port from 1 to
+65535 and reject duplicates, with an error naming the entry.
+
 Then run a command under it. With no `-s`, crabpot reads `~/.srt-settings.json`, as upstream does.
 
 ```sh

@@ -24,7 +24,9 @@ pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
                 ))
             })?;
         if addresses.contains(&address) {
-            return Err(D::Error::custom(format_args!("duplicate entry \"{entry}\"")));
+            return Err(D::Error::custom(format_args!(
+                "duplicate entry \"{entry}\""
+            )));
         }
         addresses.push(address);
     }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-10-31
+
+### Added
+
+- Allow binding and inbound on published ports
+
+
 ### Additions
 
 - Allow binding and inbound connections on `network.publish` ports ([#290])

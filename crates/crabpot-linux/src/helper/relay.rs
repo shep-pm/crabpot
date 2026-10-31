@@ -216,8 +216,9 @@ fn inside(published: SocketAddr) -> Vec<SocketAddr> {
     }
 }
 
-/// Copies each way until both are done, passing an end of input on to the other
-/// side, then closes both so neither end holds the connection's threads.
+/// Copies each way until both are done. An end of input finishes one direction
+/// only: it is passed on as a half-close, and the other direction goes on until
+/// its own end. Both sockets close once both are done, or at once on an error.
 fn copy_both_ways(left: &TcpStream, right: &TcpStream) -> io::Result<()> {
     let (mut from_left, mut to_right) = (left.try_clone()?, right.try_clone()?);
     let onward = thread::spawn(move || {
@@ -228,11 +229,60 @@ fn copy_both_ways(left: &TcpStream, right: &TcpStream) -> io::Result<()> {
     let (mut from_right, mut to_left) = (right.try_clone()?, left.try_clone()?);
     let back = io::copy(&mut from_right, &mut to_left);
     let _ = to_left.shutdown(Shutdown::Write);
+    if back.is_err() {
+        // The service is gone, so the client's upload has nowhere to go.
+        let _ = left.shutdown(Shutdown::Both);
+        let _ = right.shutdown(Shutdown::Both);
+    }
+    let onward = onward
+        .join()
+        .map_err(|_| io::Error::other("the published copy panicked"));
     let _ = left.shutdown(Shutdown::Both);
     let _ = right.shutdown(Shutdown::Both);
     back?;
-    onward
-        .join()
-        .map_err(|_| io::Error::other("the published copy panicked"))??;
+    onward??;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use super::*;
+
+    /// How long a step may take before it fails, so a stalled copy names the
+    /// step and does not hold the job.
+    const STEP: Duration = Duration::from_secs(10);
+
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let near = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (far, _) = listener.accept().unwrap();
+        for stream in [&near, &far] {
+            stream.set_read_timeout(Some(STEP)).unwrap();
+        }
+        (near, far)
+    }
+
+    #[test]
+    fn a_service_that_stops_sending_still_receives_the_clients_upload() {
+        let (mut client, left) = connected_pair();
+        let (right, mut service) = connected_pair();
+        let relay = thread::spawn(move || copy_both_ways(&left, &right));
+
+        // The service ends its replies at once and goes on reading.
+        service.shutdown(Shutdown::Write).unwrap();
+        // The client sees that end of input only after the relay has passed it
+        // on, so what it sends next comes after the service-to-client copy ended.
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).unwrap();
+        client.write_all(b"upload").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+
+        let mut received = Vec::new();
+        service.read_to_end(&mut received).unwrap();
+        assert!(reply.is_empty());
+        assert_eq!(received, b"upload");
+        relay.join().unwrap().unwrap();
+    }
 }

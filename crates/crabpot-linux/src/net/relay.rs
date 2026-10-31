@@ -110,7 +110,14 @@ fn listen_with(
     port: u16,
     reuse_port: bool,
 ) -> Result<OwnedFd, Errno> {
-    let fd = socket(family, SockType::Stream, SockFlag::empty(), None)?;
+    // A shared listener is the launcher's, which spawns the command: a copy
+    // that survived the exec would keep the port open and accept on it.
+    let flags = if reuse_port {
+        SockFlag::SOCK_CLOEXEC
+    } else {
+        SockFlag::empty()
+    };
+    let fd = socket(family, SockType::Stream, flags, None)?;
     setsockopt(&fd, sockopt::ReuseAddr, &true)?;
     if reuse_port {
         setsockopt(&fd, sockopt::ReusePort, &true)?;
@@ -436,5 +443,17 @@ mod tests {
         let error = bind(port).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_shared_listener_does_not_survive_an_exec() {
+        use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+
+        let listener = listen_shared(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+
+        let flags = fcntl(&listener, FcntlArg::F_GETFD).unwrap();
+
+        assert!(FdFlag::from_bits_truncate(flags).contains(FdFlag::FD_CLOEXEC));
     }
 }

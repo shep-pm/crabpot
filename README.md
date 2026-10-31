@@ -71,8 +71,9 @@ and an empty list asks for nothing on every platform:
 `publish` requires IP literals. `allowTcp` accepts DNS names or IP literals.
 IPv6 literals use brackets, as in `[::1]:8001`. Both require a port from 1 to
 65535 and reject duplicates, with an error naming the entry.
-IPv4 literals use four decimal octets without leading zeros. `allowTcp` retains
-numeric IPv6 scopes, as in `[fe80::1%2]:22`. Linux refuses such an entry at
+IPv4 literals use four decimal octets without leading zeros. `allowTcp` turns
+IPv4-mapped literals into IPv4, dropping their scope. Other IPv6 literals retain
+numeric scopes, as in `[fe80::1%2]:22`. Linux refuses such an entry at
 startup, naming it: a scope is an interface index of the host, which means
 nothing in the sandbox's network namespace.
 

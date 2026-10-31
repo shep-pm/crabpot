@@ -268,6 +268,22 @@ fn allow_tcp_refuses_ipv4_mapped_duplicates() {
 }
 
 #[test]
+fn allow_tcp_refuses_scoped_ipv4_mapped_duplicates() {
+    let settings = with(
+        "network.allowTcp",
+        json!(["[::ffff:10.0.0.5%2]:3306", "10.0.0.5:3306"]),
+    );
+
+    assert_eq!(
+        Config::from_json(&settings),
+        Err(ConfigError::Invalid {
+            key: "network.allowTcp".to_owned(),
+            reason: "duplicate entry \"10.0.0.5:3306\"".to_owned(),
+        })
+    );
+}
+
+#[test]
 fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
     for (entries, bad) in [
         (json!(["db.example.com"]), "db.example.com"),

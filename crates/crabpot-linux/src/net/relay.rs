@@ -5,8 +5,7 @@
 use core::time::Duration;
 use std::io;
 use std::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, SocketAddrV6, TcpListener,
-    TcpStream,
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddrV4, SocketAddrV6, TcpListener, TcpStream,
 };
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -95,7 +94,8 @@ fn listen_on(family: AddressFamily, address: IpAddr, port: u16) -> Result<OwnedF
 ///
 /// The error number of the call that failed. `EADDRINUSE` when a socket without
 /// `SO_REUSEPORT` holds the port.
-pub(super) fn listen_shared(address: SocketAddr) -> Result<TcpListener, Errno> {
+#[cfg(target_os = "linux")]
+pub(super) fn listen_shared(address: std::net::SocketAddr) -> Result<TcpListener, Errno> {
     let family = if address.is_ipv4() {
         AddressFamily::Inet
     } else {

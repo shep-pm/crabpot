@@ -846,6 +846,16 @@ fn a_bad_leaf_beats_an_unsupported_key() {
 }
 
 #[test]
+fn an_invalid_later_group_beats_unsupported_tcp_grants() {
+    let mut settings = minimal();
+    settings["network"]["allowTcp"] = json!(["10.0.0.5:3306"]);
+    settings["network"]["publish"] = json!(["127.0.0.1:8001"]);
+    settings["windows"] = json!({"proxyPortRange": [9, 8]});
+
+    assert_eq!(invalid_key(&settings.to_string()), "windows.proxyPortRange");
+}
+
+#[test]
 fn deserializing_a_config_refuses_what_from_json_refuses() {
     let json = with("network.parentProxy", json!({"http": "http://proxy:3128"}));
 

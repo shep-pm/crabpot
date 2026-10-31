@@ -16,7 +16,7 @@ use core::fmt;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -89,10 +89,27 @@ pub fn init_with_loopback(
     loopback: &[IpAddr],
     argv: &[OsString],
 ) -> Result<i32, InitError> {
+    init_with_tcp(relay, loopback, &[], argv)
+}
+
+/// Runs [`init_with_loopback`] with relay listeners for resolved TCP grants
+///
+/// # Errors
+///
+/// Returns namespace, loopback, relay or command errors as [`init`] does.
+pub fn init_with_tcp(
+    relay: Option<&Path>,
+    loopback: &[IpAddr],
+    tcp: &[SocketAddr],
+    argv: &[OsString],
+) -> Result<i32, InitError> {
     if argv.is_empty() {
         return Err(InitError::NoCommand);
     }
-    let own_user_namespace = enter_namespaces(relay, loopback)?;
+    if relay.is_none() && !tcp.is_empty() {
+        return Err(InitError::TcpWithoutRelay);
+    }
+    let own_user_namespace = enter_namespaces(relay, loopback, tcp)?;
     // No other process of the user's may read or trace the helper before its
     // children take over, whatever the namespaces hold.
     set_dumpable()?;
@@ -117,19 +134,35 @@ fn confine_outer(child: Pid) -> Result<(), InitError> {
 
 /// Prepares loopback and the relay, then unshares the PID and mount namespaces.
 /// Returns whether the helper made a user namespace, mapping its ids to themselves.
-fn enter_namespaces(relay: Option<&Path>, loopback: &[IpAddr]) -> Result<bool, InitError> {
-    if let Some(&address) = loopback.first() {
+fn enter_namespaces(
+    relay: Option<&Path>,
+    loopback: &[IpAddr],
+    tcp: &[SocketAddr],
+) -> Result<bool, InitError> {
+    if let Some(address) = loopback
+        .first()
+        .copied()
+        .or_else(|| tcp.first().map(SocketAddr::ip))
+    {
         unshare_user(CloneFlags::CLONE_NEWNET)?;
         sys::loopback_up().map_err(|reason| InitError::Loopback { address, reason })?;
         for &address in loopback {
             sys::add_loopback(address).map_err(|reason| InitError::Loopback { address, reason })?;
         }
+        // Grants may share an address, and may name one loopback already has.
+        for address in tcp.iter().map(SocketAddr::ip) {
+            if let Err(reason) = sys::add_loopback(address)
+                && reason != Errno::EEXIST
+            {
+                return Err(InitError::Loopback { address, reason });
+            }
+        }
     }
     if let Some(socket) = relay {
-        relay::start(socket)?;
+        relay::start(socket, tcp)?;
     }
     let flags = CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS;
-    if !loopback.is_empty() {
+    if !loopback.is_empty() || !tcp.is_empty() {
         unshare(flags).map_err(|reason| InitError::step(Step::Unshare, reason))?;
         return Ok(true);
     }
@@ -300,6 +333,9 @@ impl fmt::Display for Step {
 pub enum InitError {
     /// There was no program to run.
     NoCommand,
+    /// TCP grants were given with no relay to listen on them, so no connection
+    /// to one would ever be answered.
+    TcpWithoutRelay,
     /// A step failed with an error number.
     Step {
         /// What the helper was doing.
@@ -341,6 +377,9 @@ impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoCommand => write!(f, "no command specified"),
+            Self::TcpWithoutRelay => {
+                write!(f, "TCP grants need a relay to listen on them")
+            }
             Self::Step { step, reason } => write!(f, "cannot {step}: {reason}"),
             Self::Map { path, reason } => write!(f, "cannot write {path}: {reason}"),
             Self::Loopback { address, reason } => {
@@ -362,6 +401,17 @@ mod tests {
     #[test]
     fn no_command_is_refused_before_any_namespace_is_made() {
         assert_eq!(init(None, &[]), Err(InitError::NoCommand));
+    }
+
+    #[test]
+    fn tcp_grants_without_a_relay_are_refused_before_any_namespace_is_made() {
+        let tcp = ["10.0.0.5:5432".parse().unwrap()];
+        let argv = [OsString::from("true")];
+
+        assert_eq!(
+            init_with_tcp(None, &[], &tcp, &argv),
+            Err(InitError::TcpWithoutRelay)
+        );
     }
 
     #[test]

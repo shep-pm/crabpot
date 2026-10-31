@@ -106,6 +106,9 @@ fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
             ("::1".to_owned(), 65535),
         ]
     );
+    #[cfg(target_os = "linux")]
+    assert!(Config::from_json(&settings.to_string()).is_ok());
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(
         Config::from_json(&settings.to_string()),
         Err(ConfigError::Unsupported {
@@ -132,6 +135,9 @@ fn allow_tcp_keeps_ipv6_scopes_as_distinct_destinations() {
         destinations,
         [("fe80::1%2".to_owned(), 22), ("fe80::1%3".to_owned(), 22)]
     );
+    #[cfg(target_os = "linux")]
+    assert!(Config::from_json(&settings.to_string()).is_ok());
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(
         Config::from_json(&settings.to_string()),
         Err(ConfigError::Unsupported {
@@ -258,6 +264,7 @@ fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
+    #[cfg(not(target_os = "linux"))]
     ("network.allowTcp", r#"["10.0.0.5:3306"]"#),
     #[cfg(not(target_os = "macos"))]
     ("network.publish", r#"["127.0.0.1:8001"]"#),

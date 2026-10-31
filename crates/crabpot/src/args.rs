@@ -3,7 +3,7 @@
 
 use core::fmt;
 use std::ffi::OsString;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use crate::windows::install::{InstallOptions, UninstallOptions};
@@ -89,7 +89,8 @@ pub(crate) enum ArgsError {
     NoCommand,
     /// `--crabpot-helper` was followed by a word that names no mode.
     UnknownHelperMode(OsString),
-    /// `--loopback` was followed by something other than an IP address.
+    /// `--loopback` was followed by something other than an IP address or an
+    /// `IP:port` socket address.
     InvalidLoopback(OsString),
 }
 
@@ -216,7 +217,7 @@ fn flag<'a>(
 /// `init` leaves it out to run a command with no relay.
 pub(crate) const RELAY_FLAG: &str = "--relay";
 
-/// The flag that adds an IP address to the sandbox's loopback.
+/// The flag that adds a loopback address, with an optional TCP relay port.
 pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
 
 /// Asks the helper to acknowledge startup through its inherited descriptor.
@@ -228,6 +229,7 @@ pub(crate) struct Init<'a> {
     pub(crate) report_started: bool,
     pub(crate) relay: Option<&'a Path>,
     pub(crate) loopback: Vec<IpAddr>,
+    pub(crate) tcp: Vec<SocketAddr>,
     pub(crate) command: &'a [OsString],
 }
 
@@ -236,6 +238,7 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
     let mut report_started = false;
     let mut relay = None;
     let mut loopback = Vec::new();
+    let mut tcp = Vec::new();
     while let Some(arg) = args.first() {
         let flag = match arg.to_str() {
             Some(REPORT_STARTED_FLAG) => {
@@ -255,12 +258,18 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
         if flag == RELAY_FLAG {
             relay = Some(Path::new(value));
         } else {
-            loopback.push(
-                value
-                    .to_str()
-                    .and_then(|value| value.parse().ok())
-                    .ok_or_else(|| ArgsError::InvalidLoopback(value.clone()))?,
-            );
+            let text = value.to_string_lossy();
+            if let Ok(address) = text.parse::<SocketAddr>() {
+                // Several grants may share an address, so a repeat is no error.
+                if !tcp.contains(&address) {
+                    tcp.push(address);
+                }
+            } else {
+                loopback.push(
+                    text.parse()
+                        .map_err(|_| ArgsError::InvalidLoopback(value.clone()))?,
+                );
+            }
         }
         args = &args[2..];
     }
@@ -268,6 +277,7 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
         report_started,
         relay,
         loopback,
+        tcp,
         command: args,
     })
 }
@@ -477,6 +487,35 @@ mod tests {
             parse_subcommand(os(&["windows-install", "--profile-exclude"])),
             Some(Err(ArgsError::MissingValue("--profile-exclude")))
         );
+    }
+
+    #[test]
+    fn init_reads_tcp_ports_apart_from_loopback_addresses() {
+        let args = os(&[
+            "--loopback",
+            "10.0.0.7",
+            "--loopback",
+            "10.0.0.5:5432",
+            "--loopback",
+            "10.0.0.5:5433",
+            "--loopback",
+            "[fd00::5]:5432",
+            "--",
+            "echo",
+            "--loopback",
+        ]);
+        let init = parse_init(&args).unwrap();
+
+        assert_eq!(init.loopback, ["10.0.0.7".parse::<IpAddr>().unwrap()]);
+        assert_eq!(
+            init.tcp,
+            [
+                "10.0.0.5:5432".parse::<SocketAddr>().unwrap(),
+                "10.0.0.5:5433".parse().unwrap(),
+                "[fd00::5]:5432".parse().unwrap()
+            ]
+        );
+        assert_eq!(init.command, os(&["echo", "--loopback"]));
     }
 
     #[test]

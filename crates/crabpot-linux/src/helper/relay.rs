@@ -8,7 +8,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::thread;
@@ -19,7 +19,8 @@ use nix::unistd::{ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, pipe};
 
 use super::init::{InitError, Step};
 use super::sys;
-use crate::net::relay::{bind, serve};
+use crate::net::relay::{bind, bind_loopback, serve, serve_tunnel};
+use crate::net::ssh;
 use crate::net::{HTTP_PORT, SOCKS_PORT};
 
 /// What the relay writes to the helper once both ports listen.
@@ -35,12 +36,12 @@ const FAILED: u8 = b'-';
 ///
 /// A step that failed, or [`InitError::Relay`] when the relay could not listen
 /// or ended before it did.
-pub(super) fn start(socket: &Path) -> Result<(), InitError> {
+pub(super) fn start(socket: &Path, tcp: &[SocketAddr]) -> Result<(), InitError> {
     let (report, announce) = pipe().map_err(|reason| InitError::step(Step::Relay, reason))?;
     match sys::fork().map_err(|reason| InitError::step(Step::Fork, reason))? {
         ForkResult::Child => {
             drop(report);
-            run(announce, socket)
+            run(announce, socket, tcp)
         }
         ForkResult::Parent { .. } => {
             // Only the relay's copy of the write end is left open, so its
@@ -68,31 +69,73 @@ fn await_ready(mut report: File) -> Result<(), InitError> {
 }
 
 /// The relay process: listens, says so, and forwards until it is killed.
-fn run(announce: OwnedFd, socket: &Path) -> ! {
+fn run(announce: OwnedFd, socket: &Path, tcp: &[SocketAddr]) -> ! {
     // It ends with the helper, however the helper ends.
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
+    // It holds the proxy credential in its environment, which no other process
+    // of the user's may read from `/proc`.
+    let _ = prctl::set_dumpable(false);
     let mut announce = File::from(announce);
-    let (http, socks) = match listen() {
+    let (proxies, tunnels) = match listen(tcp) {
         Ok(listeners) => listeners,
         Err(reason) => {
             let _ = announce.write_all(&[&[FAILED][..], reason.as_bytes()].concat());
             std::process::exit(1)
         }
     };
+    let basic = if tcp.is_empty() {
+        String::new()
+    } else {
+        match std::env::var(ssh::CREDENTIAL_VARIABLE) {
+            Ok(basic) => basic,
+            Err(_) => {
+                let _ = announce.write_all(&[&[FAILED][..], b"missing proxy credential"].concat());
+                std::process::exit(1)
+            }
+        }
+    };
     let _ = announce.write_all(&[READY]);
     drop(announce);
     detach();
     let socket = socket.to_owned();
-    let for_http = socket.clone();
-    thread::spawn(move || serve(&http, &for_http));
-    serve(&socks, &socket);
-    std::process::exit(0)
+    for (listener, address) in tunnels.into_iter().zip(tcp) {
+        let socket = socket.clone();
+        let basic = basic.clone();
+        let target = address.to_string();
+        thread::spawn(move || serve_tunnel(&listener, &socket, &target, &basic));
+    }
+    for listener in proxies {
+        let socket = socket.clone();
+        thread::spawn(move || serve(&listener, &socket));
+    }
+    // The relay ends with the helper, and has nothing else to do until then.
+    loop {
+        thread::park();
+    }
 }
 
-fn listen() -> Result<(TcpListener, TcpListener), String> {
-    let listen =
-        |port| bind(port).map_err(|error| format!("cannot listen on port {port}: {error}"));
-    Ok((listen(HTTP_PORT)?, listen(SOCKS_PORT)?))
+/// The listeners of the HTTP and SOCKS ports, and one for each TCP grant.
+fn listen(tcp: &[SocketAddr]) -> Result<(Vec<TcpListener>, Vec<TcpListener>), String> {
+    let mut proxies = Vec::new();
+    for port in [HTTP_PORT, SOCKS_PORT] {
+        // A wildcard listener holds its port on every address, so a grant at
+        // that port on another address would find it taken. The command
+        // reaches the proxy as `localhost`, which loopback alone answers.
+        let bound = if tcp.iter().any(|address| address.port() == port) {
+            bind_loopback(port)
+        } else {
+            bind(port).map(|listener| vec![listener])
+        };
+        proxies.extend(bound.map_err(|error| format!("cannot listen on port {port}: {error}"))?);
+    }
+    let tunnels = tcp
+        .iter()
+        .map(|address| {
+            TcpListener::bind(address)
+                .map_err(|error| format!("cannot listen on {address}: {error}"))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((proxies, tunnels))
 }
 
 /// Points the relay's standard streams at `/dev/null`, so a host that waits for

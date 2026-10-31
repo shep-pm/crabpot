@@ -559,10 +559,25 @@ fn without_loopback_the_helper_keeps_bwraps_network_namespace() {
 }
 
 #[test]
-fn a_loopback_address_that_cannot_be_added_is_named() {
+fn repeated_loopback_addresses_are_configured_once() {
     let output = helper_in_bwrap(
-        &["--loopback", "10.9.9.9", "--loopback", "10.9.9.9"],
-        "print('ran')",
+        &[
+            "--loopback",
+            "10.9.9.9",
+            "--loopback",
+            "10.9.9.9",
+            "--loopback",
+            "fd00::5",
+            "--loopback",
+            "fd00::5",
+        ],
+        r#"
+import socket
+for family, address in [(socket.AF_INET, '10.9.9.9'), (socket.AF_INET6, 'fd00::5')]:
+    with socket.socket(family, socket.SOCK_STREAM) as server:
+        server.bind((address, 0))
+    print('bound ' + address)
+"#,
     );
 
     assert_eq!(output.status.code(), Some(125), "{output:?}");
@@ -722,4 +737,179 @@ fn connect_mode_reports_a_refused_host() {
     let text = String::from_utf8_lossy(&output.stderr);
     assert!(text.contains("not-allowed.example:80"), "{text}");
     assert!(text.contains("host is not on the allow list"), "{text}");
+}
+
+#[test]
+fn allow_tcp_exchanges_bytes_with_a_host_address() {
+    tcp_round_trip("host", host_address(), None);
+}
+
+#[test]
+fn allow_tcp_exchanges_bytes_with_an_address_resolved_at_startup() {
+    tcp_round_trip("resolved", std::net::Ipv4Addr::LOCALHOST, Some("localhost"));
+}
+
+#[test]
+fn allow_tcp_on_a_proxy_port_of_another_address_still_starts_the_sandbox() {
+    // The relay's HTTP port is 3128 inside the sandbox.
+    tcp_round_trip_on("proxy-port", host_address(), 3128, None);
+}
+
+#[test]
+fn allow_tcp_refuses_a_scoped_ipv6_address_naming_it() {
+    let settings = settings_allowing_tcp("scoped", &["[fe80::1%2]:22".to_owned()]);
+    let output = run_with_tcp(&settings, "print('ran')");
+
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("fe80::1%2"), "{error}");
+}
+
+fn tcp_round_trip(case: &str, address: std::net::Ipv4Addr, host: Option<&str>) {
+    tcp_round_trip_on(case, address, 0, host);
+}
+
+fn tcp_round_trip_on(case: &str, address: std::net::Ipv4Addr, port: u16, host: Option<&str>) {
+    let server = TcpListener::bind((address, port)).unwrap();
+    let destination = server.local_addr().unwrap();
+    let (done, answered) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut client, _) = server.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        client.read_to_end(&mut request).unwrap();
+        assert_eq!(request, b"ping");
+        client.write_all(b"pong").unwrap();
+        done.send(()).unwrap();
+    });
+    let entry = match host {
+        Some(host) => format!("{host}:{}", destination.port()),
+        None => destination.to_string(),
+    };
+    let settings = settings_allowing_tcp(case, &[entry]);
+    let output = run_with_tcp(
+        &settings,
+        &format!(
+            r#"
+import socket
+with socket.create_connection(('{address}', {port}), timeout=5) as client:
+    client.sendall(b'ping')
+    client.shutdown(socket.SHUT_WR)
+    with client.makefile('rb') as response:
+        assert response.read() == b'pong'
+print('exchanged')
+"#,
+            port = destination.port()
+        ),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "exchanged\n");
+    answered.recv_timeout(Duration::from_secs(10)).unwrap();
+}
+
+fn host_address() -> std::net::Ipv4Addr {
+    nix::ifaddrs::getifaddrs()
+        .unwrap()
+        .find_map(|interface| {
+            let address = interface.address?;
+            let ip = address.as_sockaddr_in()?.ip();
+            (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+        })
+        .expect("the host has a non-loopback IPv4 address")
+}
+
+fn settings_allowing_tcp(case: &str, destinations: &[String]) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("allow-tcp-{case}.json"));
+    fs::write(
+        &path,
+        serde_json::json!({
+            "network": {"allowedDomains": [], "deniedDomains": [], "allowTcp": destinations},
+            "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    path
+}
+
+fn run_with_tcp(settings: &std::path::Path, script: &str) -> Output {
+    let child = Command::new(CRABPOT)
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args([
+            "-s",
+            settings.to_str().unwrap(),
+            "--",
+            "python3",
+            "-c",
+            script,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let (done, completed) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = done.send(child.wait_with_output());
+    });
+    match completed.recv_timeout(Duration::from_secs(20)) {
+        Ok(output) => output.unwrap(),
+        Err(error) => {
+            let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
+            panic!("allowTcp command did not end: {error}");
+        }
+    }
+}
+
+#[test]
+fn allow_tcp_refuses_a_host_server_on_an_unlisted_port() {
+    let address = host_address();
+    let server = TcpListener::bind((address, 0)).unwrap();
+    let destination = server.local_addr().unwrap();
+    let listed = TcpListener::bind((address, 0)).unwrap();
+    let settings =
+        settings_allowing_tcp("unlisted-port", &[listed.local_addr().unwrap().to_string()]);
+    let output = run_with_tcp(
+        &settings,
+        &format!(
+            r#"
+import socket
+try:
+    socket.create_connection(('{address}', {port}), timeout=5)
+except OSError:
+    print('refused')
+else:
+    raise AssertionError('unlisted port was reachable')
+"#,
+            port = destination.port()
+        ),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "refused\n");
+    server.set_nonblocking(true).unwrap();
+    assert_eq!(
+        server.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn allow_tcp_refuses_an_unresolved_host_before_running_the_command() {
+    let settings =
+        settings_allowing_tcp("unresolved", &["database.crabpot.invalid:5432".to_owned()]);
+    let output = run_with_tcp(&settings, "print('ran')");
+
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("database.crabpot.invalid"), "{error}");
+    assert!(error.contains("cannot resolve"), "{error}");
 }

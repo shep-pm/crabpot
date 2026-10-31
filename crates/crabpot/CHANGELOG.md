@@ -5,6 +5,21 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-10-31
+
+### Added
+
+- Relay published connections into the sandbox
+- Bind published addresses when wrapping a command
+
+### Fixed
+
+- Set published test addresses after the sandbox starts
+- Refuse publish entries a sandbox cannot serve and map v4-in-v6
+- Keep the published socket pair above the inherited descriptors
+- Stop serving published ports once the sandbox's end of the pair closes
+
+
 ## [0.9.1] - 2026-10-31
 
 ### Fixed

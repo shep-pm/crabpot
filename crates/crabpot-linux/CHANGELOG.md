@@ -5,6 +5,23 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-10-31
+
+### Added
+
+- Relay published connections into the sandbox
+
+### Fixed
+
+- Build listen_shared only where publish uses it
+- Keep the published channel's inside end blocking
+- Close published listeners on exec and keep half-closes open
+- Build the shared-listener flag only on Linux
+- Accept one published connection per poll so a drop always ends
+- Keep the published socket pair above the inherited descriptors
+- Stop serving published ports once the sandbox's end of the pair closes
+
+
 ## [0.9.1] - 2026-10-31
 
 ### Fixed

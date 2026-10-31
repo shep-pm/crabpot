@@ -54,7 +54,7 @@ fn publish_reads_ipv4_and_ipv6_with_their_ports() {
         "network.publish",
         json!(["127.0.0.1:8001", "0.0.0.0:3600", "[::1]:1", "[::]:65535"]),
     );
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
         let config = Config::from_json(&settings).unwrap();
         let addresses: Vec<String> = config
             .network
@@ -81,7 +81,11 @@ fn publish_reads_ipv4_and_ipv6_with_their_ports() {
 fn deserializing_network_directly_applies_platform_grant_support() {
     for (field, entry, supported) in [
         ("allowTcp", "10.0.0.5:3306", cfg!(target_os = "linux")),
-        ("publish", "127.0.0.1:8001", cfg!(target_os = "macos")),
+        (
+            "publish",
+            "127.0.0.1:8001",
+            cfg!(any(target_os = "macos", target_os = "linux")),
+        ),
     ] {
         let settings = json!({
             "allowedDomains": [],
@@ -325,7 +329,7 @@ fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
 const ASKING: &[(&str, &str)] = &[
     #[cfg(not(target_os = "linux"))]
     ("network.allowTcp", r#"["10.0.0.5:3306"]"#),
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     ("network.publish", r#"["127.0.0.1:8001"]"#),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),

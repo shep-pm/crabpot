@@ -119,8 +119,13 @@ fn helper_init(init: args::Init<'_>) -> ! {
         eprintln!("crabpot: cannot report helper startup: {error}");
         std::process::exit(REFUSED);
     }
-    match crabpot_linux::helper::init_with_tcp(init.relay, &init.loopback, &init.tcp, init.command)
-    {
+    match crabpot_linux::helper::init_with_publish(
+        init.relay,
+        &init.loopback,
+        &init.tcp,
+        init.publish_fd,
+        init.command,
+    ) {
         Ok(status) => std::process::exit(status),
         Err(e @ crabpot_linux::helper::InitError::Exec(_)) => fail(e),
         Err(e) => {

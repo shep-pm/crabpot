@@ -17,8 +17,9 @@ crabpot-core.workspace = true
 [target.'cfg(unix)'.dependencies]
 # The user id and the access check that decide whether a directory is denied
 # whole, or a bwrap is executable, and the namespace, mount, `prctl` and wait
-# calls of the helper's init, and the sockets of its relay, through safe calls.
-nix = { version = "0.31", default-features = false, features = ["user", "fs", "process", "sched", "mount", "signal", "socket", "net"] }
+# calls of the helper's init, the sockets of its relay, and the poll of the
+# launcher's published listeners, through safe calls.
+nix = { version = "0.31", default-features = false, features = ["user", "fs", "process", "sched", "mount", "signal", "socket", "net", "poll"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The `O_TMPFILE` open the args file is opened with. std cannot ask for it.

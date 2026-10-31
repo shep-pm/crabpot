@@ -31,7 +31,7 @@ fn backlog() -> Backlog {
 
 /// How long an accept that failed waits before the next, so a descriptor limit
 /// does not spin the relay.
-const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+pub(super) const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 /// Listens on `port` for every address of the machine: IPv6 with IPv4 mapped
 /// onto it, as upstream's `TCP6-LISTEN:<port>,ipv6only=0,fork,reuseaddr,backlog=4096`
@@ -84,8 +84,49 @@ fn listen_on_any(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
 /// A listening socket of `family` on `address` and `port`. An IPv6 socket
 /// that listens on the unspecified address takes IPv4 too.
 fn listen_on(family: AddressFamily, address: IpAddr, port: u16) -> Result<OwnedFd, Errno> {
-    let fd = socket(family, SockType::Stream, SockFlag::empty(), None)?;
+    listen_with(family, address, port, false)
+}
+
+/// Listens on `address` with `SO_REUSEPORT`, so another socket of the same user
+/// that sets it may listen on the same address and port.
+///
+/// # Errors
+///
+/// The error number of the call that failed. `EADDRINUSE` when a socket without
+/// `SO_REUSEPORT` holds the port.
+#[cfg(target_os = "linux")]
+pub(super) fn listen_shared(address: std::net::SocketAddr) -> Result<TcpListener, Errno> {
+    let family = if address.is_ipv4() {
+        AddressFamily::Inet
+    } else {
+        AddressFamily::Inet6
+    };
+    listen_with(family, address.ip(), address.port(), true).map(TcpListener::from)
+}
+
+fn listen_with(
+    family: AddressFamily,
+    address: IpAddr,
+    port: u16,
+    reuse_port: bool,
+) -> Result<OwnedFd, Errno> {
+    // A shared listener is the launcher's, which spawns the command: a copy
+    // that survived the exec would keep the port open and accept on it.
+    #[cfg(target_os = "linux")]
+    let shared = SockFlag::SOCK_CLOEXEC;
+    // Only Linux publishes, so only Linux makes a shared listener.
+    #[cfg(not(target_os = "linux"))]
+    let shared = SockFlag::empty();
+    let flags = if reuse_port {
+        shared
+    } else {
+        SockFlag::empty()
+    };
+    let fd = socket(family, SockType::Stream, flags, None)?;
     setsockopt(&fd, sockopt::ReuseAddr, &true)?;
+    if reuse_port {
+        setsockopt(&fd, sockopt::ReusePort, &true)?;
+    }
     match address {
         IpAddr::V6(ip) => {
             setsockopt(&fd, sockopt::Ipv6V6Only, &!ip.is_unspecified())?;
@@ -407,5 +448,17 @@ mod tests {
         let error = bind(port).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_shared_listener_does_not_survive_an_exec() {
+        use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+
+        let listener = listen_shared(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+
+        let flags = fcntl(&listener, FcntlArg::F_GETFD).unwrap();
+
+        assert!(FdFlag::from_bits_truncate(flags).contains(FdFlag::FD_CLOEXEC));
     }
 }

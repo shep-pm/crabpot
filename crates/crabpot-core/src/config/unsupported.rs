@@ -19,7 +19,7 @@ use serde_json::Value;
 use super::error::ConfigError;
 #[cfg(not(target_os = "linux"))]
 use super::keys::allow_tcp;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use super::keys::publish;
 
 /// Dotted paths, in the order they are checked.
@@ -27,8 +27,9 @@ pub(super) const PATHS: &[&str] = &[
     // Seatbelt cannot restrict a direct grant to the requested host.
     #[cfg(not(target_os = "linux"))]
     allow_tcp::PATH,
-    // Local port publication is only implemented by the macOS profile.
-    #[cfg(not(target_os = "macos"))]
+    // Local port publication is implemented by the macOS profile and the Linux
+    // launcher's relay.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     publish::PATH,
     // Upstream's keys that act on macOS, with what each does.
     // Lets a command use every Unix socket.

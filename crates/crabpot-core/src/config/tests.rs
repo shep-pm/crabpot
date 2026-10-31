@@ -115,6 +115,32 @@ fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
 }
 
 #[test]
+fn allow_tcp_keeps_ipv6_scopes_as_distinct_destinations() {
+    let settings = settings_with(
+        "network.allowTcp",
+        json!(["[fe80::1%2]:22", "[fe80::1%3]:22"]),
+    );
+    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let destinations: Vec<(String, u16)> = network
+        .allow_tcp
+        .unwrap()
+        .iter()
+        .map(|destination| (destination.host().to_owned(), destination.port()))
+        .collect();
+
+    assert_eq!(
+        destinations,
+        [("fe80::1%2".to_owned(), 22), ("fe80::1%3".to_owned(), 22)]
+    );
+    assert_eq!(
+        Config::from_json(&settings.to_string()),
+        Err(ConfigError::Unsupported {
+            key: "network.allowTcp"
+        })
+    );
+}
+
+#[test]
 fn empty_tcp_grants_load_as_empty_lists_everywhere() {
     let config = Config::from_json(include_str!("fixtures/empty-tcp-grants.json")).unwrap();
     assert_eq!(config.network.publish, Some(Vec::new()));
@@ -173,6 +199,26 @@ fn publish_refuses_bad_ports_and_duplicates_naming_the_entry() {
 }
 
 #[test]
+fn allow_tcp_refuses_malformed_numeric_hosts_naming_the_entry() {
+    let valid = "10.0.0.5:3306";
+    let overflowing_octet = (u16::from(u8::MAX) + 1).to_string();
+    for entry in [
+        valid.replacen("10", &overflowing_octet, 1),
+        format!("0{valid}"),
+        valid.replace(".0.0.", "."),
+        valid.replace(':', ".:"),
+    ] {
+        match Config::from_json(&with("network.allowTcp", json!([entry]))) {
+            Err(ConfigError::Invalid { key, reason }) => {
+                assert_eq!(key, "network.allowTcp");
+                assert!(reason.contains(&entry), "{reason}");
+            }
+            other => panic!("{entry}: expected Invalid, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
     for (entries, bad) in [
         (json!(["db.example.com"]), "db.example.com"),
@@ -193,6 +239,10 @@ fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
         (
             json!(["[::1]:80", "[0:0:0:0:0:0:0:1]:80"]),
             "[0:0:0:0:0:0:0:1]:80",
+        ),
+        (
+            json!(["[fe80::1%2]:22", "[fe80:0:0:0:0:0:0:1%2]:22"]),
+            "[fe80:0:0:0:0:0:0:1%2]:22",
         ),
     ] {
         match Config::from_json(&with("network.allowTcp", entries.clone())) {

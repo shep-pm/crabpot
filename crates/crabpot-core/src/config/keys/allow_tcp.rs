@@ -18,6 +18,8 @@ pub struct TcpDestination {
 
 impl TcpDestination {
     /// The DNS name in lowercase, or the IP literal without brackets
+    ///
+    /// An IPv6 literal retains its nonzero numeric scope as `%<scope_id>`.
     pub fn host(&self) -> &str {
         &self.host
     }
@@ -30,7 +32,12 @@ impl TcpDestination {
     fn parse(entry: &str) -> Option<Self> {
         if let Ok(address) = entry.parse::<SocketAddr>() {
             return Some(Self {
-                host: address.ip().to_string(),
+                host: match address {
+                    SocketAddr::V6(address) if address.scope_id() != 0 => {
+                        format!("{}%{}", address.ip(), address.scope_id())
+                    }
+                    _ => address.ip().to_string(),
+                },
                 port: NonZeroU16::new(address.port())?,
             });
         }
@@ -41,6 +48,9 @@ impl TcpDestination {
         let host = host.strip_suffix('.').unwrap_or(host);
         let valid_host = !host.is_empty()
             && host.len() <= 253
+            && !host
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.')
             && host.split('.').all(|label| {
                 !label.is_empty()
                     && label.len() <= 63

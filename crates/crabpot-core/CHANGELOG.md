@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixes
+
+- Reject malformed numeric `allowTcp` hosts instead of treating them as DNS names ([#290])
+- Preserve numeric IPv6 scopes in `allowTcp` destinations and duplicate checks ([#290])
+
 ### Additions
 
 - Parse `network.publish` and `network.allowTcp`, refusing grants unsupported on the current platform ([#290])

@@ -235,18 +235,18 @@ mod tests {
         );
     }
 
+    /// A started sandbox that publishes `addresses`. They are set after the
+    /// start, since a settings file refuses port 0, which these cases need to
+    /// bind a port nothing else holds.
     fn started_publishing(addresses: &[&str]) -> Option<Sandbox> {
-        let config = Config::from_json(&format!(
-            r#"{{"network":{{"allowedDomains":[],"deniedDomains":[],"publish":{addresses:?}}},
-                "filesystem":{{"denyRead":[],"allowWrite":[],"denyWrite":[]}}}}"#
-        ))
-        .unwrap();
-        match Sandbox::start(&config) {
-            Ok(sandbox) => Some(sandbox),
+        let mut sandbox = match Sandbox::start(&Config::default()) {
+            Ok(sandbox) => sandbox,
             // The machine has no bwrap to wrap a command in.
-            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => None,
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => return None,
             Err(error) => panic!("{error}"),
-        }
+        };
+        sandbox.publish = addresses.iter().map(|text| text.parse().unwrap()).collect();
+        Some(sandbox)
     }
 
     fn init_of(wrapped: &Command) -> Vec<OsString> {

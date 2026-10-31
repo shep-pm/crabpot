@@ -5,7 +5,6 @@ use std::net::SocketAddr;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
-#[cfg(not(target_os = "macos"))]
 pub(crate) const PATH: &str = "network.publish";
 
 pub(crate) fn deserialize<'de, D: Deserializer<'de>>(

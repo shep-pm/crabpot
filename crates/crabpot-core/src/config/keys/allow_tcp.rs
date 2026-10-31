@@ -6,7 +6,6 @@ use std::num::NonZeroU16;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
-#[cfg(not(target_os = "linux"))]
 pub(crate) const PATH: &str = "network.allowTcp";
 
 /// A DNS name or IP literal with a nonzero TCP port
@@ -21,6 +20,7 @@ impl TcpDestination {
     /// The DNS name in lowercase, or the IP literal without brackets
     ///
     /// An IPv6 literal retains its nonzero numeric scope as `%<scope_id>`.
+    /// IPv4-mapped literals become IPv4 and carry no scope.
     pub fn host(&self) -> &str {
         &self.host
     }
@@ -32,12 +32,13 @@ impl TcpDestination {
 
     fn parse(entry: &str) -> Option<Self> {
         if let Ok(address) = entry.parse::<SocketAddr>() {
+            let ip = address.ip().to_canonical();
             return Some(Self {
                 host: match address {
-                    SocketAddr::V6(address) if address.scope_id() != 0 => {
-                        format!("{}%{}", address.ip(), address.scope_id())
+                    SocketAddr::V6(address) if ip.is_ipv6() && address.scope_id() != 0 => {
+                        format!("{ip}%{}", address.scope_id())
                     }
-                    _ => address.ip().to_string(),
+                    _ => ip.to_string(),
                 },
                 port: NonZeroU16::new(address.port())?,
             });

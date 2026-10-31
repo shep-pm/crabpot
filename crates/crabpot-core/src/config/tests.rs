@@ -78,6 +78,33 @@ fn publish_reads_ipv4_and_ipv6_with_their_ports() {
 }
 
 #[test]
+fn deserializing_network_directly_applies_platform_grant_support() {
+    for (field, entry, supported) in [
+        ("allowTcp", "10.0.0.5:3306", cfg!(target_os = "linux")),
+        ("publish", "127.0.0.1:8001", cfg!(target_os = "macos")),
+    ] {
+        let settings = json!({
+            "allowedDomains": [],
+            "deniedDomains": [],
+            field: [entry],
+        });
+        for result in [
+            Network::deserialize(&settings),
+            serde_json::from_value::<Network>(settings.clone()),
+        ] {
+            if supported {
+                assert!(result.is_ok(), "{field}: {result:?}");
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!("settings key `network.{field}` is not supported yet")
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
     let settings = settings_with(
         "network.allowTcp",
@@ -89,7 +116,7 @@ fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
             "[::1]:65535"
         ]),
     );
-    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let network = NetworkShape::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()
@@ -123,7 +150,7 @@ fn allow_tcp_keeps_ipv6_scopes_as_distinct_destinations() {
         "network.allowTcp",
         json!(["[fe80::1%2]:22", "[fe80::1%3]:22"]),
     );
-    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let network = NetworkShape::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()
@@ -222,6 +249,38 @@ fn allow_tcp_refuses_malformed_numeric_hosts_naming_the_entry() {
             other => panic!("{entry}: expected Invalid, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn allow_tcp_refuses_ipv4_mapped_duplicates() {
+    let settings = with(
+        "network.allowTcp",
+        json!(["[::ffff:10.0.0.5]:3306", "10.0.0.5:3306"]),
+    );
+
+    assert_eq!(
+        Config::from_json(&settings),
+        Err(ConfigError::Invalid {
+            key: "network.allowTcp".to_owned(),
+            reason: "duplicate entry \"10.0.0.5:3306\"".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn allow_tcp_refuses_scoped_ipv4_mapped_duplicates() {
+    let settings = with(
+        "network.allowTcp",
+        json!(["[::ffff:10.0.0.5%2]:3306", "10.0.0.5:3306"]),
+    );
+
+    assert_eq!(
+        Config::from_json(&settings),
+        Err(ConfigError::Invalid {
+            key: "network.allowTcp".to_owned(),
+            reason: "duplicate entry \"10.0.0.5:3306\"".to_owned(),
+        })
+    );
 }
 
 #[test]
@@ -784,6 +843,16 @@ fn a_bad_leaf_beats_an_unsupported_key() {
         Config::from_json(&settings.to_string()),
         Err(ConfigError::Invalid { .. })
     ));
+}
+
+#[test]
+fn an_invalid_later_group_beats_unsupported_tcp_grants() {
+    let mut settings = minimal();
+    settings["network"]["allowTcp"] = json!(["10.0.0.5:3306"]);
+    settings["network"]["publish"] = json!(["127.0.0.1:8001"]);
+    settings["windows"] = json!({"proxyPortRange": [9, 8]});
+
+    assert_eq!(invalid_key(&settings.to_string()), "windows.proxyPortRange");
 }
 
 #[test]

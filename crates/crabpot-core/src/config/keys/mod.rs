@@ -7,6 +7,7 @@
 pub(crate) mod allow_local_binding;
 pub(crate) mod allow_mach_lookup;
 pub(crate) mod allow_read;
+pub(crate) mod allow_tcp;
 pub(crate) mod allow_unix_sockets;
 pub(crate) mod allow_write;
 pub(crate) mod allowed_domains;

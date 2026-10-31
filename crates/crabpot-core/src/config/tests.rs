@@ -73,6 +73,33 @@ fn publish_refuses_bad_ports_and_duplicates_naming_the_entry() {
     }
 }
 
+#[test]
+fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
+    for (entries, bad) in [
+        (json!(["db.example.com"]), "db.example.com"),
+        (json!(["10.0.0.5:0"]), "10.0.0.5:0"),
+        (json!(["db.example.com:65536"]), "db.example.com:65536"),
+        (json!(["[::1]"]), "[::1]"),
+        (json!(["::1:3306"]), "::1:3306"),
+        (json!(["*.example.com:3306"]), "*.example.com:3306"),
+        (json!(["bad host:3306"]), "bad host:3306"),
+        (json!(["-db.example.com:3306"]), "-db.example.com:3306"),
+        (json!(["db..example.com:3306"]), "db..example.com:3306"),
+        (json!(["db.example.com:+3306"]), "db.example.com:+3306"),
+        (json!(["10.0.0.5:3306", "10.0.0.5:3306"]), "10.0.0.5:3306"),
+        (json!(["DB.example.com:3306", "db.example.com:3306"]), "db.example.com:3306"),
+        (json!(["[::1]:80", "[0:0:0:0:0:0:0:1]:80"]), "[0:0:0:0:0:0:0:1]:80"),
+    ] {
+        match Config::from_json(&with("network.allowTcp", entries.clone())) {
+            Err(ConfigError::Invalid { key, reason }) => {
+                assert_eq!(key, "network.allowTcp");
+                assert!(reason.contains(bad), "{entries}: {reason}");
+            }
+            other => panic!("{entries}: expected Invalid, got {other:?}"),
+        }
+    }
+}
+
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[

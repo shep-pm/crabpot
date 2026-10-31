@@ -24,6 +24,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 pub use self::error::ConfigError;
+pub use self::keys::allow_tcp::TcpDestination;
 pub use self::keys::mitm_proxy::MitmProxy;
 pub use self::keys::windows::Windows;
 pub use crate::address::AddressRange;
@@ -31,7 +32,7 @@ pub use crate::domain::{DomainEntry, DomainParseError, DomainPattern};
 pub use crate::path_entries::PathEntry;
 
 use self::keys::{
-    allow_local_binding, allow_mach_lookup, allow_read, allow_unix_sockets, allow_write,
+    allow_local_binding, allow_mach_lookup, allow_read, allow_tcp, allow_unix_sockets, allow_write,
     allowed_domains, denied_domains, denied_resolved_addresses, deny_mach_lookup, deny_read,
     deny_write, enable_weaker_network_isolation, mitm_proxy, publish, strict_allowlist,
 };
@@ -106,6 +107,10 @@ pub struct Network {
     /// A key of crabpot's own, honoured on macOS only.
     #[serde(default, deserialize_with = "publish::deserialize")]
     pub publish: Option<Vec<SocketAddr>>,
+    /// `allowTcp`: hosts and ports a command may dial directly. A key of
+    /// crabpot's own, refused when nonempty on every platform until supported.
+    #[serde(default, deserialize_with = "allow_tcp::deserialize")]
+    pub allow_tcp: Option<Vec<TcpDestination>>,
     /// `allowMachLookup`: the Mach services a command may look up, which the
     /// macOS profile applies.
     #[serde(default, deserialize_with = "allow_mach_lookup::deserialize")]

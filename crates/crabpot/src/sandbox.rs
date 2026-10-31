@@ -339,6 +339,12 @@ pub enum StartError {
         /// The configured name that returned no addresses.
         host: String,
     },
+    /// Linux: an `allowTcp` IPv6 literal carries a scope, which names an interface
+    /// of the host and has no meaning in the sandbox's network namespace.
+    ScopedTcp {
+        /// The configured literal with its `%<scope_id>`.
+        host: String,
+    },
     /// Windows: every loopback port of the proxy port range is taken, so the
     /// proxy has no port to listen on. Each sandbox takes two ports there.
     ProxyRangeFull {
@@ -514,6 +520,10 @@ impl fmt::Display for StartError {
             Self::UnresolvedTcp { host } => {
                 write!(f, "cannot resolve network.allowTcp host {host}")
             }
+            Self::ScopedTcp { host } => write!(
+                f,
+                "network.allowTcp host {host} has an interface scope, which the sandbox's network cannot use"
+            ),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
             Self::ProxyRangeFull { first, last } => write!(
                 f,

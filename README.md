@@ -72,7 +72,9 @@ and an empty list asks for nothing on every platform:
 IPv6 literals use brackets, as in `[::1]:8001`. Both require a port from 1 to
 65535 and reject duplicates, with an error naming the entry.
 IPv4 literals use four decimal octets without leading zeros. `allowTcp` retains
-numeric IPv6 scopes, as in `[fe80::1%2]:22`.
+numeric IPv6 scopes, as in `[fe80::1%2]:22`. Linux refuses such an entry at
+startup, naming it: a scope is an interface index of the host, which means
+nothing in the sandbox's network namespace.
 
 Then run a command under it. With no `-s`, crabpot reads `~/.srt-settings.json`, as upstream does.
 

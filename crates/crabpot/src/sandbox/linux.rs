@@ -20,6 +20,13 @@ pub(super) fn resolve_tcp(config: &Config) -> Result<Vec<TcpGrant>, StartError> 
     let mut grants = Vec::new();
     for destination in config.network.allow_tcp.as_deref().unwrap_or_default() {
         let host = destination.host();
+        // The scope is an interface index of the host. The sandbox's network
+        // namespace has its own, and the proxy's filter refuses a zone.
+        if host.contains('%') {
+            return Err(StartError::ScopedTcp {
+                host: host.to_owned(),
+            });
+        }
         if !resolved.contains_key(host) {
             let addresses: Vec<_> =
                 match format!("[{host}]:{}", destination.port()).parse::<SocketAddr>() {
@@ -133,6 +140,23 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scoped_ipv6_grant_refuses_the_sandbox_naming_it() {
+        let config = Config::from_json(
+            r#"{"network":{"allowedDomains":[],"deniedDomains":[],"allowTcp":["[fe80::1%2]:22"]},
+                "filesystem":{"denyRead":[],"allowWrite":[],"denyWrite":[]}}"#,
+        )
+        .unwrap();
+
+        let error = resolve_tcp(&config).unwrap_err();
+
+        assert!(
+            matches!(&error, StartError::ScopedTcp { host } if host == "fe80::1%2"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("fe80::1%2"), "{error}");
+    }
 
     #[test]
     fn the_helper_receives_each_loopback_address_before_the_command() {

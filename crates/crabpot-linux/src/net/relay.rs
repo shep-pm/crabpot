@@ -4,7 +4,9 @@
 
 use core::time::Duration;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddrV4, SocketAddrV6, TcpListener, TcpStream};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddrV4, SocketAddrV6, TcpListener, TcpStream,
+};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -39,30 +41,63 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 ///
 /// The [`io::Error`] of binding. A port that is taken is [`io::ErrorKind::AddrInUse`].
 pub fn bind(port: u16) -> io::Result<TcpListener> {
-    match listen_on(AddressFamily::Inet6, port) {
+    match listen_on_any(AddressFamily::Inet6, port) {
         // A taken port is taken for IPv4 too, with the two sharing it.
         Err(Errno::EADDRINUSE) => Err(Errno::EADDRINUSE.into()),
-        Err(_) => listen_on(AddressFamily::Inet, port).map_err(io::Error::from),
+        Err(_) => listen_on_any(AddressFamily::Inet, port).map_err(io::Error::from),
         Ok(listener) => Ok(listener),
     }
     .map(TcpListener::from)
 }
 
-/// A listening socket of `family` on `port`, for every address.
-fn listen_on(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
+/// Listens on `port` for the loopback addresses `127.0.0.1` and `::1` alone,
+/// so the port stays free on every other address of the sandbox. A machine with
+/// no IPv6 listens on IPv4 only.
+///
+/// # Errors
+///
+/// The [`io::Error`] of binding `127.0.0.1`, or of binding `::1` when that is
+/// taken. A port that is taken is [`io::ErrorKind::AddrInUse`].
+pub fn bind_loopback(port: u16) -> io::Result<Vec<TcpListener>> {
+    let mut listeners = vec![TcpListener::from(
+        listen_on(AddressFamily::Inet, Ipv4Addr::LOCALHOST.into(), port)
+            .map_err(io::Error::from)?,
+    )];
+    match listen_on(AddressFamily::Inet6, Ipv6Addr::LOCALHOST.into(), port) {
+        Ok(listener) => listeners.push(listener.into()),
+        Err(Errno::EADDRINUSE) => return Err(Errno::EADDRINUSE.into()),
+        // The machine has no IPv6.
+        Err(_) => {}
+    }
+    Ok(listeners)
+}
+
+fn listen_on_any(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
+    let address = if family == AddressFamily::Inet6 {
+        Ipv6Addr::UNSPECIFIED.into()
+    } else {
+        Ipv4Addr::UNSPECIFIED.into()
+    };
+    listen_on(family, address, port)
+}
+
+/// A listening socket of `family` on `address` and `port`. An IPv6 socket
+/// that listens on the unspecified address takes IPv4 too.
+fn listen_on(family: AddressFamily, address: IpAddr, port: u16) -> Result<OwnedFd, Errno> {
     let fd = socket(family, SockType::Stream, SockFlag::empty(), None)?;
     setsockopt(&fd, sockopt::ReuseAddr, &true)?;
-    if family == AddressFamily::Inet6 {
-        setsockopt(&fd, sockopt::Ipv6V6Only, &false)?;
-        bind_socket(
+    match address {
+        IpAddr::V6(ip) => {
+            setsockopt(&fd, sockopt::Ipv6V6Only, &!ip.is_unspecified())?;
+            bind_socket(
+                fd.as_raw_fd(),
+                &SockaddrIn6::from(SocketAddrV6::new(ip, port, 0, 0)),
+            )?;
+        }
+        IpAddr::V4(ip) => bind_socket(
             fd.as_raw_fd(),
-            &SockaddrIn6::from(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0)),
-        )?;
-    } else {
-        bind_socket(
-            fd.as_raw_fd(),
-            &SockaddrIn::from(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
-        )?;
+            &SockaddrIn::from(SocketAddrV4::new(ip, port)),
+        )?,
     }
     listen(&fd, backlog())?;
     Ok(fd)
@@ -331,6 +366,19 @@ mod tests {
         ] {
             assert_eq!(exchange(address, b"x"), b"got:x", "{address}");
         }
+    }
+
+    #[test]
+    fn a_loopback_listener_forwards_a_loopback_client() {
+        let port = bind(0).unwrap().local_addr().unwrap().port();
+        let listeners = bind_loopback(port).unwrap();
+        let (_tree, socket) = answering_socket("loopback");
+        for listener in listeners {
+            let socket = socket.clone();
+            thread::spawn(move || serve(&listener, &socket));
+        }
+
+        assert_eq!(exchange((Ipv4Addr::LOCALHOST, port).into(), b"x"), b"got:x");
     }
 
     #[test]

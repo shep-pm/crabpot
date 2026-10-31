@@ -666,8 +666,29 @@ fn allow_tcp_exchanges_bytes_with_an_address_resolved_at_startup() {
     tcp_round_trip("resolved", std::net::Ipv4Addr::LOCALHOST, Some("localhost"));
 }
 
+#[test]
+fn allow_tcp_on_a_proxy_port_of_another_address_still_starts_the_sandbox() {
+    // The relay's HTTP port is 3128 inside the sandbox.
+    tcp_round_trip_on("proxy-port", host_address(), 3128, None);
+}
+
+#[test]
+fn allow_tcp_refuses_a_scoped_ipv6_address_naming_it() {
+    let settings = settings_allowing_tcp("scoped", &["[fe80::1%2]:22".to_owned()]);
+    let output = run_with_tcp(&settings, "print('ran')");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("fe80::1%2"), "{error}");
+}
+
 fn tcp_round_trip(case: &str, address: std::net::Ipv4Addr, host: Option<&str>) {
-    let server = TcpListener::bind((address, 0)).unwrap();
+    tcp_round_trip_on(case, address, 0, host);
+}
+
+fn tcp_round_trip_on(case: &str, address: std::net::Ipv4Addr, port: u16, host: Option<&str>) {
+    let server = TcpListener::bind((address, port)).unwrap();
     let destination = server.local_addr().unwrap();
     let (done, answered) = mpsc::channel();
     thread::spawn(move || {

@@ -53,11 +53,20 @@ crabpot adds two optional network keys for services. Both take lists of strings,
 and an empty list asks for nothing on every platform:
 
 - `network.publish`, for example `["127.0.0.1:8001", "0.0.0.0:3600", "[::1]:8002"]`,
-  lets the command bind and accept connections on those ports on macOS. The
-  command chooses its bind address as it would unsandboxed. Seatbelt grants each
-  port on every local address, so the address in the entry does not restrict the
-  sandbox rule. `allowLocalBinding: true` already covers these ports. Linux and
-  Windows refuse a nonempty list until publication is supported there.
+  lets the command bind and accept connections on those ports on macOS and
+  Linux. On macOS the command chooses its bind address as it would unsandboxed.
+  Seatbelt grants each port on every local address, so the address in the entry
+  does not restrict the sandbox rule. `allowLocalBinding: true` already covers
+  these ports. On Linux the command has a network namespace of its own, so the
+  launcher listens on each address on the host and passes every connection into
+  the sandbox, where a relay dials the same address and port. The command binds
+  that address as it would unsandboxed. An address that is neither loopback nor
+  a wildcard is added to the sandbox's `lo`. The listeners set `SO_REUSEPORT`,
+  so a second sandbox can publish the same port during a cutover. A port nothing
+  holds a listener on inside closes that one connection. An address the host
+  cannot listen on, such as a port held without `SO_REUSEPORT`, refuses the
+  sandbox and names it. Windows refuses a nonempty list until publication is
+  supported there.
 - `network.allowTcp`, for example `["10.0.0.5:3306", "db.example.com:5432"]`,
   names hosts and ports the command may dial directly on Linux. crabpot resolves
   each host once at startup and refuses the sandbox if a name does not resolve.

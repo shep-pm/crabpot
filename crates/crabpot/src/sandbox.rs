@@ -15,7 +15,7 @@ use crabpot_core::config::Config;
 use crabpot_core::proxy::PortRange;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::proxy::Proxy;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use crabpot_core::proxy::username_for;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crabpot_core::tmpdir::{Origin, TmpdirError};
@@ -656,7 +656,7 @@ impl core::error::Error for WrapError {}
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(windows))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     use super::*;
 
     #[cfg(target_os = "macos")]

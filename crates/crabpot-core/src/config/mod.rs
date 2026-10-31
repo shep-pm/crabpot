@@ -105,7 +105,7 @@ pub struct Network {
     /// port on every local address. The command chooses its bind address.
     pub publish: Option<Vec<SocketAddr>>,
     /// `allowTcp`: hosts and ports a command may dial directly. A key of
-    /// crabpot's own, refused when nonempty on every platform until supported.
+    /// crabpot's own, honoured on Linux and refused elsewhere when nonempty.
     pub allow_tcp: Option<Vec<TcpDestination>>,
     /// `allowMachLookup`: the Mach services a command may look up, which the
     /// macOS profile applies.
@@ -288,24 +288,25 @@ struct NetworkShape {
 impl<'de> Deserialize<'de> for Network {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let network = NetworkShape::deserialize(deserializer)?;
-        if network
-            .allow_tcp
-            .as_ref()
-            .is_some_and(|list| !list.is_empty())
-        {
-            return Err(serde::de::Error::custom(ConfigError::Unsupported {
-                key: allow_tcp::PATH,
-            }));
-        }
-        #[cfg(not(target_os = "macos"))]
-        if network
-            .publish
-            .as_ref()
-            .is_some_and(|list| !list.is_empty())
-        {
-            return Err(serde::de::Error::custom(ConfigError::Unsupported {
-                key: publish::PATH,
-            }));
+        for (key, requested) in [
+            (
+                allow_tcp::PATH,
+                network
+                    .allow_tcp
+                    .as_ref()
+                    .is_some_and(|list| !list.is_empty()),
+            ),
+            (
+                publish::PATH,
+                network
+                    .publish
+                    .as_ref()
+                    .is_some_and(|list| !list.is_empty()),
+            ),
+        ] {
+            if requested && unsupported::PATHS.contains(&key) {
+                return Err(serde::de::Error::custom(ConfigError::Unsupported { key }));
+            }
         }
         Ok(network)
     }

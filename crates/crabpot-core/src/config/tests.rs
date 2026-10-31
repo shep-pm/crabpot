@@ -78,44 +78,29 @@ fn publish_reads_ipv4_and_ipv6_with_their_ports() {
 }
 
 #[test]
-fn deserializing_network_directly_refuses_unsupported_allow_tcp() {
-    let settings = json!({
-        "allowedDomains": [],
-        "deniedDomains": [],
-        "allowTcp": ["10.0.0.5:3306"],
-    });
-    let errors = [
-        Network::deserialize(&settings).unwrap_err().to_string(),
-        serde_json::from_value::<Network>(settings)
-            .unwrap_err()
-            .to_string(),
-    ];
-
-    for error in errors {
-        assert_eq!(
-            error,
-            "settings key `network.allowTcp` is not supported yet"
-        );
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-#[test]
-fn deserializing_network_directly_refuses_unsupported_publish() {
-    let settings = json!({
-        "allowedDomains": [],
-        "deniedDomains": [],
-        "publish": ["127.0.0.1:8001"],
-    });
-    let errors = [
-        Network::deserialize(&settings).unwrap_err().to_string(),
-        serde_json::from_value::<Network>(settings)
-            .unwrap_err()
-            .to_string(),
-    ];
-
-    for error in errors {
-        assert_eq!(error, "settings key `network.publish` is not supported yet");
+fn deserializing_network_directly_applies_platform_grant_support() {
+    for (field, entry, supported) in [
+        ("allowTcp", "10.0.0.5:3306", cfg!(target_os = "linux")),
+        ("publish", "127.0.0.1:8001", cfg!(target_os = "macos")),
+    ] {
+        let settings = json!({
+            "allowedDomains": [],
+            "deniedDomains": [],
+            field: [entry],
+        });
+        for result in [
+            Network::deserialize(&settings),
+            serde_json::from_value::<Network>(settings.clone()),
+        ] {
+            if supported {
+                assert!(result.is_ok(), "{field}: {result:?}");
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!("settings key `network.{field}` is not supported yet")
+                );
+            }
+        }
     }
 }
 

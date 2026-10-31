@@ -171,22 +171,20 @@ fn accept_all(listeners: &[(TcpListener, SocketAddr)], woken: &UnixStream, outsi
     }
 }
 
+/// Accepts one connection. The caller polls again, which reports a listener with
+/// more waiting, so a stream of clients cannot keep it from seeing `woken`.
 fn accept_ready(listener: &TcpListener, address: SocketAddr, outside: &OwnedFd) {
-    loop {
-        match listener.accept() {
-            Ok((connection, _)) => hand_over(outside, &connection, address),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted
-                ) => {}
-            // A descriptor limit would otherwise spin the thread.
-            Err(_) => {
-                thread::sleep(ACCEPT_RETRY);
-                return;
-            }
-        }
+    match listener.accept() {
+        Ok((connection, _)) => hand_over(outside, &connection, address),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock
+                    | io::ErrorKind::Interrupted
+                    | io::ErrorKind::ConnectionAborted
+            ) => {}
+        // A descriptor limit would otherwise spin the thread.
+        Err(_) => thread::sleep(ACCEPT_RETRY),
     }
 }
 
@@ -296,6 +294,37 @@ mod tests {
             }
         );
         assert!(error.to_string().contains(&address.to_string()), "{error}");
+    }
+
+    #[test]
+    fn dropping_the_publication_ends_it_while_clients_keep_connecting() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, mpsc};
+
+        let (published, inside) = serve(&[LOCAL]).unwrap();
+        let address = published.addresses()[0];
+        let connecting = Arc::new(AtomicBool::new(true));
+        let clients = thread::spawn({
+            let connecting = Arc::clone(&connecting);
+            move || {
+                while connecting.load(Ordering::Relaxed) {
+                    let _ = TcpStream::connect_timeout(&address, STEP);
+                }
+            }
+        });
+        // The stream has started once the first connection has come through.
+        receive(&inside);
+        let (dropped, ended) = mpsc::channel();
+        thread::spawn(move || {
+            drop(published);
+            let _ = dropped.send(());
+        });
+
+        let result = ended.recv_timeout(STEP);
+
+        connecting.store(false, Ordering::Relaxed);
+        clients.join().unwrap();
+        assert!(result.is_ok(), "the drop never returned");
     }
 
     #[test]

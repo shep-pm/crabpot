@@ -532,7 +532,7 @@ fn a_loopback_address_that_cannot_be_added_is_named() {
         "print('ran')",
     );
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("10.9.9.9"),
         "{output:?}"

@@ -588,7 +588,11 @@ mod tests {
 
         assert_eq!(run_status(args(&["--", "sh", "-c", "exit 4"])), 4);
         assert_eq!(run_status(args(&["-c", "exit 5"])), 5);
-        assert_eq!(run_status(args(&["-d"])), 1, "no command is refused");
+    }
+
+    #[test]
+    fn a_command_line_without_a_command_exits_125() {
+        assert_eq!(run_status([OsString::from("-d")]), 125);
     }
 
     #[cfg(not(windows))]

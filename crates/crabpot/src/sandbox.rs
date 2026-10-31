@@ -51,6 +51,8 @@ pub struct Sandbox {
     /// long as the command may run, which is until the sandbox drops.
     #[cfg(target_os = "linux")]
     args_files: Mutex<Vec<OwnedFd>>,
+    #[cfg(target_os = "linux")]
+    tcp: Vec<crabpot_core::proxy::TcpGrant>,
     /// The grants and the proxy of the Windows session, which its commands run
     /// through srt-win under.
     #[cfg(windows)]
@@ -81,7 +83,10 @@ impl Sandbox {
     /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
     /// binary is unknown. A `bwrap` older than 0.5.0 is a warning on stderr.
     /// [`StartError::UnspellableDeny`] names a mandatory write deny the plan
-    /// cannot spell, which is a Linux answer too. On Windows the status checks
+    /// cannot spell, which is a Linux answer too. On Linux, [`StartError::UnresolvedTcp`]
+    /// names an `network.allowTcp` host that returns no address, and
+    /// [`StartError::ScopedTcp`] one that is an IPv6 literal with an interface
+    /// scope. On Windows the status checks
     /// of [`windows_preflight_for`](crate::windows_preflight_for) run first, then
     /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
     /// none nor current, [`StartError::LoopbackMismatch`] for a session whose
@@ -116,7 +121,11 @@ impl Sandbox {
                 Origin::Default
             };
             crabpot_core::tmpdir::prepare(Path::new(&tmpdir), origin)?;
-            let proxy = Proxy::start(
+            #[cfg(target_os = "linux")]
+            let tcp = linux::resolve_tcp(config)?;
+            #[cfg(target_os = "macos")]
+            let tcp = Vec::new();
+            let proxy = Proxy::start_with_tcp(
                 &config.network.allowed_domains,
                 &config.network.denied_domains,
                 config
@@ -128,6 +137,7 @@ impl Sandbox {
                 // does upstream.
                 config.network.strict_allowlist.unwrap_or(false),
                 config.network.mitm_proxy.as_ref(),
+                &tcp,
             )
             .map_err(|e| StartError::Proxy(e.kind()))?;
             #[cfg(target_os = "macos")]
@@ -162,6 +172,7 @@ impl Sandbox {
                     mount_points: wrapped.mount_points,
                     helper,
                     args_files: Mutex::new(Vec::new()),
+                    tcp,
                     facts: Facts::for_sandbox(config),
                     proxy,
                 })
@@ -252,7 +263,7 @@ impl Sandbox {
         }
         #[cfg(target_os = "linux")]
         {
-            self.linux_command(command, false, &[])
+            self.linux_command(command, None, &[])
         }
         #[cfg(windows)]
         {
@@ -326,6 +337,17 @@ pub enum StartError {
     /// The proxy could not start for any other reason: no token, no port, or
     /// no thread to run on.
     Proxy(io::ErrorKind),
+    /// Linux: an `allowTcp` hostname could not be resolved at sandbox startup.
+    UnresolvedTcp {
+        /// The configured name that returned no addresses.
+        host: String,
+    },
+    /// Linux: an `allowTcp` IPv6 literal carries a scope, which names an interface
+    /// of the host and has no meaning in the sandbox's network namespace.
+    ScopedTcp {
+        /// The configured literal with its `%<scope_id>`.
+        host: String,
+    },
     /// Windows: every loopback port of the proxy port range is taken, so the
     /// proxy has no port to listen on. Each sandbox takes two ports there.
     ProxyRangeFull {
@@ -498,6 +520,13 @@ impl fmt::Display for StartError {
             Self::UnresolvedPath(error) => write!(f, "{error}"),
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             Self::Tmpdir(error) => write!(f, "{error}"),
+            Self::UnresolvedTcp { host } => {
+                write!(f, "cannot resolve network.allowTcp host {host}")
+            }
+            Self::ScopedTcp { host } => write!(
+                f,
+                "network.allowTcp host {host} has an interface scope, which the sandbox's network cannot use"
+            ),
             Self::Proxy(kind) => write!(f, "cannot start the proxy: {kind}"),
             Self::ProxyRangeFull { first, last } => write!(
                 f,

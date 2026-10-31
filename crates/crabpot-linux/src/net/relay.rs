@@ -4,11 +4,15 @@
 
 use core::time::Duration;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddrV4, SocketAddrV6, TcpListener, TcpStream};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddrV4, SocketAddrV6, TcpListener, TcpStream,
+};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::thread;
+
+use super::ssh::{self, Answer};
 
 use nix::errno::Errno;
 use nix::sys::socket::{
@@ -37,30 +41,63 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 ///
 /// The [`io::Error`] of binding. A port that is taken is [`io::ErrorKind::AddrInUse`].
 pub fn bind(port: u16) -> io::Result<TcpListener> {
-    match listen_on(AddressFamily::Inet6, port) {
+    match listen_on_any(AddressFamily::Inet6, port) {
         // A taken port is taken for IPv4 too, with the two sharing it.
         Err(Errno::EADDRINUSE) => Err(Errno::EADDRINUSE.into()),
-        Err(_) => listen_on(AddressFamily::Inet, port).map_err(io::Error::from),
+        Err(_) => listen_on_any(AddressFamily::Inet, port).map_err(io::Error::from),
         Ok(listener) => Ok(listener),
     }
     .map(TcpListener::from)
 }
 
-/// A listening socket of `family` on `port`, for every address.
-fn listen_on(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
+/// Listens on `port` for the loopback addresses `127.0.0.1` and `::1` alone,
+/// so the port stays free on every other address of the sandbox. A machine with
+/// no IPv6 listens on IPv4 only.
+///
+/// # Errors
+///
+/// The [`io::Error`] of binding `127.0.0.1`, or of binding `::1` when that is
+/// taken. A port that is taken is [`io::ErrorKind::AddrInUse`].
+pub fn bind_loopback(port: u16) -> io::Result<Vec<TcpListener>> {
+    let mut listeners = vec![TcpListener::from(
+        listen_on(AddressFamily::Inet, Ipv4Addr::LOCALHOST.into(), port)
+            .map_err(io::Error::from)?,
+    )];
+    match listen_on(AddressFamily::Inet6, Ipv6Addr::LOCALHOST.into(), port) {
+        Ok(listener) => listeners.push(listener.into()),
+        Err(Errno::EADDRINUSE) => return Err(Errno::EADDRINUSE.into()),
+        // The machine has no IPv6.
+        Err(_) => {}
+    }
+    Ok(listeners)
+}
+
+fn listen_on_any(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
+    let address = if family == AddressFamily::Inet6 {
+        Ipv6Addr::UNSPECIFIED.into()
+    } else {
+        Ipv4Addr::UNSPECIFIED.into()
+    };
+    listen_on(family, address, port)
+}
+
+/// A listening socket of `family` on `address` and `port`. An IPv6 socket
+/// that listens on the unspecified address takes IPv4 too.
+fn listen_on(family: AddressFamily, address: IpAddr, port: u16) -> Result<OwnedFd, Errno> {
     let fd = socket(family, SockType::Stream, SockFlag::empty(), None)?;
     setsockopt(&fd, sockopt::ReuseAddr, &true)?;
-    if family == AddressFamily::Inet6 {
-        setsockopt(&fd, sockopt::Ipv6V6Only, &false)?;
-        bind_socket(
+    match address {
+        IpAddr::V6(ip) => {
+            setsockopt(&fd, sockopt::Ipv6V6Only, &!ip.is_unspecified())?;
+            bind_socket(
+                fd.as_raw_fd(),
+                &SockaddrIn6::from(SocketAddrV6::new(ip, port, 0, 0)),
+            )?;
+        }
+        IpAddr::V4(ip) => bind_socket(
             fd.as_raw_fd(),
-            &SockaddrIn6::from(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0)),
-        )?;
-    } else {
-        bind_socket(
-            fd.as_raw_fd(),
-            &SockaddrIn::from(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
-        )?;
+            &SockaddrIn::from(SocketAddrV4::new(ip, port)),
+        )?,
     }
     listen(&fd, backlog())?;
     Ok(fd)
@@ -69,14 +106,31 @@ fn listen_on(family: AddressFamily, port: u16) -> Result<OwnedFd, Errno> {
 /// Accepts connections on `listener` for good, and forwards each to the Unix
 /// socket at `socket` on a thread of its own.
 pub fn serve(listener: &TcpListener, socket: &Path) {
+    accept(listener, socket, None);
+}
+
+/// Forwards each connection through an authenticated `CONNECT` to `target`.
+/// The credential is held by the relay, outside the command's PID namespace.
+pub fn serve_tunnel(listener: &TcpListener, socket: &Path, target: &str, basic: &str) {
+    accept(listener, socket, Some((target, basic)));
+}
+
+fn accept(listener: &TcpListener, socket: &Path, tunnel: Option<(&str, &str)>) {
     loop {
         match listener.accept() {
             Ok((client, _)) => {
                 let socket = socket.to_owned();
+                let tunnel = tunnel.map(|(target, basic)| (target.to_owned(), basic.to_owned()));
                 thread::spawn(move || {
                     // A connection that fails is that client's alone: it sees
                     // its end close, which is all a relay can tell it.
-                    let _ = forward(&client, &socket);
+                    let _ = forward_tunnel(
+                        &client,
+                        &socket,
+                        tunnel
+                            .as_ref()
+                            .map(|(target, basic)| (target.as_str(), basic.as_str())),
+                    );
                 });
             }
             Err(_) => thread::sleep(ACCEPT_RETRY),
@@ -88,8 +142,22 @@ pub fn serve(listener: &TcpListener, socket: &Path) {
 /// the other side. When the proxy is done, both sockets are closed, as
 /// upstream's `socat` does, so a client that keeps its end open does not hold
 /// the connection's thread and descriptors.
+#[cfg(test)]
 fn forward(client: &TcpStream, socket: &Path) -> io::Result<()> {
-    let proxy = UnixStream::connect(socket)?;
+    forward_tunnel(client, socket, None)
+}
+
+fn forward_tunnel(
+    client: &TcpStream,
+    socket: &Path,
+    tunnel: Option<(&str, &str)>,
+) -> io::Result<()> {
+    let mut proxy = UnixStream::connect(socket)?;
+    if let Some((target, basic)) = tunnel
+        && let Answer::Refused(reason) = ssh::handshake(&mut proxy, target, basic)?
+    {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
+    }
     let (mut from_client, mut to_proxy) = (client.try_clone()?, proxy.try_clone()?);
     let upstream = thread::spawn(move || {
         let copied = io::copy(&mut from_client, &mut to_proxy);
@@ -119,8 +187,13 @@ mod tests {
     use super::*;
     use crate::support::Tree;
 
+    /// How long one step of an [`exchange`] may take, so a stalled connection
+    /// fails the test and names the step instead of holding the job.
+    const STEP: Duration = Duration::from_secs(10);
+
     /// A Unix socket that answers `got:` and everything the client sent, once
-    /// the client has finished sending.
+    /// the client has finished sending. Each connection has a thread of its
+    /// own, so one that stalls does not hold the others.
     fn answering_socket(test: &str) -> (Tree, std::path::PathBuf) {
         let tree = Tree::empty(test);
         let path = tree.root().join("p.sock");
@@ -128,10 +201,14 @@ mod tests {
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
-                let mut sent = Vec::new();
-                stream.read_to_end(&mut sent).unwrap();
-                stream.write_all(b"got:").unwrap();
-                stream.write_all(&sent).unwrap();
+                thread::spawn(move || {
+                    stream.set_read_timeout(Some(STEP)).unwrap();
+                    stream.set_write_timeout(Some(STEP)).unwrap();
+                    let mut sent = Vec::new();
+                    stream.read_to_end(&mut sent).expect("proxy read to EOF");
+                    stream.write_all(b"got:").expect("proxy write prefix");
+                    stream.write_all(&sent).expect("proxy write echo");
+                });
             }
         });
         (tree, path)
@@ -146,12 +223,80 @@ mod tests {
     }
 
     fn exchange(address: SocketAddr, text: &[u8]) -> Vec<u8> {
-        let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(text).unwrap();
+        let mut client = TcpStream::connect_timeout(&address, STEP)
+            .unwrap_or_else(|error| panic!("{address}: connect: {error}"));
+        client.set_read_timeout(Some(STEP)).unwrap();
+        client.set_write_timeout(Some(STEP)).unwrap();
+        client
+            .write_all(text)
+            .unwrap_or_else(|error| panic!("{address}: write: {error}"));
+        client
+            .shutdown(Shutdown::Write)
+            .unwrap_or_else(|error| panic!("{address}: half-close: {error}"));
+        let mut answer = Vec::new();
+        client
+            .read_to_end(&mut answer)
+            .unwrap_or_else(|error| panic!("{address}: read to EOF: {error}"));
+        answer
+    }
+
+    #[test]
+    fn a_tcp_grant_carries_payload_and_half_closes_through_connect() {
+        use crabpot_core::proxy::{Proxy, TcpGrant, basic_for};
+
+        let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = server.local_addr().unwrap();
+        let proxy = Proxy::start_with_tcp(
+            &[],
+            &[],
+            &[],
+            false,
+            None,
+            &[TcpGrant {
+                host: "database.example".to_owned(),
+                address,
+            }],
+        )
+        .unwrap();
+        let (sent, received) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut client, _) = server.accept().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // A greeting can arrive in the same read as the CONNECT response.
+            client.write_all(b"ready:").unwrap();
+            let mut payload = Vec::new();
+            client.read_to_end(&mut payload).unwrap();
+            client.write_all(&payload).unwrap();
+            sent.send(payload).unwrap();
+        });
+        let listener = bind(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let socket = proxy.mux_socket().to_owned();
+        let basic = basic_for("srt", proxy.token());
+        thread::spawn(move || serve_tunnel(&listener, &socket, &address.to_string(), &basic));
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client.write_all(b"ping\0").unwrap();
         client.shutdown(Shutdown::Write).unwrap();
         let mut answer = Vec::new();
         client.read_to_end(&mut answer).unwrap();
-        answer
+
+        assert_eq!(answer, b"ready:ping\0");
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(5)).unwrap(),
+            b"ping\0"
+        );
     }
 
     #[test]
@@ -239,6 +384,19 @@ mod tests {
         ] {
             assert_eq!(exchange(address, b"x"), b"got:x", "{address}");
         }
+    }
+
+    #[test]
+    fn a_loopback_listener_forwards_a_loopback_client() {
+        let port = bind(0).unwrap().local_addr().unwrap().port();
+        let listeners = bind_loopback(port).unwrap();
+        let (_tree, socket) = answering_socket("loopback");
+        for listener in listeners {
+            let socket = socket.clone();
+            thread::spawn(move || serve(&listener, &socket));
+        }
+
+        assert_eq!(exchange((Ipv4Addr::LOCALHOST, port).into(), b"x"), b"got:x");
     }
 
     #[test]

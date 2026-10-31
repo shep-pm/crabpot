@@ -23,6 +23,7 @@ mod token;
 
 use core::fmt;
 use std::io;
+use std::net::SocketAddr;
 #[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
@@ -42,6 +43,15 @@ use guard::Guard;
 use range::listen;
 use shared::{Shared, serve};
 use token::Token;
+
+/// One `allowTcp` destination resolved at sandbox startup
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TcpGrant {
+    /// The configured hostname, checked against `deniedDomains`.
+    pub host: String,
+    /// The address and port the relay asks the proxy to dial.
+    pub address: SocketAddr,
+}
 
 /// A running HTTP proxy and SOCKS5 proxy, on the one loopback port and, on Unix,
 /// on a Unix socket.
@@ -87,7 +97,42 @@ impl Proxy {
         strict: bool,
         mitm: Option<&MitmProxy>,
     ) -> io::Result<Self> {
-        Self::launch(allowed, denied, listed, strict, mitm, None).map_err(io::Error::from)
+        Self::launch(
+            allowed,
+            denied,
+            listed,
+            mitm,
+            None,
+            Filter::new(allowed, denied, strict),
+        )
+        .map_err(io::Error::from)
+    }
+
+    /// Starts [`Proxy::start`] with resolved `allowTcp` addresses
+    ///
+    /// Each address is allowed only on its port. Denied domains beat these grants,
+    /// including entries covering the original hostname.
+    ///
+    /// # Errors
+    ///
+    /// Returns the startup errors described by [`Proxy::start`].
+    pub fn start_with_tcp(
+        allowed: &[DomainEntry],
+        denied: &[DomainEntry],
+        listed: &[AddressRange],
+        strict: bool,
+        mitm: Option<&MitmProxy>,
+        tcp: &[TcpGrant],
+    ) -> io::Result<Self> {
+        Self::launch(
+            allowed,
+            denied,
+            listed,
+            mitm,
+            None,
+            Filter::new(allowed, denied, strict).with_tcp(tcp),
+        )
+        .map_err(io::Error::from)
     }
 
     /// Starts the proxies as [`Proxy::start`] does, with the loopback port
@@ -108,7 +153,14 @@ impl Proxy {
         mitm: Option<&MitmProxy>,
         range: PortRange,
     ) -> Result<Self, RangeError> {
-        Self::launch(allowed, denied, listed, strict, mitm, Some(range))
+        Self::launch(
+            allowed,
+            denied,
+            listed,
+            mitm,
+            Some(range),
+            Filter::new(allowed, denied, strict),
+        )
     }
 
     /// [`Proxy::start`] and [`Proxy::start_in_range`]: `range` is where the ports
@@ -117,9 +169,9 @@ impl Proxy {
         allowed: &[DomainEntry],
         denied: &[DomainEntry],
         listed: &[AddressRange],
-        strict: bool,
         mitm: Option<&MitmProxy>,
         range: Option<PortRange>,
+        filter: Filter,
     ) -> Result<Self, RangeError> {
         let token = Token::generate()?;
         // The backend is bound before either front end, so no connection is ever
@@ -149,7 +201,7 @@ impl Proxy {
             tokio::net::UnixListener::from_std(mux_listener)?
         };
         let shared = Arc::new(Shared::new(
-            Filter::new(allowed, denied, strict),
+            filter,
             Guard::new(allowed, denied, listed),
             token.clone(),
             mitm.map(mitm::Route::new),

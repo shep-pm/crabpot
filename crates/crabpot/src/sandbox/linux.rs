@@ -1,17 +1,70 @@
 //! Linux command wrapping and helper options
 
+use std::collections::HashMap;
 use std::ffi::OsString;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::process::Command;
 use std::sync::PoisonError;
 
-use crabpot_core::proxy::username_for;
+use crabpot_core::config::Config;
+use crabpot_core::proxy::{TcpGrant, username_for};
 use crabpot_linux::info::Info;
 use crabpot_linux::net::env::HostPorts;
+use crabpot_linux::startup::{Pipe, Startup};
 
-use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG};
+use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG, REPORT_STARTED_FLAG};
 
-use super::{Sandbox, WrapError, carry_over, command_line};
+use super::{Sandbox, StartError, WrapError, carry_over, command_line};
+
+pub(super) fn resolve_tcp(config: &Config) -> Result<Vec<TcpGrant>, StartError> {
+    let mut resolved: HashMap<&str, Vec<SocketAddr>> = HashMap::new();
+    let mut grants = Vec::new();
+    for destination in config.network.allow_tcp.as_deref().unwrap_or_default() {
+        let host = destination.host();
+        // The scope is an interface index of the host. The sandbox's network
+        // namespace has its own, and the proxy's filter refuses a zone.
+        if host.contains('%') {
+            return Err(StartError::ScopedTcp {
+                host: host.to_owned(),
+            });
+        }
+        if !resolved.contains_key(host) {
+            let addresses: Vec<_> =
+                match format!("[{host}]:{}", destination.port()).parse::<SocketAddr>() {
+                    Ok(address) => vec![address],
+                    Err(_) => (host, destination.port())
+                        .to_socket_addrs()
+                        .map_err(|_| StartError::UnresolvedTcp {
+                            host: host.to_owned(),
+                        })?
+                        .collect(),
+                };
+            // A name can resolve to a link-local address with a scope, which is
+            // as unusable in the sandbox's network as a scoped literal.
+            let addresses: Vec<_> = addresses
+                .into_iter()
+                .filter(|address| !matches!(address, SocketAddr::V6(v6) if v6.scope_id() != 0))
+                .collect();
+            if addresses.is_empty() {
+                return Err(StartError::UnresolvedTcp {
+                    host: host.to_owned(),
+                });
+            }
+            resolved.insert(host, addresses);
+        }
+        for mut address in resolved[host].iter().copied() {
+            address.set_port(destination.port());
+            let grant = TcpGrant {
+                host: host.to_owned(),
+                address,
+            };
+            if !grants.contains(&grant) {
+                grants.push(grant);
+            }
+        }
+    }
+    Ok(grants)
+}
 
 impl Sandbox {
     /// [`Sandbox::command`], and with it what bwrap reports of the sandbox,
@@ -22,17 +75,19 @@ impl Sandbox {
     pub(crate) fn command_reporting(
         &self,
         command: &Command,
-    ) -> Result<(Command, Info), WrapError> {
-        let mut wrapped = self.linux_command(command, true, &[])?;
+    ) -> Result<(Command, Info, Startup), WrapError> {
+        let pipe = Pipe::open().map_err(|e| WrapError::Bwrap(e.to_string()))?;
+        let mut wrapped = self.linux_command(command, Some(pipe.fd()), &[])?;
         let info = crabpot_linux::info::attach(&mut wrapped)
             .map_err(|e| WrapError::Bwrap(e.to_string()))?;
-        Ok((wrapped, info))
+        let startup = pipe.attach(&mut wrapped);
+        Ok((wrapped, info, startup))
     }
 
     pub(super) fn linux_command(
         &self,
         command: &Command,
-        report: bool,
+        report: Option<u32>,
         loopback: &[IpAddr],
     ) -> Result<Command, WrapError> {
         let mut words = vec![
@@ -42,14 +97,26 @@ impl Sandbox {
             OsString::from(RELAY_FLAG),
             self.proxy.mux_socket().as_os_str().to_owned(),
         ];
+        if let Some(fd) = report {
+            words.extend([
+                OsString::from(REPORT_STARTED_FLAG),
+                OsString::from(fd.to_string()),
+            ]);
+        }
         for address in loopback {
             words.extend([OsString::from(LOOPBACK_FLAG), address.to_string().into()]);
+        }
+        for grant in &self.tcp {
+            words.extend([
+                OsString::from(LOOPBACK_FLAG),
+                grant.address.to_string().into(),
+            ]);
         }
         words.push(OsString::from("--"));
         words.push(command.get_program().to_owned());
         words.extend(command.get_args().map(OsString::from));
         let mut bwrap_words = self.words.clone();
-        if report {
+        if report.is_some() {
             bwrap_words.splice(1..1, crabpot_linux::wrap::info_words());
         }
         let rendered = crabpot_linux::argv::render(&bwrap_words, &words, &std::env::temp_dir())
@@ -88,8 +155,23 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::StartError;
-    use crabpot_core::config::Config;
+
+    #[test]
+    fn a_scoped_ipv6_grant_refuses_the_sandbox_naming_it() {
+        let config = Config::from_json(
+            r#"{"network":{"allowedDomains":[],"deniedDomains":[],"allowTcp":["[fe80::1%2]:22"]},
+                "filesystem":{"denyRead":[],"allowWrite":[],"denyWrite":[]}}"#,
+        )
+        .unwrap();
+
+        let error = resolve_tcp(&config).unwrap_err();
+
+        assert!(
+            matches!(&error, StartError::ScopedTcp { host } if host == "fe80::1%2"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("fe80::1%2"), "{error}");
+    }
 
     #[test]
     fn the_helper_receives_each_loopback_address_before_the_command() {
@@ -102,7 +184,7 @@ mod tests {
         let addresses = ["10.0.0.5".parse().unwrap(), "fd00::5".parse().unwrap()];
         let mut command = Command::new("echo");
         command.arg("--loopback");
-        let wrapped = sandbox.linux_command(&command, false, &addresses).unwrap();
+        let wrapped = sandbox.linux_command(&command, None, &addresses).unwrap();
         let args: Vec<_> = wrapped
             .get_args()
             .skip_while(|arg| *arg != HELPER_FLAG)

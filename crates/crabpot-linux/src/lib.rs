@@ -53,6 +53,8 @@ pub mod mandatory;
 pub mod net;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
+#[cfg(target_os = "linux")]
+pub mod startup;
 pub mod wrap;
 
 /// The fixture tree the test modules build their cases on, which is

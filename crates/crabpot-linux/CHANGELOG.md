@@ -5,6 +5,34 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-31
+
+### Fixed
+
+- Keep a descriptor inherited on fd 3 for the command
+
+
+## [0.8.0] - 2026-10-31
+
+### Added
+
+- Relay direct TCP grants through CONNECT
+
+### Fixed
+
+- Keep proxy ports free for TCP grants and refuse scoped IPv6 grants
+- Harden the TCP relay and its CONNECT handshake
+
+
+## [0.7.0] - 2026-10-31
+
+### Fixed
+
+- Exit 125 when the sandbox refuses to start **(BREAKING)**
+- Observe report completion before the pid
+- Require the helper to acknowledge startup
+
+
 ## [0.6.0] - 2026-10-31
 
 ### Added

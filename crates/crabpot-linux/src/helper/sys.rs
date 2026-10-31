@@ -9,7 +9,7 @@ use core::ffi::c_int;
 use core::sync::atomic::{AtomicI32, Ordering};
 use std::io;
 use std::net::IpAddr;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -165,9 +165,18 @@ pub(super) fn block_in_child(command: &mut Command, signals: SigSet) {
     }
 }
 
+/// Copies `fd` to the lowest free descriptor above the reserved 3, 8 and 9, so
+/// that a descriptor the launcher inherited cannot be the copy's number.
+pub(crate) fn copy_above_reserved(fd: OwnedFd) -> io::Result<OwnedFd> {
+    let copied = nix::fcntl::fcntl(&fd, nix::fcntl::FcntlArg::F_DUPFD_CLOEXEC(10))?;
+    // SAFETY: fcntl returned a fresh descriptor owned only by this function.
+    Ok(unsafe { OwnedFd::from_raw_fd(copied) })
+}
+
 /// Has `command`'s child hold `fd` as descriptor `target`, which survives the
 /// `exec` into the program it runs. The parent's copy closes with `command`.
-pub(crate) fn pass_in_child(command: &mut Command, fd: OwnedFd, target: u32) {
+pub(crate) fn pass_in_child(command: &mut Command, fd: OwnedFd, target: u32) -> io::Result<()> {
+    let fd = copy_above_reserved(fd)?;
     let target = RawFd::try_from(target).unwrap_or(RawFd::MAX);
     // SAFETY: the closure runs in the forked child before `exec`, where only
     // async-signal-safe calls are sound. `dup2` and `fcntl` are, and neither
@@ -186,5 +195,42 @@ pub(crate) fn pass_in_child(command: &mut Command, fd: OwnedFd, target: u32) {
             }
             Ok(())
         });
+    }
+    Ok(())
+}
+
+/// Has `command`'s child keep `fd` open under its own number across the `exec`
+/// into the program it runs. The parent's copy closes with `command`.
+pub(crate) fn keep_in_child(command: &mut Command, fd: OwnedFd) {
+    // SAFETY: the closure runs in the forked child before `exec`, where only
+    // async-signal-safe calls are sound. `fcntl` is, and does not allocate.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// Writes the startup acknowledgement and closes its inherited descriptor.
+pub(crate) fn notify_started(fd: u32) -> io::Result<()> {
+    let fd = RawFd::try_from(fd).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let byte = [1_u8];
+    // SAFETY: the buffer is valid for one byte. Invalid descriptors return EBADF.
+    // Closing the inherited descriptor prevents descendants from holding the pipe open.
+    unsafe {
+        let result = loop {
+            if libc::write(fd, byte.as_ptr().cast(), byte.len()) == 1 {
+                break Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                break Err(error);
+            }
+        };
+        libc::close(fd);
+        result
     }
 }

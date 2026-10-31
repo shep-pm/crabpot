@@ -6,6 +6,7 @@ use std::num::NonZeroU16;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
+#[cfg(not(target_os = "linux"))]
 pub(crate) const PATH: &str = "network.allowTcp";
 
 /// A DNS name or IP literal with a nonzero TCP port

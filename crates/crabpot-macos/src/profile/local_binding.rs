@@ -91,8 +91,10 @@ mod tests {
             "{profile}"
         );
 
-        let profile = render(&config(false, "[]"), None, None).unwrap();
-        assert!(admitted(&profile).is_empty(), "{profile}");
+        for config in [config(false, "[]"), Config::default()] {
+            let profile = render(&config, None, None).unwrap();
+            assert!(admitted(&profile).is_empty(), "{profile}");
+        }
     }
 
     #[cfg(target_os = "macos")]

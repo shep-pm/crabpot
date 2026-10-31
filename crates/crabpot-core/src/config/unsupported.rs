@@ -7,9 +7,8 @@
 //! [`check_shapes`] refuses it first, so a `false` where an object belongs is
 //! never read as asking for nothing.
 //!
-//! The list is upstream's schema at aceba124 (`src/sandbox/sandbox-config.ts`)
-//! less what upstream applies nowhere on macOS. Each key leaves it when it is
-//! built, and none is left at parity.
+//! The list covers upstream's schema at aceba124 (`src/sandbox/sandbox-config.ts`)
+//! and crabpot-only keys. Each key leaves it on a platform when it is built.
 //!
 //! On Linux [`LINUX_PATHS`] joins it: the keys that tune the bwrap and seccomp
 //! path upstream runs there, and crabpot's own does not read. On Windows
@@ -24,7 +23,8 @@ use super::keys::publish;
 
 /// Dotted paths, in the order they are checked.
 pub(super) const PATHS: &[&str] = &[
-    // Seatbelt cannot restrict a direct TCP grant to the requested host.
+    // No platform implements direct TCP grants. Seatbelt cannot restrict one
+    // to the requested host.
     allow_tcp::PATH,
     // Local port publication is only implemented by the macOS profile.
     #[cfg(not(target_os = "macos"))]

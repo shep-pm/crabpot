@@ -77,6 +77,7 @@ pub struct Git {
 }
 
 /// `network`: what a command may reach.
+// Wire format: changing the camelCase settings keys is a breaking change.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -104,7 +105,8 @@ pub struct Network {
     #[serde(default, deserialize_with = "allow_local_binding::deserialize")]
     pub allow_local_binding: Option<bool>,
     /// `publish`: IP literals and ports a command may bind and accept on.
-    /// A key of crabpot's own, honoured on macOS only.
+    /// A key of crabpot's own, honoured on macOS only. Seatbelt grants each
+    /// port on every local address. The command chooses its bind address.
     #[serde(default, deserialize_with = "publish::deserialize")]
     pub publish: Option<Vec<SocketAddr>>,
     /// `allowTcp`: hosts and ports a command may dial directly. A key of
@@ -155,8 +157,9 @@ impl Config {
     ///
     /// [`ConfigError::Invalid`] when `json` is not a settings object, a
     /// required key is missing, or a value is wrong in the way upstream's
-    /// schema refuses, and [`ConfigError::Unsupported`] when a key asks for
-    /// something crabpot does not apply yet.
+    /// schema or crabpot's optional keys refuse, and
+    /// [`ConfigError::Unsupported`] when a key asks for something crabpot does
+    /// not apply yet.
     pub fn from_json(json: &str) -> Result<Self, ConfigError> {
         let settings = serde_json::from_str(json).map_err(|e| ConfigError::Invalid {
             key: String::new(),

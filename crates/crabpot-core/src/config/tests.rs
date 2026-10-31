@@ -52,6 +52,27 @@ fn publish_refuses_a_hostname_and_names_the_entry() {
     }
 }
 
+#[test]
+fn publish_refuses_bad_ports_and_duplicates_naming_the_entry() {
+    for (entries, bad) in [
+        (json!(["127.0.0.1"]), "127.0.0.1"),
+        (json!(["127.0.0.1:0"]), "127.0.0.1:0"),
+        (json!(["127.0.0.1:65536"]), "127.0.0.1:65536"),
+        (json!(["[::1]"]), "[::1]"),
+        (json!(["::1:8001"]), "::1:8001"),
+        (json!(["127.0.0.1:8001", "127.0.0.1:8001"]), "127.0.0.1:8001"),
+        (json!(["[::1]:80", "[0:0:0:0:0:0:0:1]:80"]), "[0:0:0:0:0:0:0:1]:80"),
+    ] {
+        match Config::from_json(&with("network.publish", entries.clone())) {
+            Err(ConfigError::Invalid { key, reason }) => {
+                assert_eq!(key, "network.publish");
+                assert!(reason.contains(bad), "{entries}: {reason}");
+            }
+            other => panic!("{entries}: expected Invalid, got {other:?}"),
+        }
+    }
+}
+
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[

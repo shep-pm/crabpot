@@ -9,15 +9,21 @@ pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Vec<SocketAddr>>, D::Error> {
     let entries = Vec::<String>::deserialize(deserializer)?;
-    entries
-        .iter()
-        .map(|entry| {
-            entry.parse::<SocketAddr>().map_err(|_| {
+    let mut addresses = Vec::new();
+    for entry in entries {
+        let address = entry
+            .parse::<SocketAddr>()
+            .ok()
+            .filter(|address| address.port() != 0)
+            .ok_or_else(|| {
                 D::Error::custom(format_args!(
-                    "invalid entry \"{entry}\": expected an IP literal and port"
+                    "invalid entry \"{entry}\": expected an IP literal and port from 1 to 65535"
                 ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+            })?;
+        if addresses.contains(&address) {
+            return Err(D::Error::custom(format_args!("duplicate entry \"{entry}\"")));
+        }
+        addresses.push(address);
+    }
+    Ok(Some(addresses))
 }

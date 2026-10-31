@@ -12,7 +12,9 @@ use crabpot_linux::info::Info;
 use crabpot_linux::net::env::HostPorts;
 use crabpot_linux::startup::{Pipe, Startup};
 
-use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG, REPORT_STARTED_FLAG};
+use crate::args::{
+    HELPER_FLAG, HelperMode, LOOPBACK_FLAG, PUBLISH_FD_FLAG, RELAY_FLAG, REPORT_STARTED_FLAG,
+};
 
 use super::{Sandbox, StartError, WrapError, carry_over, command_line};
 
@@ -103,7 +105,13 @@ impl Sandbox {
                 OsString::from(fd.to_string()),
             ]);
         }
-        for address in loopback {
+        if !self.publish.is_empty() {
+            words.extend([
+                OsString::from(PUBLISH_FD_FLAG),
+                crabpot_linux::wrap::PUBLISH_FD.to_string().into(),
+            ]);
+        }
+        for address in loopback.iter().chain(&self.published_addresses(loopback)) {
             words.extend([OsString::from(LOOPBACK_FLAG), address.to_string().into()]);
         }
         for grant in &self.tcp {
@@ -122,6 +130,14 @@ impl Sandbox {
         let rendered = crabpot_linux::argv::render(&bwrap_words, &words, &std::env::temp_dir())
             .map_err(|e| WrapError::Bwrap(e.to_string()))?;
         let mut wrapped = rendered.command;
+        if !self.publish.is_empty() {
+            let published = crabpot_linux::net::publish::publish(&self.publish, &mut wrapped)
+                .map_err(|e| WrapError::Publish(e.to_string()))?;
+            self.published
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(published);
+        }
         carry_over(command, &mut wrapped);
         for (name, value) in crabpot_linux::env::vars(&self.facts.for_command(command)) {
             wrapped.env(name, value);
@@ -149,6 +165,24 @@ impl Sandbox {
                 .push(args_file);
         }
         Ok(wrapped)
+    }
+}
+
+impl Sandbox {
+    /// The published addresses the command can only bind once `lo` holds them:
+    /// neither loopback, which `lo` has, nor a wildcard, nor one in `have`.
+    fn published_addresses(&self, have: &[IpAddr]) -> Vec<IpAddr> {
+        let mut addresses: Vec<IpAddr> = Vec::new();
+        for ip in self.publish.iter().map(SocketAddr::ip) {
+            if !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !have.contains(&ip)
+                && !addresses.contains(&ip)
+            {
+                addresses.push(ip);
+            }
+        }
+        addresses
     }
 }
 
@@ -199,6 +233,100 @@ mod tests {
             init.command,
             [OsString::from("echo"), OsString::from("--loopback")]
         );
+    }
+
+    fn started_publishing(addresses: &[&str]) -> Option<Sandbox> {
+        let config = Config::from_json(&format!(
+            r#"{{"network":{{"allowedDomains":[],"deniedDomains":[],"publish":{addresses:?}}},
+                "filesystem":{{"denyRead":[],"allowWrite":[],"denyWrite":[]}}}}"#
+        ))
+        .unwrap();
+        match Sandbox::start(&config) {
+            Ok(sandbox) => Some(sandbox),
+            // The machine has no bwrap to wrap a command in.
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => None,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    fn init_of(wrapped: &Command) -> Vec<OsString> {
+        wrapped
+            .get_args()
+            .skip_while(|arg| *arg != HELPER_FLAG)
+            .map(OsString::from)
+            .collect()
+    }
+
+    #[test]
+    fn the_helper_learns_the_publish_descriptor_and_nothing_extra_for_loopback_or_wildcards() {
+        let Some(sandbox) =
+            started_publishing(&["127.0.0.1:0", "0.0.0.0:0", "[::]:0", "127.0.0.2:0"])
+        else {
+            return;
+        };
+        let wrapped = sandbox
+            .linux_command(&Command::new("true"), None, &[])
+            .unwrap();
+        let args = init_of(&wrapped);
+        let helper = crate::args::parse_helper(args).unwrap().unwrap();
+        let init = crate::args::parse_init(&helper.args).unwrap();
+
+        assert_eq!(init.publish_fd, Some(crabpot_linux::wrap::PUBLISH_FD));
+        // Loopback and wildcard addresses need nothing added to `lo`.
+        assert_eq!(init.loopback, Vec::<IpAddr>::new());
+    }
+
+    #[test]
+    fn a_published_address_that_is_not_loopback_goes_to_the_helper_once() {
+        let Some(sandbox) = started_publishing(&[]) else {
+            return;
+        };
+        let mut sandbox = sandbox;
+        sandbox.publish = vec![
+            "10.9.9.9:80".parse().unwrap(),
+            "10.9.9.9:81".parse().unwrap(),
+            "10.9.9.8:80".parse().unwrap(),
+        ];
+        let have = ["10.9.9.8".parse().unwrap()];
+
+        let addresses = sandbox.published_addresses(&have);
+
+        assert_eq!(addresses, ["10.9.9.9".parse::<IpAddr>().unwrap()]);
+    }
+
+    #[test]
+    fn a_sandbox_without_published_addresses_passes_no_descriptor() {
+        let Some(sandbox) = started_publishing(&[]) else {
+            return;
+        };
+        let wrapped = sandbox
+            .linux_command(&Command::new("true"), None, &[])
+            .unwrap();
+        let helper = crate::args::parse_helper(init_of(&wrapped))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            crate::args::parse_init(&helper.args).unwrap().publish_fd,
+            None
+        );
+    }
+
+    #[test]
+    fn a_published_address_the_host_cannot_bind_refuses_the_command_naming_it() {
+        let Some(sandbox) = started_publishing(&["127.0.0.1:0"]) else {
+            return;
+        };
+        let mut sandbox = sandbox;
+        // A plain listener holds its port without `SO_REUSEPORT`.
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = held.local_addr().unwrap();
+        sandbox.publish = vec![address];
+
+        let error = sandbox.command(&Command::new("true")).unwrap_err();
+
+        assert!(matches!(error, WrapError::Publish(_)), "{error}");
+        assert!(error.to_string().contains(&address.to_string()), "{error}");
     }
 
     #[test]

@@ -51,6 +51,13 @@ pub struct Sandbox {
     /// long as the command may run, which is until the sandbox drops.
     #[cfg(target_os = "linux")]
     args_files: Mutex<Vec<OwnedFd>>,
+    /// The host addresses `network.publish` names.
+    #[cfg(target_os = "linux")]
+    publish: Vec<std::net::SocketAddr>,
+    /// The listeners of the commands wrapped so far, each held for as long as
+    /// the command may run, which is until the sandbox drops.
+    #[cfg(target_os = "linux")]
+    published: Mutex<Vec<crabpot_linux::net::publish::Published>>,
     #[cfg(target_os = "linux")]
     tcp: Vec<crabpot_core::proxy::TcpGrant>,
     /// The grants and the proxy of the Windows session, which its commands run
@@ -172,6 +179,8 @@ impl Sandbox {
                     mount_points: wrapped.mount_points,
                     helper,
                     args_files: Mutex::new(Vec::new()),
+                    publish: config.network.publish.clone().unwrap_or_default(),
+                    published: Mutex::new(Vec::new()),
                     tcp,
                     facts: Facts::for_sandbox(config),
                     proxy,
@@ -218,12 +227,18 @@ impl Sandbox {
     /// variables that point its clients at the relay and its ssh at the
     /// `connect` mode, set over the caller's.
     ///
+    /// On Linux each call also listens on the addresses of `network.publish`,
+    /// with `SO_REUSEPORT`, and relays what connects to the same address inside
+    /// the command's network namespace. The listeners last until the sandbox
+    /// drops.
+    ///
     /// # Errors
     ///
     /// [`WrapError::Missing`] when the machine has no `sandbox-exec`,
     /// [`WrapError::Bwrap`] when the command cannot be put in a bwrap line,
     /// [`WrapError::Cmd`] when it runs through `cmd.exe` and a word of it
     /// cannot be put on the line,
+    /// [`WrapError::Publish`] when the host cannot listen on a published address,
     /// and [`WrapError::UnsupportedPlatform`] off macOS, Linux and Windows.
     pub fn command(&self, command: &Command) -> Result<Command, WrapError> {
         #[cfg(target_os = "macos")]
@@ -664,6 +679,9 @@ pub enum WrapError {
     /// Also when the environment it carries makes the srt-win command line
     /// longer than Windows spawns.
     Cmd(String),
+    /// Linux: the host cannot listen on a `network.publish` address, or cannot
+    /// pass what connects to it into the sandbox. Names the address.
+    Publish(String),
     /// The platform has no sandbox yet: only macOS, Linux and Windows have one.
     UnsupportedPlatform,
 }
@@ -674,6 +692,7 @@ impl fmt::Display for WrapError {
             Self::Missing => write!(f, "/usr/bin/sandbox-exec is missing"),
             Self::Bwrap(reason) => write!(f, "cannot build the bwrap command: {reason}"),
             Self::Cmd(reason) => write!(f, "cannot build the cmd.exe line: {reason}"),
+            Self::Publish(reason) => f.write_str(reason),
             Self::UnsupportedPlatform => {
                 write!(f, "only macOS, Linux and Windows have a sandbox yet")
             }

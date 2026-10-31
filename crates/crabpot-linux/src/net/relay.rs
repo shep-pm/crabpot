@@ -112,8 +112,13 @@ fn listen_with(
 ) -> Result<OwnedFd, Errno> {
     // A shared listener is the launcher's, which spawns the command: a copy
     // that survived the exec would keep the port open and accept on it.
+    #[cfg(target_os = "linux")]
+    let shared = SockFlag::SOCK_CLOEXEC;
+    // Only Linux publishes, so only Linux makes a shared listener.
+    #[cfg(not(target_os = "linux"))]
+    let shared = SockFlag::empty();
     let flags = if reuse_port {
-        SockFlag::SOCK_CLOEXEC
+        shared
     } else {
         SockFlag::empty()
     };

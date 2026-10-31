@@ -187,8 +187,13 @@ mod tests {
     use super::*;
     use crate::support::Tree;
 
+    /// How long one step of an [`exchange`] may take, so a stalled connection
+    /// fails the test and names the step instead of holding the job.
+    const STEP: Duration = Duration::from_secs(10);
+
     /// A Unix socket that answers `got:` and everything the client sent, once
-    /// the client has finished sending.
+    /// the client has finished sending. Each connection has a thread of its
+    /// own, so one that stalls does not hold the others.
     fn answering_socket(test: &str) -> (Tree, std::path::PathBuf) {
         let tree = Tree::empty(test);
         let path = tree.root().join("p.sock");
@@ -196,10 +201,14 @@ mod tests {
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
-                let mut sent = Vec::new();
-                stream.read_to_end(&mut sent).unwrap();
-                stream.write_all(b"got:").unwrap();
-                stream.write_all(&sent).unwrap();
+                thread::spawn(move || {
+                    stream.set_read_timeout(Some(STEP)).unwrap();
+                    stream.set_write_timeout(Some(STEP)).unwrap();
+                    let mut sent = Vec::new();
+                    stream.read_to_end(&mut sent).expect("proxy read to EOF");
+                    stream.write_all(b"got:").expect("proxy write prefix");
+                    stream.write_all(&sent).expect("proxy write echo");
+                });
             }
         });
         (tree, path)
@@ -214,11 +223,20 @@ mod tests {
     }
 
     fn exchange(address: SocketAddr, text: &[u8]) -> Vec<u8> {
-        let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(text).unwrap();
-        client.shutdown(Shutdown::Write).unwrap();
+        let mut client = TcpStream::connect_timeout(&address, STEP)
+            .unwrap_or_else(|error| panic!("{address}: connect: {error}"));
+        client.set_read_timeout(Some(STEP)).unwrap();
+        client.set_write_timeout(Some(STEP)).unwrap();
+        client
+            .write_all(text)
+            .unwrap_or_else(|error| panic!("{address}: write: {error}"));
+        client
+            .shutdown(Shutdown::Write)
+            .unwrap_or_else(|error| panic!("{address}: half-close: {error}"));
         let mut answer = Vec::new();
-        client.read_to_end(&mut answer).unwrap();
+        client
+            .read_to_end(&mut answer)
+            .unwrap_or_else(|error| panic!("{address}: read to EOF: {error}"));
         answer
     }
 

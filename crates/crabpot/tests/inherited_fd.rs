@@ -22,7 +22,15 @@ fn home(case: &str) -> PathBuf {
 /// [`home`], with `publish` as the settings' `network.publish` entries.
 fn home_publishing(case: &str, publish: &str) -> PathBuf {
     let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("inherited-fd-{case}-{}", std::process::id()));
+        .join(format!("fd-{case}-{}", std::process::id()));
+    // The proxy's socket, `claude-http-<16 hex>.sock`, is made in this folder,
+    // and a `sockaddr_un` takes 107 bytes of path.
+    let socket = home.as_os_str().len() + "/claude-http-0123456789abcdef.sock".len();
+    assert!(
+        socket <= 107,
+        "{} is too long for the proxy's socket",
+        home.display()
+    );
     fs::create_dir_all(&home).unwrap();
     fs::write(
         home.join("settings.json"),
@@ -102,7 +110,7 @@ fn a_descriptor_inherited_on_fd_7_reaches_the_command_when_network_publish_is_se
         .local_addr()
         .unwrap()
         .port();
-    let home = home_publishing("publish-fd-7", &format!(r#""127.0.0.1:{port}""#));
+    let home = home_publishing("publish", &format!(r#""127.0.0.1:{port}""#));
     let (ours, theirs) = UnixStream::pair().unwrap();
 
     let output = launch(

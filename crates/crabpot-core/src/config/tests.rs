@@ -78,6 +78,27 @@ fn publish_reads_ipv4_and_ipv6_with_their_ports() {
 }
 
 #[test]
+fn deserializing_network_directly_refuses_unsupported_tcp_grants() {
+    for (field, entry) in [
+        ("allowTcp", "10.0.0.5:3306"),
+        #[cfg(not(target_os = "macos"))]
+        ("publish", "127.0.0.1:8001"),
+    ] {
+        let settings = json!({
+            "allowedDomains": [],
+            "deniedDomains": [],
+            field: [entry],
+        });
+        let error = serde_json::from_value::<Network>(settings).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!("settings key `network.{field}` is not supported yet")
+        );
+    }
+}
+
+#[test]
 fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
     let settings = settings_with(
         "network.allowTcp",
@@ -89,7 +110,7 @@ fn allow_tcp_reads_dns_names_and_ip_literals_with_their_ports() {
             "[::1]:65535"
         ]),
     );
-    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let network = Network::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()
@@ -120,7 +141,7 @@ fn allow_tcp_keeps_ipv6_scopes_as_distinct_destinations() {
         "network.allowTcp",
         json!(["[fe80::1%2]:22", "[fe80::1%3]:22"]),
     );
-    let network: Network = serde_json::from_value(settings["network"].clone()).unwrap();
+    let network = Network::deserialize(&settings["network"]).unwrap();
     let destinations: Vec<(String, u16)> = network
         .allow_tcp
         .unwrap()

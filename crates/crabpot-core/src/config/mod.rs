@@ -46,6 +46,7 @@ use self::leaf::present;
 #[non_exhaustive]
 pub struct Config {
     /// What a command may reach.
+    #[serde(deserialize_with = "Network::deserialize")]
     pub network: Network,
     /// What a command may read and write.
     pub filesystem: Filesystem,
@@ -77,9 +78,11 @@ pub struct Git {
 }
 
 /// `network`: what a command may reach.
+///
+/// Deserializing one refuses unsupported TCP and publish grants.
 // Wire format: changing the camelCase settings keys is a breaking change.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 #[non_exhaustive]
 pub struct Network {
     /// `allowedDomains`: the hosts the proxy lets a command reach.
@@ -263,5 +266,23 @@ impl<'de> Deserialize<'de> for Config {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let settings = Value::deserialize(deserializer)?;
         Self::from_value(&settings).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for Network {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let network = Self::deserialize(deserializer)?;
+        if network.allow_tcp.as_ref().is_some_and(|list| !list.is_empty()) {
+            return Err(serde::de::Error::custom(ConfigError::Unsupported {
+                key: allow_tcp::PATH,
+            }));
+        }
+        #[cfg(not(target_os = "macos"))]
+        if network.publish.as_ref().is_some_and(|list| !list.is_empty()) {
+            return Err(serde::de::Error::custom(ConfigError::Unsupported {
+                key: publish::PATH,
+            }));
+        }
+        Ok(network)
     }
 }

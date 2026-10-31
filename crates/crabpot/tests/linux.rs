@@ -760,7 +760,7 @@ fn allow_tcp_refuses_a_scoped_ipv6_address_naming_it() {
     let settings = settings_allowing_tcp("scoped", &["[fe80::1%2]:22".to_owned()]);
     let output = run_with_tcp(&settings, "print('ran')");
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("fe80::1%2"), "{error}");
@@ -907,7 +907,7 @@ fn allow_tcp_refuses_an_unresolved_host_before_running_the_command() {
         settings_allowing_tcp("unresolved", &["database.crabpot.invalid:5432".to_owned()]);
     let output = run_with_tcp(&settings, "print('ran')");
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("database.crabpot.invalid"), "{error}");

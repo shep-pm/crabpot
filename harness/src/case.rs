@@ -153,8 +153,8 @@ pub struct Case {
     /// as written, so a case can hold a file that is not JSON or is empty,
     /// and `null` is no file.
     pub settings: Value,
-    /// Whether both runners refuse the settings: each wrapper exits 1 before
-    /// the probe runs.
+    /// Whether both runners refuse the settings before the probe runs:
+    /// crabpot exits 125, upstream exits 1.
     pub refused: bool,
     /// A socket the harness serves for the probes to reach.
     pub serve: Option<Serve>,

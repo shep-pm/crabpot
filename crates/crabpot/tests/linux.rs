@@ -64,7 +64,14 @@ exit "$CRABPOT_TEST_BWRAP_EXIT"
     .unwrap();
     fs::set_permissions(&bwrap, fs::Permissions::from_mode(0o700)).unwrap();
     let settings = root.join("settings.json");
-    fs::write(&settings, "{}").unwrap();
+    fs::write(
+        &settings,
+        r#"{
+            "network": {"allowedDomains": [], "deniedDomains": []},
+            "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+        }"#,
+    )
+    .unwrap();
 
     for code in [0, 1, 7] {
         let output = Command::new(CRABPOT)

@@ -113,6 +113,12 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
 
 #[cfg(target_os = "linux")]
 fn helper_init(init: args::Init<'_>) -> ! {
+    if init.report_started
+        && let Err(error) = crabpot_linux::startup::notify()
+    {
+        eprintln!("crabpot: cannot report helper startup: {error}");
+        std::process::exit(REFUSED);
+    }
     match crabpot_linux::helper::init_with_loopback(init.relay, &init.loopback, init.command) {
         Ok(status) => std::process::exit(status),
         Err(e @ crabpot_linux::helper::InitError::Exec(_)) => fail(e),
@@ -243,8 +249,8 @@ fn prepare(
     };
     #[cfg(target_os = "linux")]
     let (wrapped, target) = {
-        let (wrapped, info) = sandbox.command_reporting(&command)?;
-        (wrapped, ForwardTarget::Helper(info))
+        let (wrapped, info, startup) = sandbox.command_reporting(&command)?;
+        (wrapped, ForwardTarget::Helper { info, startup })
     };
     #[cfg(not(target_os = "linux"))]
     let (wrapped, target) = (sandbox.command(&command)?, ForwardTarget::Child);
@@ -319,7 +325,10 @@ enum ForwardTarget {
     /// The helper, which only it forwards signals on to the command: bwrap's
     /// processes do not, and a signal that ends them kills the sandbox.
     #[cfg(target_os = "linux")]
-    Helper(crabpot_linux::info::Info),
+    Helper {
+        info: crabpot_linux::info::Info,
+        startup: crabpot_linux::startup::Startup,
+    },
 }
 
 #[cfg(unix)]
@@ -331,7 +340,7 @@ impl ForwardTarget {
             #[cfg(any(not(target_os = "linux"), test))]
             Self::Child => Some(child),
             #[cfg(target_os = "linux")]
-            Self::Helper(info) => match info.report() {
+            Self::Helper { info, .. } => match info.report() {
                 // bwrap reports its namespace init, and the helper is the first
                 // process that starts.
                 Report::Pid(init) => first_child(init),
@@ -429,14 +438,16 @@ async fn run(command: Command, target: ForwardTarget) -> i32 {
     }
     #[cfg(target_os = "linux")]
     if status.is_ok()
-        && let ForwardTarget::Helper(info) = target
+        && let ForwardTarget::Helper { startup, .. } = target
     {
         loop {
-            match info.report() {
-                Report::Pid(_) => break,
-                Report::Missing => return REFUSED,
-                // The report reader may still be draining bwrap's last writes.
-                Report::Pending => tokio::time::sleep(TARGET_RETRY_INTERVAL).await,
+            match startup.report() {
+                crabpot_linux::startup::Report::Started => break,
+                crabpot_linux::startup::Report::Missing => return REFUSED,
+                // The reader may still be draining the helper's acknowledgement.
+                crabpot_linux::startup::Report::Pending => {
+                    tokio::time::sleep(TARGET_RETRY_INTERVAL).await
+                }
             }
         }
     }

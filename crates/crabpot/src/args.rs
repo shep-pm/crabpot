@@ -219,9 +219,13 @@ pub(crate) const RELAY_FLAG: &str = "--relay";
 /// The flag that adds an IP address to the sandbox's loopback.
 pub(crate) const LOOPBACK_FLAG: &str = "--loopback";
 
+/// Asks the helper to acknowledge startup through its inherited descriptor.
+pub(crate) const REPORT_STARTED_FLAG: &str = "--report-started";
+
 /// The helper's options and the command's untouched arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Init<'a> {
+    pub(crate) report_started: bool,
     pub(crate) relay: Option<&'a Path>,
     pub(crate) loopback: Vec<IpAddr>,
     pub(crate) command: &'a [OsString],
@@ -229,10 +233,16 @@ pub(crate) struct Init<'a> {
 
 /// Reads helper options until the command or `--` begins its arguments.
 pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
+    let mut report_started = false;
     let mut relay = None;
     let mut loopback = Vec::new();
     while let Some(arg) = args.first() {
         let flag = match arg.to_str() {
+            Some(REPORT_STARTED_FLAG) => {
+                report_started = true;
+                args = &args[1..];
+                continue;
+            }
             Some(RELAY_FLAG) => RELAY_FLAG,
             Some(LOOPBACK_FLAG) => LOOPBACK_FLAG,
             Some("--") => {
@@ -255,6 +265,7 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
         args = &args[2..];
     }
     Ok(Init {
+        report_started,
         relay,
         loopback,
         command: args,

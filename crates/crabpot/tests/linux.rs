@@ -33,8 +33,15 @@ fn the_helper_runs_the_command_and_passes_its_exit_status() {
     assert_eq!(direct.status.code(), Some(7), "{direct:?}");
     assert_eq!(direct.stdout, b"ran\n");
 
-    let sandboxed = crabpot(&["--", "sh", "-c", "exit 5"]);
-    assert_eq!(sandboxed.status.code(), Some(5), "{sandboxed:?}");
+    for code in [0, 1, 5, 125] {
+        let sandboxed = crabpot(&[
+            "--",
+            "sh",
+            "-c",
+            &format!("test ! -e /proc/self/fd/3 || exit 99; exit {code}"),
+        ]);
+        assert_eq!(sandboxed.status.code(), Some(code), "{sandboxed:?}");
+    }
 
     let missing = crabpot(&["--crabpot-helper", "init", "/no/such/program"]);
     assert_eq!(missing.status.code(), Some(1), "{missing:?}");
@@ -46,8 +53,19 @@ fn the_helper_runs_the_command_and_passes_its_exit_status() {
 
 #[test]
 fn a_bwrap_that_ends_without_reporting_a_pid_exits_125() {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("bwrap-without-pid-{}", std::process::id()));
+    bwrap_that_never_starts_the_helper(false);
+}
+
+#[test]
+fn a_bwrap_that_reports_a_pid_but_never_starts_the_helper_exits_125() {
+    bwrap_that_never_starts_the_helper(true);
+}
+
+fn bwrap_that_never_starts_the_helper(reports_pid: bool) {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "bwrap-without-helper-{reports_pid}-{}",
+        std::process::id()
+    ));
     fs::create_dir_all(&root).unwrap();
     let bwrap = root.join("bwrap");
     fs::write(
@@ -57,7 +75,10 @@ case "$1" in
     --version) echo 'bubblewrap 0.9.0'; exit 0 ;;
     --unshare-user) exit 0 ;;
 esac
-echo 'bwrap ended without a pid' >&2
+if [ "$CRABPOT_TEST_BWRAP_REPORT" = 1 ]; then
+    echo '{"child-pid": 4242}' >&8
+fi
+echo 'bwrap ended without starting the helper' >&2
 exit "$CRABPOT_TEST_BWRAP_EXIT"
 "#,
     )
@@ -78,6 +99,10 @@ exit "$CRABPOT_TEST_BWRAP_EXIT"
             .env("HOME", &root)
             .env("PATH", &root)
             .env("CRABPOT_TEST_BWRAP_EXIT", code.to_string())
+            .env(
+                "CRABPOT_TEST_BWRAP_REPORT",
+                if reports_pid { "1" } else { "0" },
+            )
             .arg("--settings")
             .arg(&settings)
             .args(["--", "/bin/sh", "-c", "echo ran"])
@@ -91,7 +116,8 @@ exit "$CRABPOT_TEST_BWRAP_EXIT"
         );
         assert!(output.stdout.is_empty(), "{output:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("bwrap ended without a pid"),
+            String::from_utf8_lossy(&output.stderr)
+                .contains("bwrap ended without starting the helper"),
             "{output:?}"
         );
     }

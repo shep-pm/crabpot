@@ -15,7 +15,13 @@ listener setup, and spawning the wrapped command all refuse with 125.
 On Linux, helper initialization errors also exit 125, except `InitError::Exec`,
 which keeps 1 for a command that could not start. If bwrap ends without
 reporting a pid, the wrapper exits 125 whatever bwrap's status was.
+The PID report precedes bwrap's mount setup and does not prove the helper ran.
+The wrapper also requires the helper's startup acknowledgement through an inherited
+pipe. Bwrap preserves descriptor 3 for that pipe. The helper acknowledges and closes
+it before initialization, so the relay and command cannot inherit it. Bwrap failures
+before that acknowledgement exit 125, including failures after a PID report.
 On macOS and Windows, only refusals before spawning the wrapped command change.
+Post-spawn failures from `sandbox-exec` or `srt-win` retain their own exit status.
 `windows-install` and `windows-uninstall` keep 0 and 1 because they run no command.
 
 The command's own exit code passes through, including 1 and 125. A supervisor

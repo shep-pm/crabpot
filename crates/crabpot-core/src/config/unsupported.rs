@@ -1,4 +1,4 @@
-//! The keys upstream applies and crabpot does not yet, which are refused when
+//! The keys crabpot does not yet honour, which are refused when
 //! they ask for something (ADR-0013).
 //!
 //! A key asks for something when its value is `true`, a number, a non-empty
@@ -18,9 +18,17 @@
 use serde_json::Value;
 
 use super::error::ConfigError;
+use super::keys::allow_tcp;
+#[cfg(not(target_os = "macos"))]
+use super::keys::publish;
 
 /// Dotted paths, in the order they are checked.
 pub(super) const PATHS: &[&str] = &[
+    // Seatbelt cannot restrict a direct TCP grant to the requested host.
+    allow_tcp::PATH,
+    // Local port publication is only implemented by the macOS profile.
+    #[cfg(not(target_os = "macos"))]
+    publish::PATH,
     // Upstream's keys that act on macOS, with what each does.
     // Lets a command use every Unix socket.
     "network.allowAllUnixSockets",

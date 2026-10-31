@@ -103,6 +103,9 @@ fn allow_tcp_refuses_bad_hosts_ports_and_duplicates_naming_the_entry() {
 /// Every key crabpot refuses, with a value that asks for something and is
 /// valid for upstream's schema. The test below holds this to `unsupported`'s list.
 const ASKING: &[(&str, &str)] = &[
+    ("network.allowTcp", r#"["10.0.0.5:3306"]"#),
+    #[cfg(not(target_os = "macos"))]
+    ("network.publish", r#"["127.0.0.1:8001"]"#),
     ("network.allowAllUnixSockets", "true"),
     ("network.httpProxyPort", "8080"),
     ("network.socksProxyPort", "1080"),
@@ -175,6 +178,8 @@ fn the_asking_table_covers_the_whole_unsupported_list() {
 #[test]
 fn a_key_that_asks_for_nothing_loads() {
     for (path, value) in [
+        ("network.publish", json!([])),
+        ("network.allowTcp", json!([])),
         ("network.allowUnixSockets", json!([])),
         ("network.allowMachLookup", json!([])),
         ("network.deniedResolvedAddresses", json!([])),

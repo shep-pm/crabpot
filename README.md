@@ -89,9 +89,11 @@ two exceptions that exit 1 for a failure of their own:
 - `windows-install` and `windows-uninstall` run no command. They exit 0 when done
   and 1 when their arguments are refused or the step fails.
 - On Linux, the helper that bwrap runs inside the sandbox exits 1 when it
-  cannot exec the command, and when a `connect` tunnel for a sandboxed ssh
-  fails. Run directly, it also exits 1 on its own bad arguments and on the
-  unsupported `relay` mode; the wrapper reports those as 125.
+  cannot exec the command. Run directly, it also exits 1 on its own bad
+  arguments and on the unsupported `relay` mode; the wrapper reports those as
+  125. Its `connect` mode is a sandboxed ssh's `ProxyCommand`, not a wrapper
+  exit status: it exits 1 to ssh when the tunnel fails, and ssh picks its own
+  exit code.
 
 `-d` prints debug output. Or use the library:
 

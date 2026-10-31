@@ -24,7 +24,8 @@ before that acknowledgement exit 125, including failures after a PID report.
 On macOS and Windows, only refusals before spawning the wrapped command change.
 Post-spawn failures from `sandbox-exec` or `srt-win` retain their own exit status.
 `windows-install` and `windows-uninstall` keep 0 and 1 because they run no command.
-That includes a command line they do not parse.
+They parse their own options, bypassing the wrapper's command and settings parser,
+so an invalid option also returns 1 and not 125.
 
 The remaining paths that keep 1 all go through `fail` in `crates/crabpot/src/run.rs`:
 
@@ -39,8 +40,10 @@ The remaining paths that keep 1 all go through `fail` in `crates/crabpot/src/run
 The first, second and fourth fail before the helper's startup acknowledgement.
 When the wrapper started that helper, it sees no acknowledgement and still exits
 125, so a supervisor never reads their 1. They keep 1 for a host or a person that
-runs the helper directly, where there is no wrapper to refuse. `connect` and `Exec`
-run after the sandbox has started, and the exit status is the helper's own.
+runs the helper directly, where there is no wrapper to refuse. `Exec` runs after
+the sandbox has started, and the exit status is the helper's own. `connect` is
+started by the sandboxed ssh as its `ProxyCommand`, so its 1 goes to ssh, which
+chooses its own exit code.
 
 The command's own exit code passes through, including 1 and 125. A supervisor
 reads a command that itself exits 125 as a refusal, the same trade `env` makes.

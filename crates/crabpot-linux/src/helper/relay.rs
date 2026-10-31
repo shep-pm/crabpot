@@ -72,6 +72,9 @@ fn await_ready(mut report: File) -> Result<(), InitError> {
 fn run(announce: OwnedFd, socket: &Path, tcp: &[SocketAddr]) -> ! {
     // It ends with the helper, however the helper ends.
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
+    // It holds the proxy credential in its environment, which no other process
+    // of the user's may read from `/proc`.
+    let _ = prctl::set_dumpable(false);
     let mut announce = File::from(announce);
     let (proxies, tunnels) = match listen(tcp) {
         Ok(listeners) => listeners,

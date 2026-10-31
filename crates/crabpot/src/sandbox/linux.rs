@@ -38,6 +38,12 @@ pub(super) fn resolve_tcp(config: &Config) -> Result<Vec<TcpGrant>, StartError> 
                         })?
                         .collect(),
                 };
+            // A name can resolve to a link-local address with a scope, which is
+            // as unusable in the sandbox's network as a scoped literal.
+            let addresses: Vec<_> = addresses
+                .into_iter()
+                .filter(|address| !matches!(address, SocketAddr::V6(v6) if v6.scope_id() != 0))
+                .collect();
             if addresses.is_empty() {
                 return Err(StartError::UnresolvedTcp {
                     host: host.to_owned(),

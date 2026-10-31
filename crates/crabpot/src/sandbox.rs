@@ -83,7 +83,10 @@ impl Sandbox {
     /// `CAP_SETFCAP`, and [`StartError::CurrentExe`] when the path of this
     /// binary is unknown. A `bwrap` older than 0.5.0 is a warning on stderr.
     /// [`StartError::UnspellableDeny`] names a mandatory write deny the plan
-    /// cannot spell, which is a Linux answer too. On Windows the status checks
+    /// cannot spell, which is a Linux answer too. On Linux, [`StartError::UnresolvedTcp`]
+    /// names an `network.allowTcp` host that returns no address, and
+    /// [`StartError::ScopedTcp`] one that is an IPv6 literal with an interface
+    /// scope. On Windows the status checks
     /// of [`windows_preflight_for`](crate::windows_preflight_for) run first, then
     /// [`StartError::ProfileGrantOutdated`] for a profile grant that is neither
     /// none nor current, [`StartError::LoopbackMismatch`] for a session whose

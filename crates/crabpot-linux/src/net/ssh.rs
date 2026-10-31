@@ -103,6 +103,7 @@ fn command() -> String {
 pub fn handshake<S: Read + Write>(tunnel: &mut S, target: &str, basic: &str) -> io::Result<Answer> {
     const MAX_HEAD_BYTES: usize = 16 * 1024;
     tunnel.write_all(request(target, basic).as_bytes())?;
+    tunnel.flush()?;
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -133,6 +134,11 @@ pub enum Answer {
     Refused(String),
 }
 
+/// Whether `code` is a 2xx status, as `mitm.rs` accepts for its own `CONNECT`.
+fn is_success(code: &str) -> bool {
+    code.len() == 3 && code.starts_with('2') && code.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// The `Answer` to the proxy's status line `line`.
 #[must_use]
 pub fn answer(line: &str) -> Answer {
@@ -141,7 +147,7 @@ pub fn answer(line: &str) -> Answer {
         .or_else(|| line.strip_prefix("HTTP/1.0 "))
         .map(|rest| rest.trim_end());
     match status {
-        Some(status) if status.split(' ').next() == Some("200") => Answer::Open,
+        Some(status) if status.split(' ').next().is_some_and(is_success) => Answer::Open,
         Some(status) => Answer::Refused(status.to_owned()),
         None => Answer::Refused(format!("its answer was {line:?}")),
     }
@@ -404,6 +410,11 @@ mod tests {
     #[test]
     fn the_proxy_says_what_it_refused_with() {
         assert_eq!(answer("HTTP/1.1 200 Connection Established"), Answer::Open);
+        assert_eq!(answer("HTTP/1.1 204 No Content"), Answer::Open);
+        assert_eq!(
+            answer("HTTP/1.1 2000 Too Long"),
+            Answer::Refused("2000 Too Long".to_owned())
+        );
         assert_eq!(
             answer("HTTP/1.1 403 host is not on the allow list"),
             Answer::Refused("403 host is not on the allow list".to_owned())

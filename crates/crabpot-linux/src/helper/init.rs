@@ -106,6 +106,9 @@ pub fn init_with_tcp(
     if argv.is_empty() {
         return Err(InitError::NoCommand);
     }
+    if relay.is_none() && !tcp.is_empty() {
+        return Err(InitError::TcpWithoutRelay);
+    }
     let own_user_namespace = enter_namespaces(relay, loopback, tcp)?;
     // No other process of the user's may read or trace the helper before its
     // children take over, whatever the namespaces hold.
@@ -322,6 +325,9 @@ impl fmt::Display for Step {
 pub enum InitError {
     /// There was no program to run.
     NoCommand,
+    /// TCP grants were given with no relay to listen on them, so no connection
+    /// to one would ever be answered.
+    TcpWithoutRelay,
     /// A step failed with an error number.
     Step {
         /// What the helper was doing.
@@ -363,6 +369,9 @@ impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoCommand => write!(f, "no command specified"),
+            Self::TcpWithoutRelay => {
+                write!(f, "TCP grants need a relay to listen on them")
+            }
             Self::Step { step, reason } => write!(f, "cannot {step}: {reason}"),
             Self::Map { path, reason } => write!(f, "cannot write {path}: {reason}"),
             Self::Loopback { address, reason } => {
@@ -384,6 +393,17 @@ mod tests {
     #[test]
     fn no_command_is_refused_before_any_namespace_is_made() {
         assert_eq!(init(None, &[]), Err(InitError::NoCommand));
+    }
+
+    #[test]
+    fn tcp_grants_without_a_relay_are_refused_before_any_namespace_is_made() {
+        let tcp = ["10.0.0.5:5432".parse().unwrap()];
+        let argv = [OsString::from("true")];
+
+        assert_eq!(
+            init_with_tcp(None, &[], &tcp, &argv),
+            Err(InitError::TcpWithoutRelay)
+        );
     }
 
     #[test]

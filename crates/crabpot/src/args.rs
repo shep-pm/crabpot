@@ -89,7 +89,8 @@ pub(crate) enum ArgsError {
     NoCommand,
     /// `--crabpot-helper` was followed by a word that names no mode.
     UnknownHelperMode(OsString),
-    /// `--loopback` was followed by something other than an IP address.
+    /// `--loopback` was followed by something other than an IP address or an
+    /// `IP:port` socket address.
     InvalidLoopback(OsString),
 }
 

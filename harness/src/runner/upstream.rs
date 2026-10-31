@@ -88,7 +88,7 @@ impl Runner for Upstream {
     }
 
     fn refuses(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<bool, Error> {
-        refusal(self.command(settings, probe, env), self.name())
+        refusal(self.command(settings, probe, env), self.name(), 1)
     }
 }
 

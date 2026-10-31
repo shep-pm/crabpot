@@ -8,8 +8,9 @@ use std::sync::PoisonError;
 use crabpot_core::proxy::username_for;
 use crabpot_linux::info::Info;
 use crabpot_linux::net::env::HostPorts;
+use crabpot_linux::startup::Startup;
 
-use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG};
+use crate::args::{HELPER_FLAG, HelperMode, LOOPBACK_FLAG, RELAY_FLAG, REPORT_STARTED_FLAG};
 
 use super::{Sandbox, WrapError, carry_over, command_line};
 
@@ -22,11 +23,13 @@ impl Sandbox {
     pub(crate) fn command_reporting(
         &self,
         command: &Command,
-    ) -> Result<(Command, Info), WrapError> {
+    ) -> Result<(Command, Info, Startup), WrapError> {
         let mut wrapped = self.linux_command(command, true, &[])?;
         let info = crabpot_linux::info::attach(&mut wrapped)
             .map_err(|e| WrapError::Bwrap(e.to_string()))?;
-        Ok((wrapped, info))
+        let startup = crabpot_linux::startup::attach(&mut wrapped)
+            .map_err(|e| WrapError::Bwrap(e.to_string()))?;
+        Ok((wrapped, info, startup))
     }
 
     pub(super) fn linux_command(
@@ -42,6 +45,9 @@ impl Sandbox {
             OsString::from(RELAY_FLAG),
             self.proxy.mux_socket().as_os_str().to_owned(),
         ];
+        if report {
+            words.push(OsString::from(REPORT_STARTED_FLAG));
+        }
         for address in loopback {
             words.extend([OsString::from(LOOPBACK_FLAG), address.to_string().into()]);
         }

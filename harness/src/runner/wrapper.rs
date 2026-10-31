@@ -53,14 +53,14 @@ pub(super) fn exit_code(command: Command, runner: &'static str) -> Result<u8, Er
     }
 }
 
-/// Runs the wrapper to its end and says whether it refused: it exited 1 and
-/// its probe reported nothing, so the probe never ran.
-pub(super) fn refusal(command: Command, runner: &'static str) -> Result<bool, Error> {
+/// Runs the wrapper to its end and says whether it exited with `refused`
+/// without its probe reporting anything.
+pub(super) fn refusal(command: Command, runner: &'static str, refused: i32) -> Result<bool, Error> {
     match wrapped(command, runner)? {
         Wrapped {
             reported: Some(_), ..
         } => Ok(false),
-        Wrapped { status: 1, .. } => Ok(true),
+        Wrapped { status, .. } if status == refused => Ok(true),
         Wrapped { status, .. } => Err(Error::Unreported { runner, status }),
     }
 }

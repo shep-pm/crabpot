@@ -48,13 +48,14 @@ pub trait Runner {
     /// An [`Error`] when the probe cannot be run or does not end with a code.
     fn run(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<u8, Error>;
 
-    /// Whether the wrapper refuses the settings at `settings`: it exits 1
-    /// without running `probe`. `env` is set on the wrapper as for [`Runner::run`].
+    /// Whether the wrapper refuses the settings at `settings` without running
+    /// `probe`: crabpot exits 125, upstream exits 1.
+    /// `env` is set on the wrapper as for [`Runner::run`].
     ///
     /// # Errors
     ///
     /// An [`Error`] when the wrapper cannot be run, or exits with a status
-    /// other than 1 without its probe reporting one.
+    /// other than its refusal code without its probe reporting one.
     fn refuses(&self, settings: &Path, probe: &Probe, env: &Env) -> Result<bool, Error>;
 }
 

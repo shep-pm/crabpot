@@ -113,8 +113,8 @@ fn run_helper(helper: Result<Helper, args::ArgsError>) -> ! {
 
 #[cfg(target_os = "linux")]
 fn helper_init(init: args::Init<'_>) -> ! {
-    if init.report_started
-        && let Err(error) = crabpot_linux::startup::notify()
+    if let Some(fd) = init.report_started
+        && let Err(error) = crabpot_linux::startup::notify(fd)
     {
         eprintln!("crabpot: cannot report helper startup: {error}");
         std::process::exit(REFUSED);

@@ -18,7 +18,9 @@ which keeps 1 for a command that could not start. If bwrap ends without
 reporting a pid, the wrapper exits 125 whatever bwrap's status was.
 The PID report precedes bwrap's mount setup and does not prove the helper ran.
 The wrapper also requires the helper's startup acknowledgement through an inherited
-pipe. Bwrap preserves descriptor 3 for that pipe. The helper acknowledges and closes
+pipe. Bwrap preserves the pipe's descriptor, a number above 9 that the wrapper passes
+to the helper as `--report-started <fd>`, so a descriptor the caller inherited on 3
+reaches the command. The helper acknowledges and closes
 it before initialization, so the relay and command cannot inherit it. Bwrap failures
 before that acknowledgement exit 125, including failures after a PID report.
 On macOS and Windows, only refusals before spawning the wrapped command change.

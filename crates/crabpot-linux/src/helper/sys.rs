@@ -165,13 +165,18 @@ pub(super) fn block_in_child(command: &mut Command, signals: SigSet) {
     }
 }
 
+/// Copies `fd` to the lowest free descriptor above the reserved 3, 8 and 9, so
+/// that a descriptor the launcher inherited cannot be the copy's number.
+pub(crate) fn copy_above_reserved(fd: OwnedFd) -> io::Result<OwnedFd> {
+    let copied = nix::fcntl::fcntl(&fd, nix::fcntl::FcntlArg::F_DUPFD_CLOEXEC(10))?;
+    // SAFETY: fcntl returned a fresh descriptor owned only by this function.
+    Ok(unsafe { OwnedFd::from_raw_fd(copied) })
+}
+
 /// Has `command`'s child hold `fd` as descriptor `target`, which survives the
 /// `exec` into the program it runs. The parent's copy closes with `command`.
 pub(crate) fn pass_in_child(command: &mut Command, fd: OwnedFd, target: u32) -> io::Result<()> {
-    // Keep sources above reserved descriptors 3, 8 and 9, so remapping cannot overwrite them.
-    let copied = nix::fcntl::fcntl(&fd, nix::fcntl::FcntlArg::F_DUPFD_CLOEXEC(10))?;
-    // SAFETY: fcntl returned a fresh descriptor owned only by this function.
-    let fd = unsafe { OwnedFd::from_raw_fd(copied) };
+    let fd = copy_above_reserved(fd)?;
     let target = RawFd::try_from(target).unwrap_or(RawFd::MAX);
     // SAFETY: the closure runs in the forked child before `exec`, where only
     // async-signal-safe calls are sound. `dup2` and `fcntl` are, and neither
@@ -192,6 +197,21 @@ pub(crate) fn pass_in_child(command: &mut Command, fd: OwnedFd, target: u32) -> 
         });
     }
     Ok(())
+}
+
+/// Has `command`'s child keep `fd` open under its own number across the `exec`
+/// into the program it runs. The parent's copy closes with `command`.
+pub(crate) fn keep_in_child(command: &mut Command, fd: OwnedFd) {
+    // SAFETY: the closure runs in the forked child before `exec`, where only
+    // async-signal-safe calls are sound. `fcntl` is, and does not allocate.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Writes the startup acknowledgement and closes its inherited descriptor.

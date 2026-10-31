@@ -5,6 +5,12 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Additions
+
+- Allow binding and inbound connections on `network.publish` ports ([#290])
+
 ## [0.5.11] - 2026-10-31
 
 
@@ -114,4 +120,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reopen create and unlink for the write roots the read denies pin
 - Keep a read-denied name inside a write root from being renamed
 - Keep a read-denied glob inside a write root from being renamed
-

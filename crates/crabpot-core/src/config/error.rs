@@ -9,7 +9,7 @@ use core::fmt;
 #[non_exhaustive]
 pub enum ConfigError {
     /// The text is not JSON, or the value at `key` is wrong: missing, of the
-    /// wrong type, or refused by the rule upstream's schema puts on it.
+    /// wrong type, or refused by the setting's validation rules.
     Invalid {
         /// The dotted path of the key, such as `network.allowedDomains.0`,
         /// which is empty when the text as a whole is wrong.
@@ -17,7 +17,7 @@ pub enum ConfigError {
         /// What is wrong with it.
         reason: String,
     },
-    /// A key upstream applies asks for something crabpot does not apply yet.
+    /// A key asks for something crabpot does not apply on this platform yet.
     /// Running anyway would drop the rule.
     Unsupported {
         /// The dotted path of the key, as written in a settings file.

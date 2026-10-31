@@ -1,5 +1,5 @@
-//! `network.allowLocalBinding`: the local ports a command may bind, accept on
-//! and dial.
+//! `network.allowLocalBinding` and `network.publish`: local ports a command
+//! may bind and accept on, and loopback ports it may dial
 //!
 //! Upstream's `allowLocalBinding` half of `generateSandboxProfile`
 //! (`src/sandbox/macos-sandbox-utils.ts`), with its reasons kept.
@@ -27,10 +27,17 @@ use crabpot_core::config::Config;
 
 pub(super) fn rules(config: &Config) -> Result<String, PathError> {
     if config.network.allows_local_binding() {
-        Ok(RULES.to_owned())
-    } else {
-        Ok(String::new())
+        return Ok(RULES.to_owned());
     }
+    let mut rules = String::new();
+    for address in config.network.publish.iter().flatten() {
+        let port = address.port();
+        rules.push_str(&format!(
+            "(allow network-bind (local ip \"*:{port}\"))\n\
+             (allow network-inbound (local ip \"*:{port}\"))\n"
+        ));
+    }
+    Ok(rules)
 }
 
 /// The three rules the key adds, with the header of its own group.
@@ -46,14 +53,15 @@ mod tests {
     use super::super::render;
 
     /// A config whose only network setting beyond the empty allowlist is
-    /// `allowLocalBinding` set to `allow_local_binding`.
-    fn config(allow_local_binding: bool) -> Config {
+    /// `allowLocalBinding` and `publish`.
+    fn config(allow_local_binding: bool, publish: &str) -> Config {
         Config::from_json(&format!(
             r#"{{
                 "network": {{
                     "allowedDomains": [],
                     "deniedDomains": [],
-                    "allowLocalBinding": {allow_local_binding}
+                    "allowLocalBinding": {allow_local_binding},
+                    "publish": {publish}
                 }},
                 "filesystem": {{"denyRead": [], "allowWrite": [], "denyWrite": []}}
             }}"#
@@ -71,7 +79,7 @@ mod tests {
 
     #[test]
     fn true_renders_the_three_rules_and_false_none() {
-        let profile = render(&config(true), None, None).unwrap();
+        let profile = render(&config(true, "[]"), None, None).unwrap();
 
         assert_eq!(
             admitted(&profile),
@@ -83,7 +91,43 @@ mod tests {
             "{profile}"
         );
 
-        let profile = render(&config(false), None, None).unwrap();
-        assert!(admitted(&profile).is_empty(), "{profile}");
+        for config in [config(false, "[]"), Config::default()] {
+            let profile = render(&config, None, None).unwrap();
+            assert!(admitted(&profile).is_empty(), "{profile}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn published_ports_allow_binding_and_inbound_without_outbound() {
+        let config = config(false, r#"["127.0.0.1:8001", "[::]:3600"]"#);
+        let profile = render(&config, None, None).unwrap();
+
+        assert_eq!(
+            admitted(&profile),
+            [
+                r#"(allow network-bind (local ip "*:8001"))"#,
+                r#"(allow network-inbound (local ip "*:8001"))"#,
+                r#"(allow network-bind (local ip "*:3600"))"#,
+                r#"(allow network-inbound (local ip "*:3600"))"#,
+            ],
+            "{profile}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_binding_already_covers_published_ports() {
+        let profile = render(&config(true, r#"["0.0.0.0:8001"]"#), None, None).unwrap();
+
+        assert_eq!(
+            admitted(&profile),
+            [
+                r#"(allow network-bind (local ip "*:*"))"#,
+                r#"(allow network-inbound (local ip "*:*"))"#,
+                r#"(allow network-outbound (remote ip "localhost:*"))"#,
+            ],
+            "{profile}"
+        );
     }
 }

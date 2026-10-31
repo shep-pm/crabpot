@@ -478,18 +478,31 @@ fn without_loopback_the_helper_keeps_bwraps_network_namespace() {
 }
 
 #[test]
-fn a_loopback_address_that_cannot_be_added_is_named() {
+fn repeated_loopback_addresses_are_configured_once() {
     let output = helper_in_bwrap(
-        &["--loopback", "10.9.9.9", "--loopback", "10.9.9.9"],
-        "print('ran')",
+        &[
+            "--loopback",
+            "10.9.9.9",
+            "--loopback",
+            "10.9.9.9",
+            "--loopback",
+            "fd00::5",
+            "--loopback",
+            "fd00::5",
+        ],
+        r#"
+import socket
+for family, address in [(socket.AF_INET, '10.9.9.9'), (socket.AF_INET6, 'fd00::5')]:
+    with socket.socket(family, socket.SOCK_STREAM) as server:
+        server.bind((address, 0))
+    print('bound ' + address)
+"#,
     );
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("10.9.9.9"),
-        "{output:?}"
-    );
-    assert!(!stdout(&output).contains("ran"), "{output:?}");
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(&lines[1..], ["bound 10.9.9.9", "bound fd00::5"], "{text}");
 }
 
 #[test]
@@ -713,7 +726,8 @@ fn settings_allowing_tcp(case: &str, destinations: &[String]) -> PathBuf {
     fs::write(
         &path,
         serde_json::json!({
-            "network": {"allowedDomains": [], "deniedDomains": [], "allowTcp": destinations}
+            "network": {"allowedDomains": [], "deniedDomains": [], "allowTcp": destinations},
+            "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
         })
         .to_string(),
     )

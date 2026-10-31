@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "harness"]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 # shep's MSRV. A dog or client that needs a newer compiler than the shepherd
 # it works with is a bad example.
@@ -17,10 +17,10 @@ keywords = ["sandbox", "security", "agents", "bubblewrap", "seatbelt"]
 # only for a crate it releases. One that `release-plz.toml` holds back goes
 # stale on every bump (issue #195), so a crate that stops being released drops
 # its requirement here too.
-crabpot-core = { path = "crates/crabpot-core", version = "0.8.0" }
-crabpot-linux = { path = "crates/crabpot-linux", version = "0.8.0" }
-crabpot-macos = { path = "crates/crabpot-macos", version = "0.8.0" }
-crabpot-windows = { path = "crates/crabpot-windows", version = "0.8.0" }
+crabpot-core = { path = "crates/crabpot-core", version = "0.8.1" }
+crabpot-linux = { path = "crates/crabpot-linux", version = "0.8.1" }
+crabpot-macos = { path = "crates/crabpot-macos", version = "0.8.1" }
+crabpot-windows = { path = "crates/crabpot-windows", version = "0.8.1" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 serde_path_to_error = { version = "0.1", default-features = false }

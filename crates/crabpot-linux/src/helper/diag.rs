@@ -228,8 +228,9 @@ mod tests {
 
     use super::*;
 
-    /// One `inet_diag_msg` as the kernel sends it on a little-endian machine:
-    /// a listening `[::]:8080` with `INET_DIAG_SKV6ONLY` set.
+    /// One `inet_diag_msg` laid out by hand from `linux/inet_diag.h` for a
+    /// little-endian machine, not captured from a kernel: a listening `[::]:8080`
+    /// with `INET_DIAG_SKV6ONLY` set. The cookie is `INET_DIAG_NOCOOKIE`.
     #[rustfmt::skip]
     const V6ONLY_WILDCARD: [u8; 96] = [
         // nlmsghdr: length 96, SOCK_DIAG_BY_FAMILY, NLM_F_MULTI, sequence 1, port 0
@@ -292,6 +293,35 @@ mod tests {
                 done: true,
             })
         );
+
+        // A reply cut at any length is truncated.
+        for cut in 1..V6ONLY_WILDCARD.len() {
+            assert_eq!(
+                parse(&V6ONLY_WILDCARD[..cut]),
+                Err(DiagError::Truncated),
+                "cut at {cut}"
+            );
+        }
+
+        // A message shorter than its own header.
+        let mut short = V6ONLY_WILDCARD;
+        short[0] = 8;
+        assert_eq!(parse(&short), Err(DiagError::Malformed));
+
+        // An attribute shorter than its own header.
+        let mut attribute = V6ONLY_WILDCARD;
+        attribute[88] = 2;
+        assert_eq!(parse(&attribute), Err(DiagError::Malformed));
+
+        // A family that is neither IPv4 nor IPv6.
+        let mut family = V6ONLY_WILDCARD;
+        family[16] = 1;
+        assert_eq!(parse(&family), Err(DiagError::Malformed));
+
+        // A socket message with no room for a socket.
+        let mut body = V6ONLY_WILDCARD[..24].to_vec();
+        body[0] = 24;
+        assert_eq!(parse(&body), Err(DiagError::Malformed));
     }
 
     #[test]
@@ -312,40 +342,6 @@ mod tests {
         refusal.resize(36, 0);
 
         assert_eq!(parse(&refusal), Err(DiagError::Syscall(Errno::EPERM)));
-    }
-
-    #[test]
-    fn a_truncated_reply_is_an_error_at_every_cut() {
-        for cut in 1..V6ONLY_WILDCARD.len() {
-            assert_eq!(
-                parse(&V6ONLY_WILDCARD[..cut]),
-                Err(DiagError::Truncated),
-                "cut at {cut}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_malformed_reply_is_an_error() {
-        // A message shorter than its own header.
-        let mut short = V6ONLY_WILDCARD;
-        short[0] = 8;
-        assert_eq!(parse(&short), Err(DiagError::Malformed));
-
-        // An attribute shorter than its own header.
-        let mut attribute = V6ONLY_WILDCARD;
-        attribute[88] = 2;
-        assert_eq!(parse(&attribute), Err(DiagError::Malformed));
-
-        // A family that is neither IPv4 nor IPv6.
-        let mut family = V6ONLY_WILDCARD;
-        family[16] = 1;
-        assert_eq!(parse(&family), Err(DiagError::Malformed));
-
-        // A socket message with no room for a socket.
-        let mut body = V6ONLY_WILDCARD[..24].to_vec();
-        body[0] = 24;
-        assert_eq!(parse(&body), Err(DiagError::Malformed));
     }
 
     #[test]

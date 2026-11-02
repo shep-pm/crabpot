@@ -107,6 +107,8 @@ two exceptions that exit 1 for a failure of their own:
   exit status: it exits 1 to ssh when the tunnel fails, and ssh picks its own
   exit code.
 
+`--control-fd <fd>` (Unix) reads JSON lines from descriptor `<fd>`, which is 3 or more, while the command runs. Each line is a full config in the `-s` shape, and only its `network.allowedDomains`, `network.deniedDomains` and `network.deniedResolvedAddresses` are applied; every other key is accepted and ignored. A request or tunnel opened after the line is judged by the new lists, and one already open is not cut. A line that does not parse is ignored with one message on stderr, and the last good lists stay. End of input keeps the last lists, and the command runs on. A descriptor that is not open, or that fails to read before the command starts, exits 125. The command sees `/dev/null` under that number, not the descriptor. The descriptor may be close-on-exec.
+
 `-d` prints debug output, `-V` (`--version`) prints the version and `-h` (`--help`) prints the usage. Like every option, they belong to the command after `--` or after the program's name. Or use the library:
 
 ```rust

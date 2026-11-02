@@ -34,3 +34,16 @@ fn the_help_flags_print_the_usage() {
         );
     }
 }
+
+#[test]
+fn the_flags_answer_before_a_missing_settings_file_is_read() {
+    for flag in ["-V", "--version", "-h", "--help"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_crabpot"))
+            .args(["-s", "no-such-settings.json", flag])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{flag}: {:?}", output.status);
+        assert!(!output.stdout.is_empty(), "{flag}");
+        assert!(output.stderr.is_empty(), "{flag}");
+    }
+}

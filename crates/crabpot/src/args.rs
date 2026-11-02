@@ -41,7 +41,8 @@ program's name belongs to the program.
 Exit status: the command's own, or 125 when the sandbox or the command line is
 refused.
 
-Subcommands (Windows):
+Subcommands (Windows), which run no command and exit 0 when done and 1 when
+their arguments are refused or the step fails:
   windows-install        set up the sandbox user and the network filters
   windows-uninstall      take them down
 ";

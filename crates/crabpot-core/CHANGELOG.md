@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-02
+
+### Added
+
+- Describe Config as a JSON Schema behind a schema feature
+
+### Fixed
+
+- Tighten the settings schema's ports, addresses and Mach names
+- Match the settings schema to the parser on prefixes, wildcards and brackets
+
+
 ## [0.10.4] - 2026-11-02
 
 

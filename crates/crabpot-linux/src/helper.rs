@@ -22,10 +22,13 @@
 //! accepts on the host for `network.publish` and dials them inside. The launcher
 //! first sends each published address alone, and the relay sends it back once a
 //! socket listens on it in the sandbox's network namespace, which opens the port
-//! on the host.
+//! on the host. The relay asks the kernel's socket diagnostics (`diag`) which
+//! sockets listen, and reads `/proc/net/tcp` and `/proc/net/tcp6` when they refuse.
 
 #[cfg(target_os = "linux")]
 mod connect;
+#[cfg(target_os = "linux")]
+mod diag;
 mod exec;
 #[cfg(target_os = "linux")]
 mod filters;

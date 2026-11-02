@@ -5,9 +5,10 @@
 
 #![cfg(unix)]
 
-use std::fs;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, PipeWriter, Read, Write};
 use std::net::{Ipv4Addr, TcpListener};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -47,10 +48,24 @@ fn line(allowed: &[&str]) -> String {
     )
 }
 
+/// A wrapper that is ended when the case is, so a hung case leaves nothing
+/// running. It leads a process group of its own, which holds what it started.
+#[derive(Debug)]
+struct Wrapper(Child);
+
+impl Drop for Wrapper {
+    fn drop(&mut self) {
+        let group = format!("-{}", self.0.id());
+        let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Starts crabpot on `script` with `descriptor` as the launcher's standard
 /// input, which a shell redirect moves to the redirect's descriptor.
-fn launch(home: &Path, redirect: &str, descriptor: Stdio, script: &str) -> Child {
-    Command::new("sh")
+fn launch(home: &Path, redirect: &str, descriptor: Stdio, script: &str) -> Wrapper {
+    let child = Command::new("sh")
         .args(["-c", &format!(r#"exec "$@" {redirect}"#), "sh", CRABPOT])
         .args(["--control-fd", "3", "-s"])
         .arg(home.join("settings.json"))
@@ -61,24 +76,30 @@ fn launch(home: &Path, redirect: &str, descriptor: Stdio, script: &str) -> Child
         .stdin(descriptor)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
-        .unwrap()
+        .unwrap();
+    Wrapper(child)
 }
 
-/// What `child` printed and how it ended, or a panic when it outlives
-/// [`TIMEOUT`].
-fn finish(mut child: Child) -> (Option<i32>, String, String) {
-    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
-    let (done, ended) = mpsc::channel();
+/// What `wrapper` printed and how it ended, or a panic when it outlives
+/// [`TIMEOUT`], which ends it.
+fn finish(mut wrapper: Wrapper) -> (Option<i32>, String, String) {
+    let (mut out, mut err) = (
+        wrapper.0.stdout.take().unwrap(),
+        wrapper.0.stderr.take().unwrap(),
+    );
+    let (done, printed) = mpsc::channel();
     thread::spawn(move || {
         let (mut stdout, mut stderr) = (String::new(), String::new());
         let _ = out.read_to_string(&mut stdout);
         let _ = err.read_to_string(&mut stderr);
-        let _ = done.send((child.wait().unwrap().code(), stdout, stderr));
+        let _ = done.send((stdout, stderr));
     });
-    ended
+    let (stdout, stderr) = printed
         .recv_timeout(TIMEOUT)
-        .expect("the wrapper ended in time")
+        .expect("the wrapper ended in time");
+    (wrapper.0.wait().unwrap().code(), stdout, stderr)
 }
 
 #[test]
@@ -106,8 +127,8 @@ fn a_failing_descriptor_before_the_first_line_refuses_the_command_with_exit_125(
     // Reading a directory fails at once.
     let child = launch(
         &home,
-        &format!("3<{}", home.display()),
-        Stdio::null(),
+        "3<&0 </dev/null",
+        Stdio::from(File::open(&home).unwrap()),
         "echo ran",
     );
 
@@ -144,8 +165,8 @@ fn origin() -> u16 {
 }
 
 /// The lines `child` prints to standard output, as they come.
-fn lines_of(child: &mut Child) -> Receiver<String> {
-    let stdout = child.stdout.take().unwrap();
+fn lines_of(child: &mut Wrapper) -> Receiver<String> {
+    let stdout = child.0.stdout.take().unwrap();
     let (send, lines) = mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -192,6 +213,6 @@ echo open"#
 
     assert_eq!(opened.as_deref(), Ok("open"));
     drop(write);
-    child.wait().unwrap();
+    assert!(child.0.wait().unwrap().success());
     fs::remove_dir_all(home).unwrap();
 }

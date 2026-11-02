@@ -1,7 +1,9 @@
 use std::env;
 use std::io::Write as _;
 use std::os::fd::IntoRawFd;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex, mpsc};
+use std::thread;
+use std::time::Duration;
 
 use crabpot_core::config::{AddressRange, DomainEntry};
 
@@ -18,17 +20,33 @@ struct Held {
 }
 
 #[derive(Debug, Default)]
-struct Fake(Mutex<Held>);
+struct Fake {
+    held: Mutex<Held>,
+    changed: Condvar,
+}
 
 impl Fake {
     fn held(&self) -> Held {
-        self.0.lock().unwrap().clone()
+        self.held.lock().unwrap().clone()
+    }
+
+    /// Waits until `count` replacements have landed, or panics after [`WAIT`].
+    fn wait_for(&self, count: usize) {
+        let held = self.held.lock().unwrap();
+        let (_held, timeout) = self
+            .changed
+            .wait_timeout_while(held, WAIT, |held| held.replacements < count)
+            .unwrap();
+        assert!(!timeout.timed_out(), "{count} replacements in time");
     }
 }
 
+/// Real time bounds a wait on the reader's thread.
+const WAIT: Duration = Duration::from_secs(10);
+
 impl Lists for Fake {
     fn replace_network_lists(&self, config: &Config) {
-        let mut held = self.0.lock().unwrap();
+        let mut held = self.held.lock().unwrap();
         held.allowed = config.network.allowed_domains.clone();
         held.denied = config.network.denied_domains.clone();
         held.resolved = config
@@ -37,6 +55,7 @@ impl Lists for Fake {
             .clone()
             .unwrap_or_default();
         held.replacements += 1;
+        self.changed.notify_all();
     }
 }
 
@@ -169,7 +188,7 @@ fn a_close_on_exec_descriptor_is_followed() {
     let lists = Arc::new(Fake::default());
 
     let control = start(fd, Arc::clone(&lists)).expect("the descriptor is accepted");
-    // The reader reads what is there to its end before it heeds the drop.
+    lists.wait_for(1);
     drop(control);
     let held = lists.held();
 
@@ -180,7 +199,7 @@ fn a_close_on_exec_descriptor_is_followed() {
 fn a_descriptor_that_is_not_open_refuses_the_start() {
     let lists = Arc::new(Fake::default());
 
-    let error = start(999, lists).unwrap_err();
+    let error = start(-1, lists).unwrap_err();
 
     assert!(matches!(error, ControlError::Descriptor(_)), "{error}");
 }
@@ -198,7 +217,7 @@ fn a_descriptor_that_fails_to_read_refuses_the_start() {
 
 #[test]
 fn the_descriptor_number_is_left_as_dev_null() {
-    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
     // The write end stays open, so a read of the pipe itself would block.
     let (read, _write) = io::pipe().unwrap();
@@ -206,9 +225,31 @@ fn the_descriptor_number_is_left_as_dev_null() {
 
     let control = start(fd, Arc::new(Fake::default())).unwrap();
 
-    let kind = std::fs::metadata(format!("/dev/fd/{fd}"))
-        .unwrap()
-        .file_type();
-    assert!(kind.is_char_device(), "{kind:?}");
+    let held = std::fs::metadata(format!("/dev/fd/{fd}")).unwrap();
+    let null = std::fs::metadata("/dev/null").unwrap();
+    assert!(held.file_type().is_char_device(), "{held:?}");
+    assert_eq!(held.rdev(), null.rdev(), "the device of /dev/null");
     drop(control);
+}
+
+#[test]
+fn a_host_that_keeps_writing_does_not_keep_the_reader_from_stopping() {
+    let (read, mut write) = io::pipe().unwrap();
+    let lists = Arc::new(Fake::default());
+    let control = start(read.into_raw_fd(), Arc::clone(&lists)).unwrap();
+    // It ends when the reader's end closes and the write fails.
+    let writer = thread::spawn(move || {
+        let line = line(&["a.example"], &[], &[]);
+        while write.write_all(line.as_bytes()).is_ok() {}
+    });
+    lists.wait_for(1);
+
+    let (stopped, ended) = mpsc::channel();
+    thread::spawn(move || {
+        drop(control);
+        let _ = stopped.send(());
+    });
+
+    ended.recv_timeout(WAIT).expect("the reader stopped");
+    writer.join().unwrap();
 }

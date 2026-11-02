@@ -14,7 +14,8 @@ const COPY_ABOVE: libc::c_int = 10;
 
 /// Moves the descriptor `fd` to a close-on-exec copy that is returned, and
 /// leaves `/dev/null` open under `fd` in its place, so a command started from
-/// here sees nothing of what the host writes.
+/// here sees nothing of what the host writes. The number is replaced for the
+/// whole process, so the caller must own it and hold no `OwnedFd` or `File` for it.
 pub(super) fn take(fd: RawFd) -> io::Result<OwnedFd> {
     // SAFETY: `fcntl` with `F_DUPFD_CLOEXEC` takes a descriptor number and an
     // int, and returns a new descriptor or -1. It reads no memory.

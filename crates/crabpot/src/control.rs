@@ -92,11 +92,11 @@ struct Waking {
 impl Read for Waking {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let ready = sys::poll(self.input.as_fd(), self.wake.as_fd(), true)?;
-        // What the host wrote is read to its end first, so a stop never drops a line.
-        if ready.input || !ready.woken {
-            self.input.read(buf)
-        } else {
+        // A host that keeps writing must not keep the reader from stopping.
+        if ready.woken {
             Ok(0)
+        } else {
+            self.input.read(buf)
         }
     }
 }
@@ -120,6 +120,7 @@ impl Drop for Control {
 
 /// Starts following the descriptor `fd` for `lists`: takes it over, leaving
 /// `/dev/null` under its number for the command, and reads it on a thread.
+/// The number is the caller's to give up: nothing else may own `fd`.
 ///
 /// A descriptor with data, or at its end, is read once before this returns, so
 /// that a failure comes before the command starts. A descriptor with nothing

@@ -259,9 +259,18 @@ fn run_subcommand(subcommand: Subcommand) -> i32 {
 type Prepared = (Arc<Sandbox>, Option<Control>, Command, ForwardTarget);
 
 fn prepare(args: args::Args) -> Result<Prepared, Box<dyn Error>> {
+    // A control descriptor is a Unix descriptor, so this is refused before a
+    // session starts.
+    #[cfg(not(unix))]
+    if args.control_fd.is_some() {
+        return Err("--control-fd is not supported on Windows".into());
+    }
     let config = load_config(args.settings.as_deref(), env::var_os("HOME"))?;
     let sandbox = Arc::new(Sandbox::start(&config)?);
+    #[cfg(unix)]
     let control = follow_control(args.control_fd, &sandbox)?;
+    #[cfg(not(unix))]
+    let control: Option<Control> = None;
     let command = match args.command {
         Invocation::Argv(argv) => {
             let mut command = Command::new(&argv[0]);
@@ -305,20 +314,8 @@ fn follow_control(
         .transpose()?)
 }
 
-/// A control descriptor is a Unix descriptor.
 #[cfg(not(unix))]
 type Control = ();
-
-#[cfg(not(unix))]
-fn follow_control(
-    fd: Option<i32>,
-    _sandbox: &Arc<Sandbox>,
-) -> Result<Option<Control>, Box<dyn Error>> {
-    match fd {
-        Some(_) => Err("--control-fd is not supported on Windows".into()),
-        None => Ok(None),
-    }
-}
 
 /// `command` as `--debug` prints it: the program and its arguments, with the
 /// value of each `--env NAME=VALUE` pair left out, since the environment holds

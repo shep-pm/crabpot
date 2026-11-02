@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 #[cfg(target_os = "linux")]
 use crabpot_linux::info::Report;
 
-use crate::args::{self, Helper, HelperMode, Invocation, SRT_WIN_FLAG, Subcommand};
+use crate::args::{self, Helper, HelperMode, Invocation, Parsed, SRT_WIN_FLAG, Subcommand};
 use crate::sandbox::Sandbox;
 use crate::windows::install::{self, Machine};
 
@@ -169,6 +169,9 @@ fn fail(reason: impl core::fmt::Display) -> ! {
 /// Windows sandbox up or takes it down instead, and exits 0 when that is done
 /// and 1 when it is refused or fails.
 ///
+/// A `-V` or `--version` before the command prints the package version and exits
+/// 0, without reading settings or starting a sandbox.
+///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
 /// that is refused prints why to stderr and exits 125. Otherwise, the command's
 /// exit code passes through, including 1 and 125. On Unix, a SIGINT,
@@ -193,6 +196,17 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
         }
         None => {}
     }
+    let args = match args::parse(args) {
+        Ok(Parsed::Version) => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return 0;
+        }
+        Ok(Parsed::Run(args)) => args,
+        Err(e) => {
+            eprintln!("crabpot: {e}");
+            return REFUSED;
+        }
+    };
     match prepare(args) {
         Ok((_sandbox, command, target)) => {
             #[cfg(target_os = "linux")]
@@ -229,10 +243,7 @@ fn run_subcommand(subcommand: Subcommand) -> i32 {
 
 /// The sandbox, which has to outlive the command, the command wrapped in it,
 /// and the process that is to get the signals meant for the command.
-fn prepare(
-    args: impl IntoIterator<Item = OsString>,
-) -> Result<(Sandbox, Command, ForwardTarget), Box<dyn Error>> {
-    let args = args::parse(args)?;
+fn prepare(args: args::Args) -> Result<(Sandbox, Command, ForwardTarget), Box<dyn Error>> {
     let config = load_config(args.settings.as_deref(), env::var_os("HOME"))?;
     let sandbox = Sandbox::start(&config)?;
     let command = match args.command {

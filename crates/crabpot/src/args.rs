@@ -1,5 +1,5 @@
-//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d` and `--`,
-//! then a program and its arguments.
+//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d`, `-V` and
+//! `--`, then a program and its arguments.
 
 use core::fmt;
 use std::ffi::OsString;
@@ -17,6 +17,15 @@ pub(crate) struct Args {
     pub(crate) debug: bool,
     /// What to run.
     pub(crate) command: Invocation,
+}
+
+/// What the command line asks crabpot to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Parsed {
+    /// `-V` or `--version`: print the package version.
+    Version,
+    /// Run a command in the sandbox.
+    Run(Args),
 }
 
 /// How the sandboxed command is named.
@@ -302,7 +311,8 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
 /// Reads the arguments after the program's name. The first one that is not an
 /// option begins the command, and everything from there is the command's own.
 /// A `-c` line runs instead of any program named beside it, as upstream's does.
-pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, ArgsError> {
+/// `-V` and `--version` before the command ask for the version, as upstream's do.
+pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ArgsError> {
     let mut args = args.into_iter();
     let mut settings: Option<PathBuf> = None;
     let mut debug = false;
@@ -310,6 +320,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, Ar
     let mut argv = Vec::new();
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("-V" | "--version") => return Ok(Parsed::Version),
             Some("-d" | "--debug") => debug = true,
             Some("-s" | "--settings") => {
                 settings = Some(args.next().ok_or(ArgsError::MissingValue("-s"))?.into());
@@ -340,12 +351,12 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, Ar
         None if argv.is_empty() => return Err(ArgsError::NoCommand),
         None => Invocation::Argv(argv),
     };
-    Ok(Args {
+    Ok(Parsed::Run(Args {
         // Upstream tests the option for truthiness, so `-s ""` names no file.
         settings: settings.filter(|path| !path.as_os_str().is_empty()),
         debug,
         command,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -353,7 +364,10 @@ mod tests {
     use super::*;
 
     fn parse_strs(args: &[&str]) -> Result<Args, ArgsError> {
-        parse(args.iter().map(OsString::from))
+        match parse(args.iter().map(OsString::from))? {
+            Parsed::Run(args) => Ok(args),
+            Parsed::Version => panic!("{args:?} asked for the version"),
+        }
     }
 
     fn argv(args: &[&str]) -> Invocation {
@@ -391,6 +405,34 @@ mod tests {
             parse_strs(&["--", "-d"]).map(|args| args.command),
             Ok(argv(&["-d"])),
             "`--` lets a program's name look like an option"
+        );
+    }
+
+    #[test]
+    fn version_flags_ask_for_the_version() {
+        for flag in ["-V", "--version"] {
+            assert_eq!(parse(os(&[flag])), Ok(Parsed::Version));
+            assert_eq!(
+                parse(os(&["-d", flag])),
+                Ok(Parsed::Version),
+                "it needs no command"
+            );
+        }
+    }
+
+    #[test]
+    fn a_version_flag_after_the_command_belongs_to_the_command() {
+        assert_eq!(
+            parse_strs(&["--", "ls", "--version"]).map(|args| args.command),
+            Ok(argv(&["ls", "--version"]))
+        );
+        assert_eq!(
+            parse_strs(&["ls", "--version"]).map(|args| args.command),
+            Ok(argv(&["ls", "--version"]))
+        );
+        assert_eq!(
+            parse_strs(&["--", "-V"]).map(|args| args.command),
+            Ok(argv(&["-V"]))
         );
     }
 

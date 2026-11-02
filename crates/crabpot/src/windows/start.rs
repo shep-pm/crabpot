@@ -62,6 +62,21 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    /// Swaps the proxy's domain lists and resolved-address list for those of
+    /// `config`. The next request is judged by them, and a tunnel already open
+    /// is not cut.
+    pub(crate) fn replace_network_lists(&self, config: &Config) {
+        self.proxy.replace_lists(
+            &config.network.allowed_domains,
+            &config.network.denied_domains,
+            config
+                .network
+                .denied_resolved_addresses
+                .as_deref()
+                .unwrap_or_default(),
+        );
+    }
+
     /// `command`, wrapped to run through `srt-win exec` in this session.
     ///
     /// # Errors

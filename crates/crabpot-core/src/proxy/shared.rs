@@ -5,7 +5,7 @@
 use core::future::Future;
 use core::net::{IpAddr, SocketAddr};
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, copy, sink};
@@ -18,6 +18,8 @@ use super::filter::Filter;
 use super::guard::{Guard, Refusal};
 use super::mitm;
 use super::token::Token;
+use crate::address::AddressRange;
+use crate::domain::DomainEntry;
 
 /// How long a dial may take in all, and how long it may spend on one address.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -26,11 +28,18 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a refused client may go on sending before the connection is dropped.
 const LINGER: Duration = Duration::from_secs(1);
 
+/// The filter and the guard of one set of lists, which a request is judged by
+/// from its first check to its dial.
+#[derive(Debug)]
+pub(super) struct Lists {
+    pub(super) filter: Filter,
+    pub(super) guard: Guard,
+}
+
 /// What every connection is judged by.
 #[derive(Debug)]
 pub(super) struct Shared {
-    pub(super) filter: Filter,
-    pub(super) guard: Guard,
+    lists: RwLock<Arc<Lists>>,
     pub(super) token: Token,
     /// `network.mitmProxy`: the domains sent to a Unix socket instead of being
     /// dialed direct.
@@ -45,11 +54,33 @@ impl Shared {
         mitm: Option<mitm::Route>,
     ) -> Self {
         Self {
-            filter,
-            guard,
+            lists: RwLock::new(Arc::new(Lists { filter, guard })),
             token,
             mitm,
         }
+    }
+
+    /// The lists in force now. A swap after this returns does not touch them,
+    /// so a request judged by them is judged by one set throughout.
+    pub(super) fn lists(&self) -> Arc<Lists> {
+        // A lock poisoned by a panic elsewhere still holds a whole set, since
+        // a swap assigns once.
+        Arc::clone(&self.lists.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Swaps the domain lists and the resolved-address list for the next
+    /// request, keeping the filter's `strict` and `tcp` and the guard's `local`.
+    pub(super) fn replace_lists(
+        &self,
+        allowed: &[DomainEntry],
+        denied: &[DomainEntry],
+        listed: &[AddressRange],
+    ) {
+        let mut lists = self.lists.write().unwrap_or_else(PoisonError::into_inner);
+        *lists = Arc::new(Lists {
+            filter: lists.filter.replaced(allowed, denied),
+            guard: lists.guard.replaced(allowed, denied, listed),
+        });
     }
 
     /// The socket `host` is sent to, when `network.mitmProxy` covers it. The

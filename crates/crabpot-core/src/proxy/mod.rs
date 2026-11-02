@@ -61,6 +61,7 @@ pub struct TcpGrant {
 pub struct Proxy {
     port: u16,
     token: Token,
+    shared: Arc<Shared>,
     stop: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     /// The mux's own Unix socket, which a sandbox that can reach no loopback
@@ -239,12 +240,29 @@ impl Proxy {
         Ok(Self {
             port,
             token,
+            shared,
             stop: Some(stop),
             thread: Some(thread),
             #[cfg(unix)]
             mux,
             socket,
         })
+    }
+
+    /// Swaps the lists the proxies judge by: `allowed` and `denied` as
+    /// [`Proxy::start`] takes them, and `listed` as the addresses a name may not
+    /// resolve to.
+    ///
+    /// The next request or tunnel is judged by the new lists. One already
+    /// open is not cut. The `strict` flag, the `allowTcp` grants and the
+    /// `mitmProxy` route stay as the proxy started with them.
+    pub fn replace_lists(
+        &self,
+        allowed: &[DomainEntry],
+        denied: &[DomainEntry],
+        listed: &[AddressRange],
+    ) {
+        self.shared.replace_lists(allowed, denied, listed);
     }
 
     /// The port both proxies answer on, on `127.0.0.1`.

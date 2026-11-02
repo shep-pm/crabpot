@@ -22,8 +22,12 @@ cli = []
 name = "crabpot"
 required-features = ["cli"]
 
-# Runs this binary again as srt-win, so it has to call `run_from_args` first
-# thing in `main`, which the libtest harness does not.
+# Run this binary again, as srt-win or as the Linux helper, so each has to call
+# `run_from_args` first thing in `main`, which the libtest harness does not.
+[[test]]
+name = "network_lists"
+harness = false
+
 [[test]]
 name = "windows_status"
 harness = false

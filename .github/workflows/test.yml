@@ -161,6 +161,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo test --locked -p crabpot --test windows_sandbox
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo test --locked -p crabpot --test network_lists
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           # The copied crabpot runs a command, which needs the sandbox user to
           # read it as the runner. Only the grant opens it, and before #215
           # there was no grant, which seclogon reported as "Access is denied".

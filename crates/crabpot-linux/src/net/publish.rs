@@ -254,13 +254,18 @@ fn ask_to_watch(ports: &mut [Port], outside: &OwnedFd) -> Option<bool> {
     Some(false)
 }
 
-/// Has the port bound to `address` listen, which it keeps doing.
+/// Has the port bound to `address` listen, which it keeps doing. A port that
+/// cannot yet is asked about again after a pause, which the relay answers at once.
 fn open_port(ports: &mut [Port], address: SocketAddr) {
     for port in ports
         .iter_mut()
         .filter(|port| port.address == address && !port.open)
     {
         port.open = start_listening(&port.listener).is_ok();
+        if !port.open {
+            port.watched = false;
+            thread::sleep(ACCEPT_RETRY);
+        }
     }
 }
 

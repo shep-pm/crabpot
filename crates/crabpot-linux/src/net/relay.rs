@@ -102,7 +102,15 @@ pub(super) fn bind_shared(address: std::net::SocketAddr) -> Result<TcpListener, 
     } else {
         AddressFamily::Inet6
     };
-    bind_with(family, address.ip(), address.port(), true).map(TcpListener::from)
+    let (ip, port) = (address.ip(), address.port());
+    // Without `SO_REUSEADDR` no plain socket can take the port while this one is
+    // bound and not listening. A port that fails that way may only hold
+    // `TIME_WAIT` entries of an earlier server, which `SO_REUSEADDR` binds over.
+    match bind_with(family, ip, port, true, false) {
+        Err(Errno::EADDRINUSE) => bind_with(family, ip, port, true, true),
+        bound => bound,
+    }
+    .map(TcpListener::from)
 }
 
 /// Has the socket [`bind_shared`] made accept connections.
@@ -121,7 +129,7 @@ fn listen_with(
     port: u16,
     reuse_port: bool,
 ) -> Result<OwnedFd, Errno> {
-    let fd = bind_with(family, address, port, reuse_port)?;
+    let fd = bind_with(family, address, port, reuse_port, true)?;
     listen(&fd, backlog())?;
     Ok(fd)
 }
@@ -131,6 +139,7 @@ fn bind_with(
     address: IpAddr,
     port: u16,
     reuse_port: bool,
+    reuse_address: bool,
 ) -> Result<OwnedFd, Errno> {
     // A shared listener is the launcher's, which spawns the command: a copy
     // that survived the exec would keep the port open and accept on it.
@@ -145,12 +154,11 @@ fn bind_with(
         SockFlag::empty()
     };
     let fd = socket(family, SockType::Stream, flags, None)?;
-    // A shared socket leaves out `SO_REUSEADDR`: with it, a plain socket that
-    // sets it could take the port while this one is bound and not listening.
+    if reuse_address {
+        setsockopt(&fd, sockopt::ReuseAddr, &true)?;
+    }
     if reuse_port {
         setsockopt(&fd, sockopt::ReusePort, &true)?;
-    } else {
-        setsockopt(&fd, sockopt::ReuseAddr, &true)?;
     }
     match address {
         IpAddr::V6(ip) => {
@@ -472,6 +480,23 @@ mod tests {
         let error = bind(port).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_shared_socket_binds_over_the_closed_connections_of_an_earlier_server() {
+        let earlier = bind_loopback(0).unwrap().remove(0);
+        let address = earlier.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        let (served, _) = earlier.accept().unwrap();
+        // The side that closes first keeps the port in `TIME_WAIT`.
+        drop(served);
+        drop(client);
+        drop(earlier);
+
+        let bound = bind_shared(address);
+
+        assert!(bound.is_ok(), "{bound:?}");
     }
 
     #[cfg(target_os = "linux")]

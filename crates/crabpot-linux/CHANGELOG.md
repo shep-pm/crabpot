@@ -5,6 +5,14 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.7] - 2026-11-02
+
+### Fixed
+
+- Keep a published IPv4 port closed while the only listener is IPv6-only
+- Drop a conversion clippy flags in the v6only listener test
+
+
 ## [0.10.6] - 2026-11-02
 
 

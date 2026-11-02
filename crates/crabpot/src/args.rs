@@ -1,5 +1,5 @@
-//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d` and `--`,
-//! then a program and its arguments.
+//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d`, `-V`, `-h` and
+//! `--`, then a program and its arguments.
 
 use core::fmt;
 use std::ffi::OsString;
@@ -17,6 +17,45 @@ pub(crate) struct Args {
     pub(crate) debug: bool,
     /// What to run.
     pub(crate) command: Invocation,
+}
+
+/// What `-h` and `--help` print.
+pub(crate) const USAGE: &str = "\
+Usage: crabpot [options] [command...]
+       crabpot [options] -c <command>
+       crabpot windows-install [options]
+       crabpot windows-uninstall [options]
+
+Runs a command with its filesystem and network access confined.
+
+Options:
+  -s, --settings <path>  settings file (default: ~/.srt-settings.json)
+  -c <command>           run a line with `bash -c`, instead of a program
+  -d, --debug            print the wrapped command to stderr
+  -V, --version          print the version
+  -h, --help             print this help
+
+Put `--` before a program whose name starts with `-`. Everything after the
+program's name belongs to the program.
+
+Exit status: the command's own, or 125 when the sandbox or the command line is
+refused.
+
+Subcommands (Windows), which run no command and exit 0 when done and 1 when
+their arguments are refused or the step fails:
+  windows-install        set up the sandbox user and the network filters
+  windows-uninstall      take them down
+";
+
+/// What the command line asks crabpot to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Parsed {
+    /// `-V` or `--version`: print the package version.
+    Version,
+    /// `-h` or `--help`: print [`USAGE`].
+    Help,
+    /// Run a command in the sandbox.
+    Run(Args),
 }
 
 /// How the sandboxed command is named.
@@ -74,6 +113,8 @@ pub(crate) enum Subcommand {
     WindowsInstall(InstallOptions),
     /// `windows-uninstall`.
     WindowsUninstall(UninstallOptions),
+    /// `-h` or `--help` among a subcommand's options: print [`USAGE`].
+    Help,
 }
 
 /// Why the command line was refused.
@@ -149,16 +190,17 @@ pub(crate) fn parse_subcommand(
     let mut args = args.into_iter();
     let first = args.next()?;
     match first.to_str()? {
-        "windows-install" => Some(parse_install(args).map(Subcommand::WindowsInstall)),
-        "windows-uninstall" => Some(parse_uninstall(args).map(Subcommand::WindowsUninstall)),
+        "windows-install" => Some(parse_install(args)),
+        "windows-uninstall" => Some(parse_uninstall(args)),
         _ => None,
     }
 }
 
-fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<InstallOptions, ArgsError> {
+fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Subcommand, ArgsError> {
     let mut options = InstallOptions::default();
     while let Some(arg) = args.next() {
         match flag(&arg, &mut args)? {
+            ("-h" | "--help", None) => return Ok(Subcommand::Help),
             ("--allow-loopback", None) => options.allow_loopback = true,
             ("--force", None) => options.force = true,
             ("--sublayer-guid", Some(value)) => options.sublayer_guid = Some(value),
@@ -169,21 +211,20 @@ fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<InstallOpti
             _ => return Err(ArgsError::UnknownOption(arg)),
         }
     }
-    Ok(options)
+    Ok(Subcommand::WindowsInstall(options))
 }
 
-fn parse_uninstall(
-    mut args: impl Iterator<Item = OsString>,
-) -> Result<UninstallOptions, ArgsError> {
+fn parse_uninstall(mut args: impl Iterator<Item = OsString>) -> Result<Subcommand, ArgsError> {
     let mut options = UninstallOptions::default();
     while let Some(arg) = args.next() {
         match flag(&arg, &mut args)? {
+            ("-h" | "--help", None) => return Ok(Subcommand::Help),
             ("--keep-user", None) => options.keep_user = true,
             ("--sublayer-guid", Some(value)) => options.sublayer_guid = Some(value),
             _ => return Err(ArgsError::UnknownOption(arg)),
         }
     }
-    Ok(options)
+    Ok(Subcommand::WindowsUninstall(options))
 }
 
 /// Splits `arg` into an option's name and its value. A value comes from
@@ -302,7 +343,9 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
 /// Reads the arguments after the program's name. The first one that is not an
 /// option begins the command, and everything from there is the command's own.
 /// A `-c` line runs instead of any program named beside it, as upstream's does.
-pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, ArgsError> {
+/// `-V`, `--version`, `-h` and `--help` before the command ask for the version
+/// or the usage, as upstream's do.
+pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ArgsError> {
     let mut args = args.into_iter();
     let mut settings: Option<PathBuf> = None;
     let mut debug = false;
@@ -310,6 +353,8 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, Ar
     let mut argv = Vec::new();
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("-V" | "--version") => return Ok(Parsed::Version),
+            Some("-h" | "--help") => return Ok(Parsed::Help),
             Some("-d" | "--debug") => debug = true,
             Some("-s" | "--settings") => {
                 settings = Some(args.next().ok_or(ArgsError::MissingValue("-s"))?.into());
@@ -340,12 +385,12 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, Ar
         None if argv.is_empty() => return Err(ArgsError::NoCommand),
         None => Invocation::Argv(argv),
     };
-    Ok(Args {
+    Ok(Parsed::Run(Args {
         // Upstream tests the option for truthiness, so `-s ""` names no file.
         settings: settings.filter(|path| !path.as_os_str().is_empty()),
         debug,
         command,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -353,7 +398,10 @@ mod tests {
     use super::*;
 
     fn parse_strs(args: &[&str]) -> Result<Args, ArgsError> {
-        parse(args.iter().map(OsString::from))
+        match parse(args.iter().map(OsString::from))? {
+            Parsed::Run(args) => Ok(args),
+            Parsed::Version | Parsed::Help => panic!("{args:?} asked for no command"),
+        }
     }
 
     fn argv(args: &[&str]) -> Invocation {
@@ -391,6 +439,54 @@ mod tests {
             parse_strs(&["--", "-d"]).map(|args| args.command),
             Ok(argv(&["-d"])),
             "`--` lets a program's name look like an option"
+        );
+    }
+
+    #[test]
+    fn version_flags_ask_for_the_version() {
+        for flag in ["-V", "--version"] {
+            assert_eq!(parse(os(&[flag])), Ok(Parsed::Version));
+            assert_eq!(
+                parse(os(&["-d", flag])),
+                Ok(Parsed::Version),
+                "it needs no command"
+            );
+        }
+    }
+
+    #[test]
+    fn help_flags_ask_for_the_usage() {
+        for flag in ["-h", "--help"] {
+            assert_eq!(parse(os(&[flag])), Ok(Parsed::Help));
+            assert_eq!(
+                parse(os(&["-d", flag])),
+                Ok(Parsed::Help),
+                "it needs no command"
+            );
+        }
+    }
+
+    #[test]
+    fn a_version_or_help_flag_after_the_command_belongs_to_the_command() {
+        assert_eq!(
+            parse_strs(&["--", "ls", "--version"]).map(|args| args.command),
+            Ok(argv(&["ls", "--version"]))
+        );
+        assert_eq!(
+            parse_strs(&["ls", "--version"]).map(|args| args.command),
+            Ok(argv(&["ls", "--version"]))
+        );
+        assert_eq!(
+            parse_strs(&["ls", "--help"]).map(|args| args.command),
+            Ok(argv(&["ls", "--help"]))
+        );
+        assert_eq!(
+            parse_strs(&["--", "-V"]).map(|args| args.command),
+            Ok(argv(&["-V"]))
+        );
+        assert_eq!(
+            parse_strs(&["--", "-h"]).map(|args| args.command),
+            Ok(argv(&["-h"]))
         );
     }
 
@@ -706,6 +802,27 @@ mod tests {
         assert_eq!(
             parse_subcommand(os(&["windows-install", "--allow-loopback=yes"])),
             Some(Err(ArgsError::UnknownOption("--allow-loopback=yes".into())))
+        );
+    }
+
+    #[test]
+    fn a_windows_subcommand_answers_help() {
+        for name in ["windows-install", "windows-uninstall"] {
+            for flag in ["-h", "--help"] {
+                assert_eq!(
+                    parse_subcommand(os(&[name, flag])),
+                    Some(Ok(Subcommand::Help)),
+                    "{name} {flag}"
+                );
+            }
+        }
+        assert_eq!(
+            parse_subcommand(os(&["windows-install", "--sandbox-user", "--help"])),
+            Some(Ok(Subcommand::WindowsInstall(InstallOptions {
+                sandbox_user: Some("--help".into()),
+                ..InstallOptions::default()
+            }))),
+            "an option's value is not an option"
         );
     }
 

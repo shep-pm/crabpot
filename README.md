@@ -111,7 +111,7 @@ two exceptions that exit 1 for a failure of their own:
   exit status: it exits 1 to ssh when the tunnel fails, and ssh picks its own
   exit code.
 
-`-d` prints debug output. Or use the library:
+`-d` prints debug output, `-V` (`--version`) prints the version and `-h` (`--help`) prints the usage. Like every option, they belong to the command after `--` or after the program's name. Or use the library:
 
 ```rust
 use std::path::Path;

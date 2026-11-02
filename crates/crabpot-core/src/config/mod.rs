@@ -10,6 +10,8 @@
 mod error;
 mod keys;
 mod leaf;
+#[cfg(feature = "schema")]
+mod schema;
 mod unsupported;
 
 #[cfg(test)]
@@ -68,6 +70,7 @@ pub struct Config {
 
 /// `git`: what git is told inside the sandbox.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Git {

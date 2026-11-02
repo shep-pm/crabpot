@@ -106,6 +106,8 @@ jobs:
         run: brew install ripgrep
       - run: rustup toolchain install stable --profile minimal
       - run: cargo test --locked
+      # `cargo test --locked` leaves `schema` off, so this step turns it on.
+      - run: cargo test --locked -p crabpot-core --features schema
 
   windows:
     # The other half of the same fact: `#![cfg(windows)]` code is only built

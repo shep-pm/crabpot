@@ -146,6 +146,7 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
         ports.push(Port {
             listener,
             address: SocketAddr::new(bound.ip(), bound.port()),
+            watched: false,
             open: false,
         });
     }
@@ -179,6 +180,8 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
 struct Port {
     listener: TcpListener,
     address: SocketAddr,
+    /// The relay has been asked to watch the address.
+    watched: bool,
     open: bool,
 }
 
@@ -187,11 +190,10 @@ struct Port {
 /// address back. It ends when `woken` reports its peer has hung up, or the
 /// sandbox's end of the pair has closed.
 fn accept_all(mut ports: Vec<Port>, woken: &UnixStream, outside: &OwnedFd) {
-    for port in &ports {
-        // The pair holds a few messages, and a relay that is gone ends the loop below.
-        let _ = sys::send_address(outside.as_fd(), port.address);
-    }
     loop {
+        let Some(pending) = ask_to_watch(&mut ports, outside) else {
+            return;
+        };
         // A socket that is bound and does not listen reports a hang-up.
         let open: Vec<usize> = (0..ports.len()).filter(|&at| ports[at].open).collect();
         let mut polls: Vec<_> = open
@@ -199,7 +201,13 @@ fn accept_all(mut ports: Vec<Port>, woken: &UnixStream, outside: &OwnedFd) {
             .map(|&at| PollFd::new(ports[at].listener.as_fd(), PollFlags::POLLIN))
             .collect();
         polls.push(PollFd::new(woken.as_fd(), PollFlags::POLLIN));
-        polls.push(PollFd::new(outside.as_fd(), PollFlags::POLLIN));
+        // A full pair is waited on until it takes the next request.
+        let wanted = if pending {
+            PollFlags::POLLIN | PollFlags::POLLOUT
+        } else {
+            PollFlags::POLLIN
+        };
+        polls.push(PollFd::new(outside.as_fd(), wanted));
         match poll(&mut polls, PollTimeout::NONE) {
             Err(Errno::EINTR) => continue,
             Err(_) => return,
@@ -226,10 +234,24 @@ fn accept_all(mut ports: Vec<Port>, woken: &UnixStream, outside: &OwnedFd) {
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
                 Err(_) => return,
             }
-        } else if !channel.is_empty() {
+        } else if channel.intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL)
+        {
             return;
         }
     }
+}
+
+/// Sends the relay each address it has not been asked to watch. Whether any is
+/// still waiting for room in the pair, or `None` when the relay is gone.
+fn ask_to_watch(ports: &mut [Port], outside: &OwnedFd) -> Option<bool> {
+    for port in ports.iter_mut().filter(|port| !port.watched) {
+        match sys::send_address(outside.as_fd(), port.address) {
+            Ok(()) => port.watched = true,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Some(true),
+            Err(_) => return None,
+        }
+    }
+    Some(false)
 }
 
 /// Has the port bound to `address` listen, which it keeps doing.
@@ -444,12 +466,19 @@ mod tests {
         }
         for inside in [&first_inside, &second_inside] {
             // The system picks which listener gets a connection, so connect until
-            // this one has had one. Each round waits for it on the descriptor.
-            // A port that does not listen yet refuses, and the next round tries again.
-            let mut polls = [PollFd::new(inside.as_fd(), PollFlags::POLLIN)];
+            // this one has had one. Each round waits for it on the descriptor,
+            // past the address the launcher asked the relay to watch. A port that
+            // does not listen yet refuses, and the next round tries again.
             let mut clients = Vec::new();
             let mut rounds = 0;
-            while poll(&mut polls, PollTimeout::from(50_u8)).unwrap() == 0 {
+            loop {
+                let mut polls = [PollFd::new(inside.as_fd(), PollFlags::POLLIN)];
+                if poll(&mut polls, PollTimeout::from(50_u8)).unwrap() > 0 {
+                    if let sys::Received::Connection(_) = sys::receive(inside.as_fd()).unwrap() {
+                        break;
+                    }
+                    continue;
+                }
                 clients.extend(TcpStream::connect_timeout(&address, STEP));
                 rounds += 1;
                 assert!(rounds < 400, "the listener never got a connection");

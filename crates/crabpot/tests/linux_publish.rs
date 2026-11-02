@@ -197,6 +197,8 @@ fn a_host_probe_is_refused_until_the_command_listens_on_loopback() {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, free_port()));
     let gate = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("publish-gate-{}", std::process::id()));
+    // A gate left by an earlier run would open this one before the probe.
+    let _ = fs::remove_file(&gate);
     let (_sandbox, lines) = spawn_server("gated", address, address, "inside", Some(&gate));
     expect_line(&lines, "waiting");
 

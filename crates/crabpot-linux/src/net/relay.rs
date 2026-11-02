@@ -145,9 +145,12 @@ fn bind_with(
         SockFlag::empty()
     };
     let fd = socket(family, SockType::Stream, flags, None)?;
-    setsockopt(&fd, sockopt::ReuseAddr, &true)?;
+    // A shared socket leaves out `SO_REUSEADDR`: with it, a plain socket that
+    // sets it could take the port while this one is bound and not listening.
     if reuse_port {
         setsockopt(&fd, sockopt::ReusePort, &true)?;
+    } else {
+        setsockopt(&fd, sockopt::ReuseAddr, &true)?;
     }
     match address {
         IpAddr::V6(ip) => {

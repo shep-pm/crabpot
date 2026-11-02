@@ -22,6 +22,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::prctl;
 use nix::sys::signal::Signal;
 use nix::unistd::{ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, pipe};
@@ -36,8 +37,9 @@ use crate::net::{HTTP_PORT, SOCKS_PORT};
 /// address is on this host, so a command that has not accepted by then is stuck.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How often the relay looks again for a command that is not listening yet.
-const LISTEN_POLL: Duration = Duration::from_millis(20);
+/// How often, in milliseconds, the relay looks again for a command that is not
+/// listening yet.
+const LISTEN_POLL_MILLIS: u8 = 20;
 
 /// What the relay writes to the helper once both ports listen.
 const READY: u8 = b'+';
@@ -194,13 +196,25 @@ fn serve_published(channel: &Arc<OwnedFd>) {
 }
 
 /// Sends `published` back on `channel` once a command listens where the relay
-/// would dial it. The table is read, never dialled: a connection would reach
-/// the command.
+/// would dial it, or gives up when the launcher hangs up. The table is read,
+/// never dialled: a connection would reach the command.
 fn announce_when_listening(channel: &OwnedFd, published: SocketAddr) {
     while !is_listening(published) {
-        thread::sleep(LISTEN_POLL);
+        if hung_up_within_poll(channel) {
+            return;
+        }
     }
     let _ = sys::send_address(channel.as_fd(), published);
+}
+
+/// Waits one poll interval, and says whether the launcher's end of `channel`
+/// closed in it.
+fn hung_up_within_poll(channel: &OwnedFd) -> bool {
+    let mut polls = [PollFd::new(channel.as_fd(), PollFlags::empty())];
+    match poll(&mut polls, PollTimeout::from(LISTEN_POLL_MILLIS)) {
+        Ok(ready) => ready > 0,
+        Err(_) => false,
+    }
 }
 
 /// Whether a socket in this network namespace listens on an address that
@@ -469,5 +483,33 @@ mod tests {
 
         let seen = listener.accept().unwrap_err();
         assert_eq!(seen.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn a_watch_ends_when_the_launcher_hangs_up() {
+        use nix::sys::socket::{AddressFamily, SockFlag, SockType, socketpair};
+
+        // A port nothing listens on, so only the hang-up can end the watch.
+        let address = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (launcher, relay) = socketpair(
+            AddressFamily::Unix,
+            SockType::SeqPacket,
+            None,
+            SockFlag::SOCK_CLOEXEC,
+        )
+        .unwrap();
+        let (ended, done) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            announce_when_listening(&relay, address);
+            let _ = ended.send(());
+        });
+
+        drop(launcher);
+
+        done.recv_timeout(STEP)
+            .expect("the watch outlived the launcher");
     }
 }

@@ -174,7 +174,8 @@ async fn tunnel<S: Stream>(
     let Some((requested, port)) = parse_connect_target(&head.target) else {
         return end(client, BAD_REQUEST).await;
     };
-    let host = match shared.filter.check(requested, port) {
+    let lists = shared.lists();
+    let host = match lists.filter.check(requested, port) {
         Ok(host) => host,
         Err(denial) => return end(client, &denied(denial.reason())).await,
     };
@@ -183,7 +184,7 @@ async fn tunnel<S: Stream>(
             Ok(mut upstream) => established(client, &mut upstream, &early).await,
             Err(_) => end(client, BAD_GATEWAY).await,
         },
-        None => match dial(&shared.guard, &host, port).await {
+        None => match dial(&lists.guard, &host, port).await {
             Ok(mut upstream) => established(client, &mut upstream, &early).await,
             Err(error) => end(client, &undialed(&error, true)).await,
         },
@@ -227,7 +228,8 @@ async fn forward<S: Stream>(
     let Some(target) = Absolute::parse(&head.target) else {
         return end(client, BAD_REQUEST).await;
     };
-    let host = match shared.filter.check(target.host, target.port) {
+    let lists = shared.lists();
+    let host = match lists.filter.check(target.host, target.port) {
         Ok(host) => host,
         // Upstream gives the reason to a tunnel's refusal alone.
         Err(Denial::MalformedHost | Denial::Denied | Denial::NotAllowed) => {
@@ -263,7 +265,7 @@ async fn forward<S: Stream>(
             Ok(mut upstream) => relay(client, &mut upstream, &request, body_left).await,
             Err(_) => end(client, BAD_GATEWAY).await,
         },
-        None => match dial(&shared.guard, &host, target.port).await {
+        None => match dial(&lists.guard, &host, target.port).await {
             Ok(mut upstream) => relay(client, &mut upstream, &request, body_left).await,
             Err(error) => end(client, &undialed(&error, false)).await,
         },

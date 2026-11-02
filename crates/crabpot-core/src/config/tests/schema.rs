@@ -170,6 +170,32 @@ fn every_entry_type_agrees_with_its_parser_on_a_good_and_a_bad_string() {
             json!("com.*.x"),
         ),
         ("network.denyMachLookup", json!("*"), json!("*example.com")),
+        ("network.allowedDomains", json!("*.a.b"), json!("*.a..b")),
+        (
+            "network.allowedDomains",
+            json!("[example.com]:443"),
+            json!("[example.com/x]:443"),
+        ),
+        (
+            "network.deniedDomains",
+            json!("[*]:443"),
+            json!("[a:b.com]"),
+        ),
+        (
+            "network.deniedResolvedAddresses",
+            json!("10.0.0.0/032"),
+            json!("10.0.0.0/0032"),
+        ),
+        (
+            "network.deniedResolvedAddresses",
+            json!("fc00::/128"),
+            json!("fc00::/00128"),
+        ),
+        (
+            "network.mitmProxy",
+            json!({"socketPath": "/m", "domains": ["*.a.b"]}),
+            json!({"socketPath": "/m", "domains": ["*.a..b"]}),
+        ),
         ("filesystem.denyRead", json!("~/.ssh"), json!("")),
         (
             "filesystem.allowWrite",
@@ -183,14 +209,14 @@ fn every_entry_type_agrees_with_its_parser_on_a_good_and_a_bad_string() {
         ),
     ] {
         assert_eq!(
-            verdicts(&settings_with(key, holding(key, good))),
+            verdicts(&settings_with(key, holding(key, good.clone()))),
             (true, true),
-            "{key}"
+            "{key}: {good}"
         );
         assert_eq!(
-            verdicts(&settings_with(key, holding(key, bad))),
+            verdicts(&settings_with(key, holding(key, bad.clone()))),
             (false, false),
-            "{key}"
+            "{key}: {bad}"
         );
     }
 }

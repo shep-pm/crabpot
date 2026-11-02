@@ -11,8 +11,13 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
 use super::{Config, Filesystem, Network};
 
-/// A TCP port written without a leading zero.
-const PORT: &str = "[1-9][0-9]{0,4}";
+/// A TCP port from 1 to 65535, written without a leading zero.
+const PORT: &str =
+    "(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])";
+/// A port with leading zeros, as `u16::from_str` reads one.
+const PADDED_PORT: &str =
+    "0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])";
+const OCTET: &str = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])";
 /// A host with at least one dot and no empty first or last label.
 const DOTTED: &str = r"[^*:/.][^*:/]*\.[^*:/]*[^*:/.]";
 const BRACKETED_IPV6: &str = r"\[[0-9A-Fa-f:.]+(%[0-9A-Za-z.:-]+)?\]";
@@ -61,8 +66,8 @@ impl JsonSchema for Network {
                 "allowLocalBinding": {"type": "boolean"},
                 "publish": list(socket_addr()),
                 "allowTcp": list(tcp_destination()),
-                "allowMachLookup": list(json_schema!({"type": "string"})),
-                "denyMachLookup": list(json_schema!({"type": "string"})),
+                "allowMachLookup": list(mach_service()),
+                "denyMachLookup": list(mach_service()),
                 "mitmProxy": mitm_proxy()
             },
             "required": ["allowedDomains", "deniedDomains"]
@@ -99,6 +104,11 @@ fn text(pattern: &str) -> Schema {
     json_schema!({"type": "string", "pattern": format!("^({pattern})$")})
 }
 
+/// A Mach service name, whose only `*` is the last character.
+fn mach_service() -> Schema {
+    text("[^*]*\\*?")
+}
+
 /// `DomainEntry`: a host and an optional port. Only a denied entry may be `*`.
 fn domain_entry(denied: bool) -> Schema {
     let wildcard = if denied { r"|\*" } else { "" };
@@ -112,21 +122,26 @@ fn domain_pattern() -> Schema {
     text(&format!(r"(\*\.)?{DOTTED}|localhost|{BARE_IPV6}"))
 }
 
-/// `AddressRange`: an IP literal or a CIDR range.
+/// `AddressRange`: an IP literal or a CIDR range. A zone id is read and
+/// dropped, and a prefix may be padded with zeros to three digits.
 fn address_range() -> Schema {
-    text(r"[0-9A-Fa-f:.]+(%[^/]*)?(/[0-9]{1,3})?")
+    text(&format!(
+        r"(?:{OCTET}(?:\.{OCTET}){{3}}(?:%[^/]*)?(?:/0{{0,2}}(?:[0-9]|[12][0-9]|3[0-2]))?|[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*(?:%[^/]*)?(?:/0{{0,2}}(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?)"
+    ))
 }
 
 /// `TcpDestination`: a DNS name or IP literal, and a port.
 fn tcp_destination() -> Schema {
     text(&format!(
-        r"(\[[0-9A-Fa-f:.%A-Za-z0-9]+\]|[0-9A-Za-z.-]+):{PORT}"
+        r"(\[[0-9A-Fa-f:.%A-Za-z0-9]+\]|[0-9A-Za-z.-]+):{PADDED_PORT}"
     ))
 }
 
 /// `SocketAddr`: an IP literal and a port.
 fn socket_addr() -> Schema {
-    text(&format!(r"([0-9.]+|\[[0-9A-Fa-f:.]+(%[0-9]+)?\]):{PORT}"))
+    text(&format!(
+        r"([0-9.]+|\[[0-9A-Fa-f:.]+(%[0-9]+)?\]):{PADDED_PORT}"
+    ))
 }
 
 /// `PathEntry`: a path, or a path marked literal.

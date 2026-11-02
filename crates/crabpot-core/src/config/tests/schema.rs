@@ -124,6 +124,52 @@ fn every_entry_type_agrees_with_its_parser_on_a_good_and_a_bad_string() {
             json!("example.com:443"),
             json!("example.com"),
         ),
+        (
+            "network.allowedDomains",
+            json!("example.com:65535"),
+            json!("example.com:65536"),
+        ),
+        (
+            "network.allowedDomains",
+            json!("example.com:1"),
+            json!("example.com:0443"),
+        ),
+        (
+            "network.deniedResolvedAddresses",
+            json!("10.0.0.0/32"),
+            json!("10.0.0.0/33"),
+        ),
+        (
+            "network.deniedResolvedAddresses",
+            json!("192.0.2.1"),
+            json!("192.0.2.999"),
+        ),
+        (
+            "network.deniedResolvedAddresses",
+            json!("fc00::/128"),
+            json!("fc00::/129"),
+        ),
+        (
+            "network.deniedResolvedAddresses",
+            json!("fe80::1%en0"),
+            json!("1.2.3"),
+        ),
+        (
+            "network.publish",
+            json!("[::1]:65535"),
+            json!("127.0.0.1:65536"),
+        ),
+        (
+            "network.allowTcp",
+            json!("example.com:0443"),
+            json!("example.com:65536"),
+        ),
+        (
+            "network.allowMachLookup",
+            json!("com.example.*"),
+            json!("com.*.x"),
+        ),
+        ("network.denyMachLookup", json!("*"), json!("*example.com")),
         ("filesystem.denyRead", json!("~/.ssh"), json!("")),
         (
             "filesystem.allowWrite",

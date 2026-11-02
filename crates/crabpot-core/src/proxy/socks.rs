@@ -95,11 +95,12 @@ async fn exchange<S: Stream>(client: &mut S, shared: &Shared) -> io::Result<()> 
         Request::Refuse(reply) => return refuse(client, reply).await,
         Request::Drop => return Ok(()),
     };
-    let host = match shared.filter.check(&host, port) {
+    let lists = shared.lists();
+    let host = match lists.filter.check(&host, port) {
         Ok(host) => host,
         Err(_) => return refuse(client, Reply::NotAllowed).await,
     };
-    let mut upstream = match dial(&shared.guard, &host, port).await {
+    let mut upstream = match dial(&lists.guard, &host, port).await {
         Ok(upstream) => upstream,
         Err(error) => return refuse(client, Reply::from(&error)).await,
     };

@@ -48,6 +48,17 @@ impl Filter {
         }
     }
 
+    /// A filter that weighs `allowed` and `denied`, and keeps this one's
+    /// `strict` and `tcp`.
+    pub(super) fn replaced(&self, allowed: &[DomainEntry], denied: &[DomainEntry]) -> Self {
+        Self {
+            allowed: allowed.to_vec(),
+            denied: denied.to_vec(),
+            strict: self.strict,
+            tcp: self.tcp.clone(),
+        }
+    }
+
     pub(super) fn with_tcp(mut self, tcp: &[TcpGrant]) -> Self {
         self.tcp = tcp.to_vec();
         self
@@ -309,5 +320,26 @@ mod tests {
             filter.check("::ffff:127.0.0.1%x.allowed.com", 443),
             Err(Denial::MalformedHost)
         );
+    }
+
+    #[test]
+    fn a_replaced_filter_weighs_the_new_lists_and_keeps_the_allow_tcp_grants() {
+        let filter = filter_with(&["old.example.com"], &[]).with_tcp(&[TcpGrant {
+            host: "db.example.com".to_owned(),
+            address: "10.0.0.5:5432".parse().unwrap(),
+        }]);
+        let allowed = [DomainEntry::parse_allowed("new.example.com").unwrap()];
+
+        let replaced = filter.replaced(&allowed, &[]);
+
+        assert_eq!(
+            replaced.check("new.example.com", 443).as_deref(),
+            Ok("new.example.com")
+        );
+        assert_eq!(
+            replaced.check("old.example.com", 443),
+            Err(Denial::NotAllowed)
+        );
+        assert_eq!(replaced.check("10.0.0.5", 5432).as_deref(), Ok("10.0.0.5"));
     }
 }

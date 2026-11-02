@@ -68,6 +68,20 @@ impl Guard {
         }
     }
 
+    /// A guard built from `allowed`, `denied` and `listed`, with this one's
+    /// `local`.
+    pub(super) fn replaced(
+        &self,
+        allowed: &[DomainEntry],
+        denied: &[DomainEntry],
+        listed: &[AddressRange],
+    ) -> Self {
+        Self {
+            local: self.local,
+            ..Self::new(allowed, denied, listed)
+        }
+    }
+
     /// The addresses of `resolved` that `hostname` may be dialed at on `port`,
     /// in the order given. When every one is dropped the answer is the
     /// refusal, and an empty answer is left for the caller to report.
@@ -378,5 +392,28 @@ mod tests {
     #[test]
     fn the_interfaces_of_this_host_include_loopback() {
         assert!(interface_addresses().contains(&ip("127.0.0.1")));
+    }
+
+    #[test]
+    fn a_replaced_guard_judges_by_the_new_lists_and_keeps_its_local_function() {
+        let guard = Guard {
+            local: || vec!["192.168.1.5".parse().unwrap()],
+            ..guard(&[], &[], &[])
+        };
+
+        let replaced = guard.replaced(
+            &entries(&["example.com"], DomainEntry::parse_allowed),
+            &[],
+            &ranges(&["203.0.113.0/24"]),
+        );
+
+        assert_eq!(
+            refusal(&replaced, "example.com", 443, &["203.0.113.9"]),
+            "resolved to a listed address"
+        );
+        assert_eq!(
+            refusal(&replaced, "example.com", 443, &["192.168.1.5"]),
+            "resolved to one of this host's addresses"
+        );
     }
 }

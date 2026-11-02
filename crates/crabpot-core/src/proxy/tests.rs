@@ -10,29 +10,52 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use super::testing::{origin, proxy_allowing};
 use super::token::base64_encode;
-use super::{PortRange, Proxy, username_for};
-use crate::domain::DomainEntry;
+use super::{PortRange, Proxy, TcpGrant, username_for};
+use crate::config::MitmProxy;
+use crate::domain::{DomainEntry, DomainPattern};
+
+/// How long a client waits for the proxy to answer, so a proxy that never does
+/// fails a test instead of hanging it.
+const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A client of the mux on its Unix socket, in place of a client of the port.
 fn mux_client(proxy: &Proxy) -> UnixStream {
-    UnixStream::connect(proxy.mux_socket()).unwrap()
+    let stream = UnixStream::connect(proxy.mux_socket()).unwrap();
+    stream.set_read_timeout(Some(PATIENCE)).unwrap();
+    stream
+}
+
+fn allowed_entries(entries: &[&str]) -> Vec<DomainEntry> {
+    entries
+        .iter()
+        .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
+        .collect()
+}
+
+fn denied_entries(entries: &[&str]) -> Vec<DomainEntry> {
+    entries
+        .iter()
+        .map(|entry| DomainEntry::parse_denied(entry).unwrap())
+        .collect()
 }
 
 /// A proxy that lets `allowed` through and refuses `denied` over `allowed`'s head.
 fn proxy_denying(allowed: &[&str], denied: &[&str]) -> Proxy {
-    let allowed: Vec<DomainEntry> = allowed
-        .iter()
-        .map(|entry| DomainEntry::parse_allowed(entry).unwrap())
-        .collect();
-    let denied: Vec<DomainEntry> = denied
-        .iter()
-        .map(|entry| DomainEntry::parse_denied(entry).unwrap())
-        .collect();
-    Proxy::start(&allowed, &denied, &[], false, None).unwrap()
+    Proxy::start(
+        &allowed_entries(allowed),
+        &denied_entries(denied),
+        &[],
+        false,
+        None,
+    )
+    .unwrap()
 }
 
 /// The `Proxy-Authorization` header the HTTP leg wants.
@@ -194,4 +217,188 @@ fn start_keeps_binding_an_ephemeral_port() {
     for proxy in &proxies {
         assert_ne!(proxy.port(), 0);
     }
+}
+
+#[test]
+fn a_domain_added_while_running_is_allowed_on_the_next_request() {
+    let proxy = proxy_allowing(&[]);
+    let (port, _) = origin(None);
+    let target = format!("127.0.0.1:{port}");
+    let refused = head(&mut connect(&proxy, &target));
+    assert!(
+        refused.starts_with("HTTP/1.1 403 host is not on the allow list\r\n"),
+        "{refused}"
+    );
+
+    proxy.replace_lists(&allowed_entries(&["127.0.0.1"]), &[], &[]);
+
+    let mut stream = connect(&proxy, &target);
+    assert_eq!(
+        head(&mut stream),
+        "HTTP/1.1 200 Connection Established\r\n\r\n",
+    );
+    stream.write_all(b"ping").unwrap();
+    assert_eq!(&read_n::<4>(&mut stream), b"ping", "the tunnel");
+}
+
+#[test]
+fn a_domain_removed_while_running_is_refused_on_the_next_request() {
+    let proxy = proxy_allowing(&["127.0.0.1"]);
+    let (port, _) = origin(None);
+    let target = format!("127.0.0.1:{port}");
+    let mut stream = connect(&proxy, &target);
+    assert_eq!(
+        head(&mut stream),
+        "HTTP/1.1 200 Connection Established\r\n\r\n",
+    );
+    drop(stream);
+
+    proxy.replace_lists(&[], &[], &[]);
+
+    let refused = head(&mut connect(&proxy, &target));
+    assert!(
+        refused.starts_with("HTTP/1.1 403 host is not on the allow list\r\n"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_denied_domain_added_while_running_wins_over_an_allowed_one() {
+    let proxy = proxy_allowing(&["127.0.0.1"]);
+    let (port, _) = origin(None);
+
+    proxy.replace_lists(
+        &allowed_entries(&["127.0.0.1"]),
+        &denied_entries(&["127.0.0.1"]),
+        &[],
+    );
+
+    let refused = head(&mut connect(&proxy, &format!("127.0.0.1:{port}")));
+    assert!(
+        refused.starts_with("HTTP/1.1 403 host is on the deny list\r\n"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_tunnel_open_before_the_swap_keeps_running() {
+    let proxy = proxy_allowing(&["127.0.0.1"]);
+    let (port, _) = origin(None);
+    let mut stream = connect(&proxy, &format!("127.0.0.1:{port}"));
+    assert_eq!(
+        head(&mut stream),
+        "HTTP/1.1 200 Connection Established\r\n\r\n",
+    );
+    stream.write_all(b"ping").unwrap();
+    assert_eq!(&read_n::<4>(&mut stream), b"ping");
+
+    proxy.replace_lists(&[], &denied_entries(&["127.0.0.1"]), &[]);
+
+    stream.write_all(b"pong").unwrap();
+    assert_eq!(&read_n::<4>(&mut stream), b"pong", "the open tunnel");
+}
+
+/// Answers one `CONNECT` on `listener` with a 200, then echoes. It hands back
+/// the head it was sent.
+fn mitm_stand_in(listener: UnixListener) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let (mut client, _) = listener.accept().unwrap();
+        client.set_read_timeout(Some(PATIENCE)).unwrap();
+        let head = self::head(&mut client);
+        client.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+        let mut bytes = [0u8; 64];
+        while let Ok(read @ 1..) = client.read(&mut bytes) {
+            if client.write_all(&bytes[..read]).is_err() {
+                break;
+            }
+        }
+        head
+    })
+}
+
+#[test]
+fn replacing_the_lists_keeps_the_tcp_destinations_and_the_mitm_setting() {
+    let socket = std::env::temp_dir().join(format!("swap-mitm-{}.sock", std::process::id()));
+    let _ = fs::remove_file(&socket);
+    let stand_in = mitm_stand_in(UnixListener::bind(&socket).unwrap());
+    let (port, _) = origin(None);
+    let mitm = MitmProxy {
+        socket_path: socket.to_str().unwrap().to_owned(),
+        domains: vec![DomainPattern::parse("mitm.example.com").unwrap()],
+    };
+    let grant = TcpGrant {
+        host: "db.example.com".to_owned(),
+        address: format!("127.0.0.1:{port}").parse().unwrap(),
+    };
+    let proxy = Proxy::start_with_tcp(
+        &allowed_entries(&["mitm.example.com"]),
+        &[],
+        &[],
+        false,
+        Some(&mitm),
+        &[grant],
+    )
+    .unwrap();
+
+    proxy.replace_lists(
+        &allowed_entries(&["mitm.example.com", "other.example.com"]),
+        &[],
+        &[],
+    );
+
+    let mut tunnel = connect(&proxy, &format!("127.0.0.1:{port}"));
+    assert_eq!(
+        head(&mut tunnel),
+        "HTTP/1.1 200 Connection Established\r\n\r\n",
+        "the allowTcp grant",
+    );
+    tunnel.write_all(b"ping").unwrap();
+    assert_eq!(&read_n::<4>(&mut tunnel), b"ping");
+    let mut routed = connect(&proxy, "mitm.example.com:443");
+    assert_eq!(
+        head(&mut routed),
+        "HTTP/1.1 200 Connection Established\r\n\r\n",
+        "the mitmProxy route",
+    );
+    drop(routed);
+    let seen = stand_in.join().unwrap();
+    assert!(
+        seen.starts_with("CONNECT mitm.example.com:443 HTTP/1.1\r\n"),
+        "{seen}"
+    );
+    let _ = fs::remove_file(&socket);
+}
+
+/// With `localhost` allowed and nothing listening on the port, a request ends
+/// in a 502 under one set of lists and in a 403 "not on the allow list" under
+/// the other, which allows nothing. A filter of one set with the guard of the
+/// other ends in the guard's 403, which no whole set gives.
+#[test]
+fn replacing_the_lists_while_requests_arrive_never_lets_a_request_see_a_half_swapped_set() {
+    let port = {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        held.local_addr().unwrap().port()
+    };
+    let proxy = proxy_allowing(&["localhost"]);
+    let open = allowed_entries(&["localhost"]);
+    let shut = denied_entries(&["127.0.0.1", "[::1]"]);
+    let done = AtomicBool::new(false);
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Relaxed) {
+                proxy.replace_lists(&open, &[], &[]);
+                proxy.replace_lists(&[], &shut, &[]);
+            }
+        });
+        for _ in 0..100 {
+            let answer = head(&mut connect(&proxy, &format!("localhost:{port}")));
+            assert!(
+                answer.starts_with("HTTP/1.1 502 ")
+                    || answer.starts_with("HTTP/1.1 403 host is not on the allow list\r\n"),
+                "{answer}"
+            );
+        }
+        done.store(true, Ordering::Relaxed);
+    });
 }

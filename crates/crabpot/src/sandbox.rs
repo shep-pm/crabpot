@@ -202,6 +202,38 @@ impl Sandbox {
         }
     }
 
+    /// Replaces the allowed and denied domains and the denied resolved
+    /// addresses of the running sandbox with those of `config.network`, so a
+    /// host that follows a settings file can change them without restarting a
+    /// command.
+    ///
+    /// The next request or tunnel is judged by the new lists, and a tunnel that
+    /// is already open is not cut. Every other key of `config` is ignored: the
+    /// filesystem rules, `allowTcp`, `strictAllowlist`, `mitmProxy` and the rest
+    /// keep the values the sandbox started with.
+    pub fn replace_network_lists(&self, config: &Config) {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            self.proxy.replace_lists(
+                &config.network.allowed_domains,
+                &config.network.denied_domains,
+                config
+                    .network
+                    .denied_resolved_addresses
+                    .as_deref()
+                    .unwrap_or_default(),
+            );
+        }
+        #[cfg(windows)]
+        {
+            self.session.replace_network_lists(config);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        {
+            let _ = config;
+        }
+    }
+
     /// Wraps `command` into one that runs it inside this sandbox, to spawn in
     /// its place.
     ///

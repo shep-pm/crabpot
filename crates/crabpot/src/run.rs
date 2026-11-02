@@ -169,8 +169,9 @@ fn fail(reason: impl core::fmt::Display) -> ! {
 /// Windows sandbox up or takes it down instead, and exits 0 when that is done
 /// and 1 when it is refused or fails.
 ///
-/// A `-V` or `--version` before the command prints the package version and exits
-/// 0, without reading settings or starting a sandbox.
+/// A `-V` or `--version` before the command prints the package version, and a
+/// `-h` or `--help` prints the usage. Both exit 0, without reading settings or
+/// starting a sandbox.
 ///
 /// Blocks until the command ends. A command line, a settings file or a sandbox
 /// that is refused prints why to stderr and exits 125. Otherwise, the command's
@@ -199,6 +200,10 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
     let args = match args::parse(args) {
         Ok(Parsed::Version) => {
             println!("{}", env!("CARGO_PKG_VERSION"));
+            return 0;
+        }
+        Ok(Parsed::Help) => {
+            print!("{}", args::USAGE);
             return 0;
         }
         Ok(Parsed::Run(args)) => args,

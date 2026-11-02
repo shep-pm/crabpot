@@ -1,4 +1,4 @@
-//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d`, `-V` and
+//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d`, `-V`, `-h` and
 //! `--`, then a program and its arguments.
 
 use core::fmt;
@@ -19,11 +19,40 @@ pub(crate) struct Args {
     pub(crate) command: Invocation,
 }
 
+/// What `-h` and `--help` print.
+pub(crate) const USAGE: &str = "\
+Usage: crabpot [options] [command...]
+       crabpot [options] -c <command>
+       crabpot windows-install [options]
+       crabpot windows-uninstall [options]
+
+Runs a command with its filesystem and network access confined.
+
+Options:
+  -s, --settings <path>  settings file (default: ~/.srt-settings.json)
+  -c <command>           run a line with `bash -c`, instead of a program
+  -d, --debug            print the wrapped command to stderr
+  -V, --version          print the version
+  -h, --help             print this help
+
+Put `--` before a program whose name starts with `-`. Everything after the
+program's name belongs to the program.
+
+Exit status: the command's own, or 125 when the sandbox or the command line is
+refused.
+
+Subcommands (Windows):
+  windows-install        set up the sandbox user and the network filters
+  windows-uninstall      take them down
+";
+
 /// What the command line asks crabpot to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Parsed {
     /// `-V` or `--version`: print the package version.
     Version,
+    /// `-h` or `--help`: print [`USAGE`].
+    Help,
     /// Run a command in the sandbox.
     Run(Args),
 }
@@ -311,7 +340,8 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
 /// Reads the arguments after the program's name. The first one that is not an
 /// option begins the command, and everything from there is the command's own.
 /// A `-c` line runs instead of any program named beside it, as upstream's does.
-/// `-V` and `--version` before the command ask for the version, as upstream's do.
+/// `-V`, `--version`, `-h` and `--help` before the command ask for the version
+/// or the usage, as upstream's do.
 pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ArgsError> {
     let mut args = args.into_iter();
     let mut settings: Option<PathBuf> = None;
@@ -321,6 +351,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("-V" | "--version") => return Ok(Parsed::Version),
+            Some("-h" | "--help") => return Ok(Parsed::Help),
             Some("-d" | "--debug") => debug = true,
             Some("-s" | "--settings") => {
                 settings = Some(args.next().ok_or(ArgsError::MissingValue("-s"))?.into());
@@ -366,7 +397,7 @@ mod tests {
     fn parse_strs(args: &[&str]) -> Result<Args, ArgsError> {
         match parse(args.iter().map(OsString::from))? {
             Parsed::Run(args) => Ok(args),
-            Parsed::Version => panic!("{args:?} asked for the version"),
+            Parsed::Version | Parsed::Help => panic!("{args:?} asked for no command"),
         }
     }
 
@@ -421,7 +452,19 @@ mod tests {
     }
 
     #[test]
-    fn a_version_flag_after_the_command_belongs_to_the_command() {
+    fn help_flags_ask_for_the_usage() {
+        for flag in ["-h", "--help"] {
+            assert_eq!(parse(os(&[flag])), Ok(Parsed::Help));
+            assert_eq!(
+                parse(os(&["-d", flag])),
+                Ok(Parsed::Help),
+                "it needs no command"
+            );
+        }
+    }
+
+    #[test]
+    fn a_version_or_help_flag_after_the_command_belongs_to_the_command() {
         assert_eq!(
             parse_strs(&["--", "ls", "--version"]).map(|args| args.command),
             Ok(argv(&["ls", "--version"]))
@@ -431,8 +474,16 @@ mod tests {
             Ok(argv(&["ls", "--version"]))
         );
         assert_eq!(
+            parse_strs(&["ls", "--help"]).map(|args| args.command),
+            Ok(argv(&["ls", "--help"]))
+        );
+        assert_eq!(
             parse_strs(&["--", "-V"]).map(|args| args.command),
             Ok(argv(&["-V"]))
+        );
+        assert_eq!(
+            parse_strs(&["--", "-h"]).map(|args| args.command),
+            Ok(argv(&["-h"]))
         );
     }
 

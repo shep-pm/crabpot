@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-02
+
+### Added
+
+- The proxy replaces its network lists while it runs
+
+
 ## [0.10.2] - 2026-11-02
 
 

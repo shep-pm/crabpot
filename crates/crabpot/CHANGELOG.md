@@ -5,6 +5,19 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.6] - 2026-11-02
+
+### Added
+
+- Parse --control-fd as a descriptor of 3 or more
+- --control-fd replaces the network lists from JSON lines
+
+### Fixed
+
+- Stop the control reader at once and refuse --control-fd early
+- Check --control-fd before the sandbox starts
+
+
 ## [0.10.5] - 2026-11-02
 
 ### Added

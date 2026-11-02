@@ -1,6 +1,8 @@
 //! Native Rust sandbox runtime for AI agents, rewritten from Anthropic's sandbox-runtime.
 
 mod args;
+#[cfg(unix)]
+mod control;
 mod run;
 mod sandbox;
 mod windows;

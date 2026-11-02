@@ -55,6 +55,11 @@ serde_json.workspace = true
 # The wrapper waits on its child and forwards host shutdown signals.
 tokio = { version = "1", default-features = false, features = ["rt", "process", "signal", "time"] }
 
+[target.'cfg(unix)'.dependencies]
+# The descriptor `--control-fd` names is moved aside and polled, which std has
+# no call for.
+libc = { version = "0.2", default-features = false }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 crabpot-macos.workspace = true
 

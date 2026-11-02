@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Stdio;
 use std::process::{Command, ExitStatus};
+use std::sync::Arc;
 
 use crabpot_core::config::{Config, ConfigError};
 
@@ -24,6 +25,8 @@ use tokio::task::JoinHandle;
 use crabpot_linux::info::Report;
 
 use crate::args::{self, Helper, HelperMode, Invocation, Parsed, SRT_WIN_FLAG, Subcommand};
+#[cfg(unix)]
+use crate::control::{self, Control};
 use crate::sandbox::Sandbox;
 use crate::windows::install::{self, Machine};
 
@@ -213,7 +216,7 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
         }
     };
     match prepare(args) {
-        Ok((_sandbox, command, target)) => {
+        Ok((_sandbox, _control, command, target)) => {
             #[cfg(target_os = "linux")]
             let command = {
                 let mut command = command;
@@ -250,11 +253,28 @@ fn run_subcommand(subcommand: Subcommand) -> i32 {
     }
 }
 
-/// The sandbox, which has to outlive the command, the command wrapped in it,
-/// and the process that is to get the signals meant for the command.
-fn prepare(args: args::Args) -> Result<(Sandbox, Command, ForwardTarget), Box<dyn Error>> {
+/// What `prepare` hands the run: the sandbox and the control reader, which
+/// have to outlive the command, the command wrapped in it, and the process that
+/// is to get the signals meant for the command.
+type Prepared = (Arc<Sandbox>, Option<Control>, Command, ForwardTarget);
+
+fn prepare(args: args::Args) -> Result<Prepared, Box<dyn Error>> {
+    // A control descriptor is a Unix descriptor, so this is refused before a
+    // session starts.
+    #[cfg(not(unix))]
+    if args.control_fd.is_some() {
+        return Err("--control-fd is not supported on Windows".into());
+    }
     let config = load_config(args.settings.as_deref(), env::var_os("HOME"))?;
-    let sandbox = Sandbox::start(&config)?;
+    #[cfg(unix)]
+    if let Some(fd) = args.control_fd {
+        control::check(fd)?;
+    }
+    let sandbox = Arc::new(Sandbox::start(&config)?);
+    #[cfg(unix)]
+    let control = follow_control(args.control_fd, &sandbox)?;
+    #[cfg(not(unix))]
+    let control: Option<Control> = None;
     let command = match args.command {
         Invocation::Argv(argv) => {
             let mut command = Command::new(&argv[0]);
@@ -283,8 +303,23 @@ fn prepare(args: args::Args) -> Result<(Sandbox, Command, ForwardTarget), Box<dy
     if args.debug {
         eprintln!("crabpot: running {}", debug_line(&wrapped));
     }
-    Ok((sandbox, wrapped, target))
+    Ok((sandbox, control, wrapped, target))
 }
+
+/// Starts the reader of the `--control-fd` descriptor, if one was named, which
+/// leaves `/dev/null` under its number for the command.
+#[cfg(unix)]
+fn follow_control(
+    fd: Option<i32>,
+    sandbox: &Arc<Sandbox>,
+) -> Result<Option<Control>, Box<dyn Error>> {
+    Ok(fd
+        .map(|fd| control::start(fd, Arc::clone(sandbox)))
+        .transpose()?)
+}
+
+#[cfg(not(unix))]
+type Control = ();
 
 /// `command` as `--debug` prints it: the program and its arguments, with the
 /// value of each `--env NAME=VALUE` pair left out, since the environment holds

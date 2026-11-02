@@ -6,13 +6,13 @@
 #![cfg(target_os = "linux")]
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
@@ -20,10 +20,15 @@ use nix::unistd::Pid;
 const CRABPOT: &str = env!("CARGO_BIN_EXE_crabpot");
 
 /// Binds `address` inside the sandbox, says `ready` once it listens, then
-/// answers each client's four bytes with `name`.
+/// answers each client's four bytes with `name`. A fourth argument is a file
+/// to wait for first, after saying `waiting`.
 const SERVER: &str = r#"
-import socket, sys
+import os, socket, sys, time
 address, port, name = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+if len(sys.argv) > 4:
+    print('waiting', flush=True)
+    while not os.path.exists(sys.argv[4]):
+        time.sleep(0.05)
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind((address, port))
 server.listen()
@@ -83,35 +88,69 @@ fn crabpot_command(settings: &Path) -> Command {
 }
 
 /// Starts `SERVER` bound to `bind` as `name` in a sandbox that publishes
-/// `published`, and returns once it listens.
-fn serve(case: &str, published: SocketAddr, bind: SocketAddr, name: &str) -> Running {
+/// `published`, waiting for `gate` to exist first when it is given. The lines it
+/// prints arrive on the receiver.
+fn spawn_server(
+    case: &str,
+    published: SocketAddr,
+    bind: SocketAddr,
+    name: &str,
+    gate: Option<&Path>,
+) -> (Running, mpsc::Receiver<String>) {
     let settings = settings_publishing(case, &[published]);
     let mut child = crabpot_command(&settings)
         .args(["--", "python3", "-c", SERVER])
         .args([&bind.ip().to_string(), &bind.port().to_string(), name])
+        .args(gate)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let stdout = BufReader::new(child.stdout.take().unwrap());
     let running = Running(child);
-    let (line, first) = mpsc::channel();
+    let (sender, lines) = mpsc::channel();
     thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_line(&mut text);
-        let _ = line.send(text);
+        for line in stdout.lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                return;
+            }
+        }
     });
-    let text = first
+    (running, lines)
+}
+
+/// The next line the sandboxed server prints, which must be `expected`.
+fn expect_line(lines: &mpsc::Receiver<String>, expected: &str) {
+    let line = lines
         .recv_timeout(Duration::from_secs(30))
         .expect("the sandboxed server did not start");
-    assert_eq!(text, "ready\n");
+    assert_eq!(line, expected);
+}
+
+/// Starts `SERVER` bound to `bind` as `name` in a sandbox that publishes
+/// `published`, and returns once it listens.
+fn serve(case: &str, published: SocketAddr, bind: SocketAddr, name: &str) -> Running {
+    let (running, lines) = spawn_server(case, published, bind, name, None);
+    expect_line(&lines, "ready");
     running
 }
 
 /// What the command behind `address` answers a host client, empty when the
-/// connection was closed on it.
+/// connection was closed on it. The port opens a moment after the command
+/// listens, so a refusal is tried again for a while.
 fn ask(address: SocketAddr) -> String {
-    let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut client = loop {
+        match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+            Ok(client) => break client,
+            Err(error)
+                if error.kind() == ErrorKind::ConnectionRefused && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => panic!("{address} did not accept: {error}"),
+        }
+    };
     client
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -154,19 +193,35 @@ fn a_command_listening_on_loopback_answers_a_host_client_through_publish() {
 }
 
 #[test]
+fn a_host_probe_is_refused_until_the_command_listens_on_loopback() {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, free_port()));
+    let gate = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("publish-gate-{}", std::process::id()));
+    // A gate left by an earlier run would open this one before the probe.
+    let _ = fs::remove_file(&gate);
+    let (_sandbox, lines) = spawn_server("gated", address, address, "inside", Some(&gate));
+    expect_line(&lines, "waiting");
+
+    let probe = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap_err();
+    assert_eq!(probe.kind(), ErrorKind::ConnectionRefused);
+
+    fs::write(&gate, "").unwrap();
+    expect_line(&lines, "ready");
+    assert_eq!(ask(address), "inside");
+}
+
+#[test]
 fn a_second_sandbox_publishing_the_same_port_starts_and_both_answer() {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, free_port()));
     let _first = serve("cutover-first", address, address, "first");
     let _second = serve("cutover-second", address, address, "second");
 
     // The system spreads clients over both listeners by their source ports, so
-    // each answers within a few connections.
+    // each answers within a few connections, once both are open.
     let mut answered = std::collections::BTreeSet::new();
-    for _ in 0..200 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while answered.len() < 2 && Instant::now() < deadline {
         answered.insert(ask(address));
-        if answered.len() == 2 {
-            break;
-        }
     }
 
     assert_eq!(

@@ -5,6 +5,19 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-11-02
+
+### Added
+
+- Print the version for -V and --version
+- Print the usage for -h and --help
+
+### Fixed
+
+- State the Windows subcommands' exit status in the usage
+- Answer -h and --help after windows-install and windows-uninstall
+
+
 ## [0.10.1] - 2026-11-01
 
 ### Internal

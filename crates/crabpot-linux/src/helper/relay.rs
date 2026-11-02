@@ -10,8 +10,9 @@
 //! Each arrives as a descriptor with the address it came in on. The relay dials
 //! that address inside the network namespace and copies both ways. The launcher
 //! first sends each published address alone, and the relay sends it back once
-//! the namespace's `/proc/net/tcp` and `/proc/net/tcp6` show a listening socket
-//! there, which is when the launcher starts accepting on the host.
+//! the kernel lists a listening socket there, which is when the launcher starts
+//! accepting on the host. Where the kernel's socket diagnostics are refused, the
+//! namespace's `/proc/net/tcp` and `/proc/net/tcp6` stand in for them.
 
 use core::time::Duration;
 use std::fs::{File, OpenOptions};
@@ -27,6 +28,7 @@ use nix::sys::prctl;
 use nix::sys::signal::Signal;
 use nix::unistd::{ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, pipe};
 
+use super::diag::{self, Listener};
 use super::init::{InitError, Step};
 use super::sys;
 use crate::net::relay::{bind, bind_loopback, serve, serve_tunnel};
@@ -221,12 +223,24 @@ fn hung_up_within_poll(channel: &OwnedFd) -> bool {
 /// [`dial`] would reach for `published`.
 fn is_listening(published: SocketAddr) -> bool {
     let targets = inside(published);
-    ["/proc/net/tcp", "/proc/net/tcp6"].iter().any(|path| {
-        std::fs::read_to_string(path).is_ok_and(|table| {
+    let listeners = diag::listeners().unwrap_or_else(|_| proc_listeners());
+    listeners
+        .into_iter()
+        .any(|listener| targets.iter().any(|target| accepts(listener, *target)))
+}
+
+/// The listening sockets that `/proc/net/tcp` and `/proc/net/tcp6` show, which
+/// do not say whether an IPv6 socket is IPv6-only.
+fn proc_listeners() -> Vec<Listener> {
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .flat_map(|table| {
             listening_addresses(&table)
-                .any(|listener| targets.iter().any(|target| accepts(listener, *target)))
+                .map(Listener::from)
+                .collect::<Vec<_>>()
         })
-    })
+        .collect()
 }
 
 /// The local addresses of the sockets in the `LISTEN` state in `table`, the text
@@ -264,11 +278,12 @@ fn table_ip(text: &str) -> Option<IpAddr> {
     }
 }
 
-/// Whether a socket listening on `listener` takes a connection to `target`. An
-/// IPv6 wildcard is taken to be dual-stack, which the tables do not say.
-fn accepts(listener: SocketAddr, target: SocketAddr) -> bool {
-    listener.port() == target.port()
-        && match (listener.ip(), target.ip()) {
+/// Whether a socket listening as `listener` takes a connection to `target`. An
+/// IPv6 wildcard takes an IPv4 target unless it is IPv6-only.
+fn accepts(listener: impl Into<Listener>, target: SocketAddr) -> bool {
+    let Listener { address, v6only } = listener.into();
+    address.port() == target.port()
+        && match (address.ip(), target.ip()) {
             (IpAddr::V4(listener), IpAddr::V4(target)) => {
                 listener == target || listener.is_unspecified()
             }
@@ -276,7 +291,7 @@ fn accepts(listener: SocketAddr, target: SocketAddr) -> bool {
                 listener == target || listener.is_unspecified()
             }
             (IpAddr::V6(listener), IpAddr::V4(target)) => {
-                listener.is_unspecified() || listener == target.to_ipv6_mapped()
+                (listener.is_unspecified() && !v6only) || listener == target.to_ipv6_mapped()
             }
             (IpAddr::V4(_), IpAddr::V6(_)) => false,
         }
@@ -445,6 +460,20 @@ mod tests {
         assert!(accepts(at(Ipv6Addr::UNSPECIFIED.into()), at(v6.into())));
         assert!(accepts(at(Ipv6Addr::UNSPECIFIED.into()), at(v4.into())));
         assert!(accepts(at(v4.to_ipv6_mapped().into()), at(v4.into())));
+    }
+
+    #[test]
+    fn an_ipv6_only_wildcard_does_not_take_an_ipv4_connection() {
+        let at = |ip: IpAddr| SocketAddr::new(ip, 80);
+        let wildcard = |v6only| Listener {
+            address: at(Ipv6Addr::UNSPECIFIED.into()),
+            v6only,
+        };
+        let (v4, v6) = (Ipv4Addr::LOCALHOST, Ipv6Addr::LOCALHOST);
+
+        assert!(!accepts(wildcard(true), at(v4.into())));
+        assert!(accepts(wildcard(true), at(v6.into())));
+        assert!(accepts(wildcard(false), at(v4.into())));
     }
 
     #[test]

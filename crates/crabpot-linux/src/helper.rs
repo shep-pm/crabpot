@@ -19,7 +19,10 @@
 //! network namespace and configures `lo`. The relay shares that network namespace.
 //!
 //! With `init_with_publish` the relay also receives the connections the launcher
-//! accepts on the host for `network.publish` and dials them inside.
+//! accepts on the host for `network.publish` and dials them inside. The launcher
+//! first sends each published address alone, and the relay sends it back once a
+//! socket listens on it in the sandbox's network namespace, which opens the port
+//! on the host.
 
 #[cfg(target_os = "linux")]
 mod connect;

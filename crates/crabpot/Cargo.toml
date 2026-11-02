@@ -17,6 +17,9 @@ exclude = ["/docs/"]
 # included, does not need it, so a host that only links crabpot leaves it off.
 default = ["cli"]
 cli = []
+# Option: `schema` implements `schemars::JsonSchema` for `Config`, which adds
+# `schemars` to the build.
+schema = ["crabpot-core/schema"]
 
 [[bin]]
 name = "crabpot"

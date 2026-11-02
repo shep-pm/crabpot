@@ -11,10 +11,17 @@ keywords.workspace = true
 # a published .crate, which is permanent.
 exclude = ["/docs/"]
 
+[features]
+# Option: `schema` implements `schemars::JsonSchema` for `config::Config`, so a
+# host that serves or edits crabpot's settings can ship the schema
+# `Config::from_json` accepts. It adds `schemars` to the build.
+schema = ["dep:schemars"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
+schemars = { workspace = true, optional = true }
 # The proxies run on a runtime of their own (ADR-0006): sockets, a timer for
 # the dial, and a channel to stop it, and no more.
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
@@ -41,6 +48,10 @@ windows-sys = { version = "0.61", default-features = false, features = [
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
 ] }
+
+[dev-dependencies]
+# Only to check the generated settings schema against `Config::from_json`.
+jsonschema = { version = "0.60", default-features = false }
 
 [lints]
 workspace = true

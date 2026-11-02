@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 
 use super::*;
 
+#[cfg(feature = "schema")]
+mod schema;
 mod windows;
 
 /// A settings file that sets only what upstream's schema requires.

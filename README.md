@@ -62,8 +62,11 @@ and an empty list asks for nothing on every platform:
   the sandbox, where a relay dials the same address and port. The command binds
   that address as it would unsandboxed. An address that is neither loopback nor
   a wildcard is added to the sandbox's `lo`. The listeners set `SO_REUSEPORT`,
-  so a second sandbox can publish the same port during a cutover. A port nothing
-  holds a listener on inside closes that one connection. An address the host
+  so a second sandbox can publish the same port during a cutover. The host
+  refuses connections to a published port until a command inside listens on it,
+  so a readiness probe on the host sees the port closed until the command is
+  ready. The port then stays open, and once the command stops listening a
+  connection to it is closed. An address the host
   cannot listen on, such as a port held without `SO_REUSEPORT`, refuses the
   sandbox and names it, as does an IPv6 entry with an interface scope such as
   `[fe80::1%2]:8001`, or a port of 3128 or 1080, which the sandbox's proxy relay

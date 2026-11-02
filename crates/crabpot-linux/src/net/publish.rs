@@ -1,11 +1,16 @@
 //! `network.publish`: the host's listeners for the addresses a sandbox serves.
 //!
 //! A command in a network namespace of its own is unreachable from the host.
-//! The launcher listens on each published address instead, with `SO_REUSEPORT`
+//! The launcher binds each published address instead, with `SO_REUSEPORT`
 //! so a second sandbox may take the port during a cutover, and passes every
-//! accepted connection into the sandbox as a descriptor over a datagram socket
-//! pair. A datagram carries the descriptor and, as text, the address it came
-//! in on. The helper's relay dials that address inside the namespace.
+//! accepted connection into the sandbox as a descriptor over a socket pair. A
+//! message carries the descriptor and, as text, the address it came in on. The
+//! helper's relay dials that address inside the namespace.
+//!
+//! A bound port refuses connections until it listens, so a host that probes the
+//! port sees it closed while nothing is ready inside. The launcher sends each
+//! address into the pair first, and listens on it once the relay sends it back,
+//! which it does when a command listens there. The port then stays open.
 
 use core::fmt;
 use std::io::{self, IoSlice};
@@ -21,7 +26,7 @@ use nix::sys::socket::{
     AddressFamily, ControlMessage, MsgFlags, SockFlag, SockType, sendmsg, socketpair,
 };
 
-use super::relay::{ACCEPT_RETRY, listen_shared};
+use super::relay::{ACCEPT_RETRY, bind_shared, start_listening};
 use crate::helper::sys;
 
 /// Why a sandbox's published addresses could not be served.
@@ -63,7 +68,8 @@ impl core::error::Error for PublishError {}
 
 /// The host's listeners for one command's published addresses, served until it
 /// drops or the sandbox's end of the socket pair has closed, which every process
-/// holding it exiting does. The port is free again once either has.
+/// holding it exiting does. The port is free again once either has. An address
+/// listens once the command inside does.
 #[derive(Debug)]
 pub struct Published {
     addresses: Vec<SocketAddr>,
@@ -107,7 +113,7 @@ impl Inside {
     }
 }
 
-/// Listens on every address in `addresses`. The inside end of the socket pair
+/// Binds every address in `addresses`. The inside end of the socket pair
 /// sits above every descriptor the launcher can have inherited, so the command
 /// keeps what it was handed.
 ///
@@ -123,13 +129,13 @@ pub fn publish(addresses: &[SocketAddr]) -> Result<(Published, Inside), PublishE
     Ok((published, Inside(inside)))
 }
 
-/// Listens on every address in `addresses`, and returns the inside end of the
-/// socket pair the accepted connections go over.
+/// Binds every address in `addresses`, and returns the inside end of the socket
+/// pair the accepted connections go over.
 fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError> {
     let channel = |error: io::Error| PublishError::Channel(error.kind());
-    let mut listeners = Vec::new();
+    let mut ports = Vec::new();
     for &address in addresses {
-        let listener = listen_shared(address).map_err(|error| PublishError::Bind {
+        let listener = bind_shared(address).map_err(|error| PublishError::Bind {
             address,
             reason: io::Error::from(error).kind(),
         })?;
@@ -137,7 +143,11 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
         // The bound address names the port the system chose for port 0, and
         // leaves out an interface scope, which means nothing inside.
         let bound = listener.local_addr().map_err(channel)?;
-        listeners.push((listener, SocketAddr::new(bound.ip(), bound.port())));
+        ports.push(Port {
+            listener,
+            address: SocketAddr::new(bound.ip(), bound.port()),
+            open: false,
+        });
     }
     let (outside, inside) = socketpair(
         AddressFamily::Unix,
@@ -152,10 +162,10 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
     )
     .map_err(|error| channel(error.into()))?;
     let (wake, woken) = UnixStream::pair().map_err(channel)?;
-    let addresses = listeners.iter().map(|(_, address)| *address).collect();
+    let addresses = ports.iter().map(|port| port.address).collect();
     let thread = thread::Builder::new()
         .name("publish".to_owned())
-        .spawn(move || accept_all(&listeners, &woken, &outside))
+        .spawn(move || accept_all(ports, &woken, &outside))
         .map_err(channel)?;
     let published = Published {
         addresses,
@@ -165,13 +175,28 @@ fn serve(addresses: &[SocketAddr]) -> Result<(Published, OwnedFd), PublishError>
     Ok((published, inside))
 }
 
-/// Passes each connection the listeners accept into the sandbox, until `woken`
-/// reports its peer has hung up, or the sandbox's end of the pair has closed.
-fn accept_all(listeners: &[(TcpListener, SocketAddr)], woken: &UnixStream, outside: &OwnedFd) {
+/// One published address: bound from the start, listening once a command does.
+struct Port {
+    listener: TcpListener,
+    address: SocketAddr,
+    open: bool,
+}
+
+/// Asks the relay to watch each address, then passes each connection the open
+/// ports accept into the sandbox, and opens a port when the relay sends its
+/// address back. It ends when `woken` reports its peer has hung up, or the
+/// sandbox's end of the pair has closed.
+fn accept_all(mut ports: Vec<Port>, woken: &UnixStream, outside: &OwnedFd) {
+    for port in &ports {
+        // The pair holds a few messages, and a relay that is gone ends the loop below.
+        let _ = sys::send_address(outside.as_fd(), port.address);
+    }
     loop {
-        let mut polls: Vec<_> = listeners
+        // A socket that is bound and does not listen reports a hang-up.
+        let open: Vec<usize> = (0..ports.len()).filter(|&at| ports[at].open).collect();
+        let mut polls: Vec<_> = open
             .iter()
-            .map(|(listener, _)| PollFd::new(listener.as_fd(), PollFlags::POLLIN))
+            .map(|&at| PollFd::new(ports[at].listener.as_fd(), PollFlags::POLLIN))
             .collect();
         polls.push(PollFd::new(woken.as_fd(), PollFlags::POLLIN));
         polls.push(PollFd::new(outside.as_fd(), PollFlags::POLLIN));
@@ -180,19 +205,40 @@ fn accept_all(listeners: &[(TcpListener, SocketAddr)], woken: &UnixStream, outsi
             Err(_) => return,
             Ok(_) => {}
         }
-        let mut ready: Vec<bool> = polls
+        let mut events: Vec<PollFlags> = polls
             .iter()
-            .map(|polled| polled.revents().is_some_and(|events| !events.is_empty()))
+            .map(|polled| polled.revents().unwrap_or(PollFlags::POLLERR))
             .collect();
-        // Nothing is ever sent to this end, so any event on it is the hang-up.
-        if ready.pop().unwrap_or(true) || ready.pop().unwrap_or(true) {
+        let channel = events.pop().unwrap_or(PollFlags::POLLHUP);
+        if !events.pop().unwrap_or(PollFlags::POLLHUP).is_empty() {
             return;
         }
-        for ((listener, address), ready) in listeners.iter().zip(ready) {
-            if ready {
-                accept_ready(listener, *address, outside);
+        for (&at, ready) in open.iter().zip(events) {
+            if !ready.is_empty() {
+                accept_ready(&ports[at].listener, ports[at].address, outside);
             }
         }
+        if channel.contains(PollFlags::POLLIN) {
+            match sys::receive(outside.as_fd()) {
+                Ok(sys::Received::Address(address)) => open_port(&mut ports, address),
+                // Nothing but an address comes this way.
+                Ok(sys::Received::Connection(_)) => {}
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+                Err(_) => return,
+            }
+        } else if !channel.is_empty() {
+            return;
+        }
+    }
+}
+
+/// Has the port bound to `address` listen, which it keeps doing.
+fn open_port(ports: &mut [Port], address: SocketAddr) {
+    for port in ports
+        .iter_mut()
+        .filter(|port| port.address == address && !port.open)
+    {
+        port.open = start_listening(&port.listener).is_ok();
     }
 }
 
@@ -240,18 +286,104 @@ mod tests {
 
     const LOCAL: SocketAddr = SocketAddr::new(core::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
+    /// The next connection on `inside`, past the addresses the launcher asks
+    /// the relay to watch.
     fn receive(inside: &OwnedFd) -> sys::Accepted {
-        let mut polls = [PollFd::new(inside.as_fd(), PollFlags::POLLIN)];
-        let ready = poll(&mut polls, PollTimeout::try_from(STEP).unwrap()).unwrap();
-        assert_eq!(ready, 1, "no connection arrived within {STEP:?}");
-        sys::receive_connection(inside.as_fd()).unwrap()
+        loop {
+            let mut polls = [PollFd::new(inside.as_fd(), PollFlags::POLLIN)];
+            let ready = poll(&mut polls, PollTimeout::try_from(STEP).unwrap()).unwrap();
+            assert_eq!(ready, 1, "no connection arrived within {STEP:?}");
+            if let sys::Received::Connection(accepted) = sys::receive(inside.as_fd()).unwrap() {
+                return accepted;
+            }
+        }
+    }
+
+    /// What the relay does once a command listens on `address` inside.
+    fn command_listens(inside: &OwnedFd, address: SocketAddr) {
+        sys::send_address(inside.as_fd(), address).unwrap();
+    }
+
+    /// Connects once `address` accepts, which follows `command_listens` by a
+    /// moment. A refusal before then is the case under test elsewhere.
+    fn connect_once_open(address: SocketAddr) -> TcpStream {
+        let deadline = std::time::Instant::now() + STEP;
+        loop {
+            match TcpStream::connect_timeout(&address, STEP) {
+                Ok(client) => return client,
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the port never opened"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_published_port_refuses_connections_until_the_command_listens_inside() {
+        let (published, _inside) = serve(&[LOCAL]).unwrap();
+        let address = published.addresses()[0];
+
+        let error = TcpStream::connect_timeout(&address, STEP).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+    }
+
+    #[test]
+    fn a_published_port_accepts_connections_once_the_command_listens_inside() {
+        let (published, inside) = serve(&[LOCAL]).unwrap();
+        let address = published.addresses()[0];
+
+        command_listens(&inside, address);
+
+        let _client = connect_once_open(address);
+        assert_eq!(receive(&inside).address, address);
+    }
+
+    #[test]
+    fn a_published_port_stays_open_after_the_command_stops_listening() {
+        let (published, inside) = serve(&[LOCAL]).unwrap();
+        let address = published.addresses()[0];
+        command_listens(&inside, address);
+        let _first = connect_once_open(address);
+        receive(&inside);
+
+        // The relay says nothing more, whatever the command does next.
+        let _second = TcpStream::connect_timeout(&address, STEP).unwrap();
+
+        assert_eq!(receive(&inside).address, address);
+    }
+
+    #[test]
+    fn the_relay_is_asked_to_watch_each_published_address() {
+        let (published, inside) = serve(&[LOCAL, LOCAL]).unwrap();
+
+        let mut asked = Vec::new();
+        for _ in 0..2 {
+            let mut polls = [PollFd::new(inside.as_fd(), PollFlags::POLLIN)];
+            assert_eq!(
+                poll(&mut polls, PollTimeout::try_from(STEP).unwrap()).unwrap(),
+                1
+            );
+            match sys::receive(inside.as_fd()).unwrap() {
+                sys::Received::Address(address) => asked.push(address),
+                sys::Received::Connection(_) => panic!("a connection came before any listened"),
+            }
+        }
+
+        assert_eq!(asked, published.addresses());
     }
 
     #[test]
     fn a_connection_arrives_as_a_descriptor_with_the_address_it_came_in_on() {
         let (published, inside) = serve(&[LOCAL]).unwrap();
         let address = published.addresses()[0];
-        let mut client = TcpStream::connect_timeout(&address, STEP).unwrap();
+        command_listens(&inside, address);
+        let mut client = connect_once_open(address);
 
         let accepted = receive(&inside);
 
@@ -281,9 +413,17 @@ mod tests {
         // The way the relay reads: no poll first, so a read with nothing queued
         // must wait and not return `WouldBlock`.
         thread::spawn(move || {
-            let _ = arrived.send(sys::receive_connection(reader.as_fd()).map(|got| got.address));
+            let connection = loop {
+                match sys::receive(reader.as_fd()) {
+                    Ok(sys::Received::Connection(got)) => break Ok(got.address),
+                    Ok(sys::Received::Address(_)) => {}
+                    Err(error) => break Err(error),
+                }
+            };
+            let _ = arrived.send(connection);
         });
-        let _client = TcpStream::connect_timeout(&address, STEP).unwrap();
+        command_listens(&inside, address);
+        let _client = connect_once_open(address);
 
         let received = accepted.recv_timeout(STEP).expect("the read never ended");
 
@@ -300,13 +440,19 @@ mod tests {
 
         assert_eq!(second.addresses(), [address]);
         for inside in [&first_inside, &second_inside] {
+            command_listens(inside, address);
+        }
+        for inside in [&first_inside, &second_inside] {
             // The system picks which listener gets a connection, so connect until
             // this one has had one. Each round waits for it on the descriptor.
+            // A port that does not listen yet refuses, and the next round tries again.
             let mut polls = [PollFd::new(inside.as_fd(), PollFlags::POLLIN)];
             let mut clients = Vec::new();
+            let mut rounds = 0;
             while poll(&mut polls, PollTimeout::from(50_u8)).unwrap() == 0 {
-                clients.push(TcpStream::connect_timeout(&address, STEP).unwrap());
-                assert!(clients.len() < 200, "the listener never got a connection");
+                clients.extend(TcpStream::connect_timeout(&address, STEP));
+                rounds += 1;
+                assert!(rounds < 400, "the listener never got a connection");
             }
         }
     }
@@ -335,6 +481,7 @@ mod tests {
 
         let (published, inside) = serve(&[LOCAL]).unwrap();
         let address = published.addresses()[0];
+        command_listens(&inside, address);
         let connecting = Arc::new(AtomicBool::new(true));
         let clients = thread::spawn({
             let connecting = Arc::clone(&connecting);
@@ -363,6 +510,8 @@ mod tests {
     fn the_port_is_freed_once_the_inside_end_is_gone() {
         let (published, inside) = serve(&[LOCAL]).unwrap();
         let address = published.addresses()[0];
+        command_listens(&inside, address);
+        drop(connect_once_open(address));
 
         drop(inside);
 

@@ -19,7 +19,7 @@ use nix::net::if_::if_nametoindex;
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, kill, sigaction};
 use nix::sys::socket::{
     AddressFamily, ControlMessageOwned, MsgFlags, NetlinkAddr, SockFlag, SockProtocol, SockType,
-    bind, recv, recvmsg, sendto, socket,
+    bind, recv, recvmsg, send, sendto, socket,
 };
 use nix::unistd::{self, ForkResult, Pid};
 
@@ -263,15 +263,42 @@ pub(crate) fn adopt_inherited(fd: u32) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// Waits for the next connection the launcher passed on `socket`, which is the
-/// address datagram its descriptor came with.
+/// What arrives on the socket pair between the launcher and the relay.
+#[derive(Debug)]
+pub(crate) enum Received {
+    /// A connection and the address it came in on, which the launcher sends.
+    Connection(Accepted),
+    /// An address alone. The launcher sends one for each address the relay is to
+    /// watch, and the relay sends it back once a command accepts connections there.
+    Address(SocketAddr),
+}
+
+/// Sends `address` as text with no descriptor, to the other end of the pair.
 ///
 /// # Errors
 ///
-/// [`io::ErrorKind::InvalidData`] for a datagram with no descriptor or an
-/// address that is not text of one, which the sender never makes; the next call
-/// reads the datagram after it. Any other error ends the stream.
-pub(crate) fn receive_connection(socket: BorrowedFd<'_>) -> io::Result<Accepted> {
+/// The error of the send, such as `EPIPE` when every copy of the other end has
+/// closed.
+pub(crate) fn send_address(socket: BorrowedFd<'_>, address: SocketAddr) -> io::Result<()> {
+    let text = address.to_string();
+    send(
+        socket.as_raw_fd(),
+        text.as_bytes(),
+        MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
+    )?;
+    Ok(())
+}
+
+/// Waits for the next message on `socket`: a connection with the address it
+/// came in on, or an address alone.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidData`] for a message that is neither, which the
+/// sender never makes; the next call reads the message after it.
+/// [`io::ErrorKind::UnexpectedEof`] once every copy of the other end has closed.
+/// Any other error ends the stream.
+pub(crate) fn receive(socket: BorrowedFd<'_>) -> io::Result<Received> {
     let mut text = [0_u8; ADDRESS_TEXT];
     let mut space = nix::cmsg_space!([RawFd; 1]);
     let mut iov = [IoSliceMut::new(&mut text)];
@@ -303,17 +330,14 @@ pub(crate) fn receive_connection(socket: BorrowedFd<'_>) -> io::Result<Accepted>
         .and_then(|text| text.parse().ok());
     match (descriptors.pop(), address) {
         (None, _) if length == 0 => Err(io::ErrorKind::UnexpectedEof.into()),
-        (Some(connection), Some(address)) => Ok(Accepted {
+        (Some(connection), Some(address)) => Ok(Received::Connection(Accepted {
             connection,
             address,
-        }),
-        (None, _) => Err(io::Error::new(
+        })),
+        (None, Some(address)) => Ok(Received::Address(address)),
+        (_, None) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "a published connection came with no descriptor",
-        )),
-        (Some(_), None) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "a published connection came with no address",
+            "a message on the publish pair came with no address",
         )),
     }
 }

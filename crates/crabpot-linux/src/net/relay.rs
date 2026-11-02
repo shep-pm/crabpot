@@ -87,24 +87,46 @@ fn listen_on(family: AddressFamily, address: IpAddr, port: u16) -> Result<OwnedF
     listen_with(family, address, port, false)
 }
 
-/// Listens on `address` with `SO_REUSEPORT`, so another socket of the same user
-/// that sets it may listen on the same address and port.
+/// Binds `address` with `SO_REUSEPORT`, so another socket of the same user that
+/// sets it may bind the same address and port. The socket does not listen: the
+/// kernel refuses connections to it until [`start_listening`].
 ///
 /// # Errors
 ///
 /// The error number of the call that failed. `EADDRINUSE` when a socket without
 /// `SO_REUSEPORT` holds the port.
 #[cfg(target_os = "linux")]
-pub(super) fn listen_shared(address: std::net::SocketAddr) -> Result<TcpListener, Errno> {
+pub(super) fn bind_shared(address: std::net::SocketAddr) -> Result<TcpListener, Errno> {
     let family = if address.is_ipv4() {
         AddressFamily::Inet
     } else {
         AddressFamily::Inet6
     };
-    listen_with(family, address.ip(), address.port(), true).map(TcpListener::from)
+    bind_with(family, address.ip(), address.port(), true).map(TcpListener::from)
+}
+
+/// Has the socket [`bind_shared`] made accept connections.
+///
+/// # Errors
+///
+/// The error number of `listen`.
+#[cfg(target_os = "linux")]
+pub(super) fn start_listening(listener: &TcpListener) -> Result<(), Errno> {
+    listen(listener, backlog())
 }
 
 fn listen_with(
+    family: AddressFamily,
+    address: IpAddr,
+    port: u16,
+    reuse_port: bool,
+) -> Result<OwnedFd, Errno> {
+    let fd = bind_with(family, address, port, reuse_port)?;
+    listen(&fd, backlog())?;
+    Ok(fd)
+}
+
+fn bind_with(
     family: AddressFamily,
     address: IpAddr,
     port: u16,
@@ -140,7 +162,6 @@ fn listen_with(
             &SockaddrIn::from(SocketAddrV4::new(ip, port)),
         )?,
     }
-    listen(&fd, backlog())?;
     Ok(fd)
 }
 
@@ -455,7 +476,7 @@ mod tests {
     fn a_shared_listener_does_not_survive_an_exec() {
         use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 
-        let listener = listen_shared(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let listener = bind_shared(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
 
         let flags = fcntl(&listener, FcntlArg::F_GETFD).unwrap();
 

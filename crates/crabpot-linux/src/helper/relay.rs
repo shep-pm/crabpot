@@ -8,14 +8,18 @@
 //!
 //! It also receives the connections the launcher accepts for `network.publish`.
 //! Each arrives as a descriptor with the address it came in on. The relay dials
-//! that address inside the network namespace and copies both ways.
+//! that address inside the network namespace and copies both ways. The launcher
+//! first sends each published address alone, and the relay sends it back once
+//! the namespace's `/proc/net/tcp` and `/proc/net/tcp6` show a listening socket
+//! there, which is when the launcher starts accepting on the host.
 
 use core::time::Duration;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
+use std::sync::Arc;
 use std::thread;
 
 use nix::sys::prctl;
@@ -31,6 +35,9 @@ use crate::net::{HTTP_PORT, SOCKS_PORT};
 /// How long dialing a published address inside the sandbox may take. The
 /// address is on this host, so a command that has not accepted by then is stuck.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often the relay looks again for a command that is not listening yet.
+const LISTEN_POLL: Duration = Duration::from_millis(20);
 
 /// What the relay writes to the helper once both ports listen.
 const READY: u8 = b'+';
@@ -124,6 +131,7 @@ fn run(announce: OwnedFd, socket: &Path, tcp: &[SocketAddr], published: Option<O
         thread::spawn(move || serve(&listener, &socket));
     }
     if let Some(channel) = published {
+        let channel = Arc::new(channel);
         thread::spawn(move || serve_published(&channel));
     }
     // The relay ends with the helper, and has nothing else to do until then.
@@ -167,18 +175,97 @@ fn detach() {
     let _ = dup2_stderr(&null);
 }
 
-/// Dials and copies each connection that arrives on `channel`, until the
-/// launcher hangs up or the channel fails.
-fn serve_published(channel: &OwnedFd) {
+/// Dials and copies each connection that arrives on `channel`, and watches each
+/// address that arrives alone, until the launcher hangs up or the channel fails.
+fn serve_published(channel: &Arc<OwnedFd>) {
     loop {
-        match sys::receive_connection(channel.as_fd()) {
-            Ok(accepted) => {
+        match sys::receive(channel.as_fd()) {
+            Ok(sys::Received::Connection(accepted)) => {
                 thread::spawn(move || forward_published(accepted));
+            }
+            Ok(sys::Received::Address(address)) => {
+                let channel = Arc::clone(channel);
+                thread::spawn(move || announce_when_listening(&channel, address));
             }
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
             Err(_) => return,
         }
     }
+}
+
+/// Sends `published` back on `channel` once a command listens where the relay
+/// would dial it. The table is read, never dialled: a connection would reach
+/// the command.
+fn announce_when_listening(channel: &OwnedFd, published: SocketAddr) {
+    while !is_listening(published) {
+        thread::sleep(LISTEN_POLL);
+    }
+    let _ = sys::send_address(channel.as_fd(), published);
+}
+
+/// Whether a socket in this network namespace listens on an address that
+/// [`dial`] would reach for `published`.
+fn is_listening(published: SocketAddr) -> bool {
+    let targets = inside(published);
+    ["/proc/net/tcp", "/proc/net/tcp6"].iter().any(|path| {
+        std::fs::read_to_string(path).is_ok_and(|table| {
+            listening_addresses(&table)
+                .any(|listener| targets.iter().any(|target| accepts(listener, *target)))
+        })
+    })
+}
+
+/// The local addresses of the sockets in the `LISTEN` state in `table`, the text
+/// of `/proc/net/tcp` or `/proc/net/tcp6`.
+fn listening_addresses(table: &str) -> impl Iterator<Item = SocketAddr> + '_ {
+    table.lines().skip(1).filter_map(|line| {
+        let mut columns = line.split_whitespace();
+        let local = columns.nth(1)?;
+        // The state follows the remote address.
+        let state = columns.nth(1)?;
+        if state != LISTEN_STATE {
+            return None;
+        }
+        let (ip, port) = local.split_once(':')?;
+        let port = u16::from_str_radix(port, 16).ok()?;
+        Some(SocketAddr::new(table_ip(ip)?, port))
+    })
+}
+
+/// The `st` column of a socket in the `LISTEN` state.
+const LISTEN_STATE: &str = "0A";
+
+/// An address as the tables print it: each four bytes of it are one hexadecimal
+/// number, in the byte order of the machine.
+fn table_ip(text: &str) -> Option<IpAddr> {
+    let mut bytes = Vec::new();
+    for word in text.as_bytes().chunks(8) {
+        let word = u32::from_str_radix(core::str::from_utf8(word).ok()?, 16).ok()?;
+        bytes.extend_from_slice(&word.to_ne_bytes());
+    }
+    match bytes.len() {
+        4 => Some(Ipv4Addr::from(<[u8; 4]>::try_from(bytes).ok()?).into()),
+        16 => Some(Ipv6Addr::from(<[u8; 16]>::try_from(bytes).ok()?).into()),
+        _ => None,
+    }
+}
+
+/// Whether a socket listening on `listener` takes a connection to `target`. An
+/// IPv6 wildcard is taken to be dual-stack, which the tables do not say.
+fn accepts(listener: SocketAddr, target: SocketAddr) -> bool {
+    listener.port() == target.port()
+        && match (listener.ip(), target.ip()) {
+            (IpAddr::V4(listener), IpAddr::V4(target)) => {
+                listener == target || listener.is_unspecified()
+            }
+            (IpAddr::V6(listener), IpAddr::V6(target)) => {
+                listener == target || listener.is_unspecified()
+            }
+            (IpAddr::V6(listener), IpAddr::V4(target)) => {
+                listener.is_unspecified() || listener == target.to_ipv6_mapped()
+            }
+            (IpAddr::V4(_), IpAddr::V6(_)) => false,
+        }
 }
 
 /// Copies between the host's `accepted` connection and the command's listener
@@ -284,5 +371,103 @@ mod tests {
         assert!(reply.is_empty());
         assert_eq!(received, b"upload");
         relay.join().unwrap().unwrap();
+    }
+
+    /// The header and rows as the kernel prints them, on a little-endian machine.
+    const TCP: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:1F91 0100007F:C000 01 00000000:00000000 00:00000000 00000000  1000        0 22222 1 0000000000000000 100 0 0 10 0
+   2: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 33333 1 0000000000000000 100 0 0 10 0
+";
+
+    const TCP6: &str = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000001000000:1F92 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 44444 1 0000000000000000 100 0 0 10 0
+   1: 0000000000000000FFFF00000100007F:1F93 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 55555 1 0000000000000000 100 0 0 10 0
+";
+
+    #[test]
+    fn only_sockets_in_the_listen_state_are_listening_addresses() {
+        let listening: Vec<_> = listening_addresses(TCP).collect();
+
+        assert_eq!(
+            listening,
+            [
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 8080)),
+                SocketAddr::from((Ipv4Addr::UNSPECIFIED, 80)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_ipv6_table_names_its_addresses_in_ipv6() {
+        let listening: Vec<_> = listening_addresses(TCP6).collect();
+
+        assert_eq!(
+            listening,
+            [
+                SocketAddr::from((Ipv6Addr::LOCALHOST, 8082)),
+                SocketAddr::from((Ipv4Addr::LOCALHOST.to_ipv6_mapped(), 8083)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_with_no_rows_or_with_rubbish_lists_nothing() {
+        assert_eq!(listening_addresses("").count(), 0);
+        assert_eq!(
+            listening_addresses("header\nnot a row\n1: zz:yy a 0A\n").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_listener_takes_a_connection_to_its_own_address_and_to_a_wildcard_of_its_family() {
+        let at = |ip: IpAddr| SocketAddr::new(ip, 80);
+        let (v4, v6) = (Ipv4Addr::LOCALHOST, Ipv6Addr::LOCALHOST);
+
+        assert!(accepts(at(v4.into()), at(v4.into())));
+        assert!(accepts(at(Ipv4Addr::UNSPECIFIED.into()), at(v4.into())));
+        assert!(accepts(at(v6.into()), at(v6.into())));
+        assert!(accepts(at(Ipv6Addr::UNSPECIFIED.into()), at(v6.into())));
+        assert!(accepts(at(Ipv6Addr::UNSPECIFIED.into()), at(v4.into())));
+        assert!(accepts(at(v4.to_ipv6_mapped().into()), at(v4.into())));
+    }
+
+    #[test]
+    fn a_listener_does_not_take_another_port_another_address_or_another_family() {
+        let at = |ip: IpAddr, port| SocketAddr::new(ip, port);
+        let (v4, v6) = (Ipv4Addr::LOCALHOST, Ipv6Addr::LOCALHOST);
+
+        assert!(!accepts(at(v4.into(), 80), at(v4.into(), 81)));
+        assert!(!accepts(
+            at(Ipv4Addr::new(10, 0, 0, 5).into(), 80),
+            at(v4.into(), 80)
+        ));
+        assert!(!accepts(at(v4.into(), 80), at(v6.into(), 80)));
+        assert!(!accepts(at(v6.into(), 80), at(v4.into(), 80)));
+    }
+
+    #[test]
+    fn an_address_is_listening_only_while_a_socket_listens_on_it() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        assert!(is_listening(address));
+        let wildcard = SocketAddr::from((Ipv4Addr::UNSPECIFIED, address.port()));
+        assert!(is_listening(wildcard), "a wildcard is dialled on loopback");
+
+        drop(listener);
+
+        assert!(!is_listening(address));
+    }
+
+    #[test]
+    fn looking_for_a_listener_opens_no_connection_to_it() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        assert!(is_listening(listener.local_addr().unwrap()));
+
+        let seen = listener.accept().unwrap_err();
+        assert_eq!(seen.kind(), io::ErrorKind::WouldBlock);
     }
 }

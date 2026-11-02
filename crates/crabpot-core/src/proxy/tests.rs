@@ -369,6 +369,16 @@ fn replacing_the_lists_keeps_the_tcp_destinations_and_the_mitm_setting() {
     let _ = fs::remove_file(&socket);
 }
 
+/// Sets its flag when dropped, so a panic in the scope still stops the thread
+/// the scope joins.
+struct Stop<'a>(&'a AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// With `localhost` allowed and nothing listening on the port, a request ends
 /// in a 502 under one set of lists and in a 403 "not on the allow list" under
 /// the other, which allows nothing. A filter of one set with the guard of the
@@ -391,6 +401,7 @@ fn replacing_the_lists_while_requests_arrive_never_lets_a_request_see_a_half_swa
                 proxy.replace_lists(&[], &shut, &[]);
             }
         });
+        let _stop = Stop(&done);
         for _ in 0..100 {
             let answer = head(&mut connect(&proxy, &format!("localhost:{port}")));
             assert!(
@@ -399,6 +410,5 @@ fn replacing_the_lists_while_requests_arrive_never_lets_a_request_see_a_half_swa
                 "{answer}"
             );
         }
-        done.store(true, Ordering::Relaxed);
     });
 }

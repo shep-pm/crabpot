@@ -214,6 +214,7 @@ dependencies = [
  "crabpot-linux",
  "crabpot-macos",
  "crabpot-windows",
+ "libc",
  "nix",
  "serde",
  "serde_json",

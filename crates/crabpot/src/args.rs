@@ -1,5 +1,5 @@
-//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d`, `-V`, `-h` and
-//! `--`, then a program and its arguments.
+//! The crabpot command line: upstream's `-s/--settings`, `-c`, `-d`,
+//! `--control-fd`, `-V`, `-h` and `--`, then a program and its arguments.
 
 use core::fmt;
 use std::ffi::OsString;
@@ -15,6 +15,8 @@ pub(crate) struct Args {
     pub(crate) settings: Option<PathBuf>,
     /// Whether `-d` was given.
     pub(crate) debug: bool,
+    /// The descriptor `--control-fd` names: 3 or more.
+    pub(crate) control_fd: Option<i32>,
     /// What to run.
     pub(crate) command: Invocation,
 }
@@ -32,6 +34,7 @@ Options:
   -s, --settings <path>  settings file (default: ~/.srt-settings.json)
   -c <command>           run a line with `bash -c`, instead of a program
   -d, --debug            print the wrapped command to stderr
+  --control-fd <fd>      read JSON lines that replace the network lists from <fd>
   -V, --version          print the version
   -h, --help             print this help
 
@@ -349,6 +352,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
     let mut args = args.into_iter();
     let mut settings: Option<PathBuf> = None;
     let mut debug = false;
+    let mut control_fd = None;
     let mut shell = None;
     let mut argv = Vec::new();
     while let Some(arg) = args.next() {
@@ -360,7 +364,10 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
                 settings = Some(args.next().ok_or(ArgsError::MissingValue("-s"))?.into());
             }
             Some("-c") => shell = Some(args.next().ok_or(ArgsError::MissingValue("-c"))?),
-            Some("--control-fd") => return Err(ArgsError::Unsupported("--control-fd")),
+            Some("--control-fd") => {
+                let value = args.next().ok_or(ArgsError::MissingValue("--control-fd"))?;
+                control_fd = Some(control_descriptor(value)?);
+            }
             Some("proxy") => return Err(ArgsError::Unsupported("proxy")),
             Some("--") => {
                 argv.extend(args.by_ref());
@@ -369,7 +376,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
                 settings = Some(option["--settings=".len()..].into());
             }
             Some(option) if option.starts_with("--control-fd=") => {
-                return Err(ArgsError::Unsupported("--control-fd"));
+                control_fd = Some(control_descriptor(option["--control-fd=".len()..].into())?);
             }
             Some(option) if option.starts_with('-') => {
                 return Err(ArgsError::UnknownOption(arg));
@@ -389,8 +396,19 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
         // Upstream tests the option for truthiness, so `-s ""` names no file.
         settings: settings.filter(|path| !path.as_os_str().is_empty()),
         debug,
+        control_fd,
         command,
     }))
+}
+
+/// The descriptor `--control-fd` names: an integer of 3 or more, since 0, 1
+/// and 2 are the command's own streams.
+fn control_descriptor(value: OsString) -> Result<i32, ArgsError> {
+    value
+        .to_str()
+        .and_then(|text| text.parse().ok())
+        .filter(|&fd| fd >= 3)
+        .ok_or(ArgsError::InvalidDescriptor(value))
 }
 
 #[cfg(test)]
@@ -415,6 +433,7 @@ mod tests {
             Ok(Args {
                 settings: Some("a.json".into()),
                 debug: true,
+                control_fd: None,
                 command: argv(&["ls", "-la"]),
             })
         );
@@ -423,6 +442,7 @@ mod tests {
             Ok(Args {
                 settings: Some("b.json".into()),
                 debug: true,
+                control_fd: None,
                 command: Invocation::Shell("echo hi | cat".into()),
             })
         );
@@ -431,6 +451,7 @@ mod tests {
             Ok(Args {
                 settings: Some("c.json".into()),
                 debug: false,
+                control_fd: None,
                 command: argv(&["ls", "-d"]),
             }),
             "an option after the program is the program's"
@@ -512,12 +533,42 @@ mod tests {
             Err(ArgsError::UnknownOption("--nope".into()))
         );
         assert_eq!(
-            parse_strs(&["--control-fd", "3", "ls"]),
-            Err(ArgsError::Unsupported("--control-fd"))
-        );
-        assert_eq!(
             parse_strs(&["proxy", "start"]),
             Err(ArgsError::Unsupported("proxy"))
+        );
+    }
+
+    #[test]
+    fn control_fd_takes_an_integer_of_three_or_more() {
+        for (args, fd) in [
+            (&["--control-fd", "3", "ls"][..], 3),
+            (&["--control-fd=17", "ls"][..], 17),
+        ] {
+            assert_eq!(
+                parse_strs(args).map(|args| args.control_fd),
+                Ok(Some(fd)),
+                "{args:?}"
+            );
+        }
+        assert_eq!(parse_strs(&["ls"]).map(|args| args.control_fd), Ok(None));
+        assert_eq!(
+            parse_strs(&["--control-fd"]),
+            Err(ArgsError::MissingValue("--control-fd"))
+        );
+    }
+
+    #[test]
+    fn control_fd_below_three_is_refused() {
+        for value in ["0", "2", "-1", "x", "", "3.5"] {
+            assert_eq!(
+                parse_strs(&["--control-fd", value, "ls"]),
+                Err(ArgsError::InvalidDescriptor(value.into())),
+                "{value:?}"
+            );
+        }
+        assert_eq!(
+            parse_strs(&["--control-fd=1", "ls"]),
+            Err(ArgsError::InvalidDescriptor("1".into()))
         );
     }
 

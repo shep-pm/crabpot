@@ -223,7 +223,6 @@ const fn align(len: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
-    use std::os::fd::OwnedFd;
 
     use nix::sys::socket::{Backlog, SockaddrIn6, listen, setsockopt, sockopt};
 
@@ -375,7 +374,7 @@ mod tests {
         )
         .unwrap();
         listen(&fd, Backlog::new(8).unwrap()).unwrap();
-        let listener = TcpListener::from(OwnedFd::from(fd));
+        let listener = TcpListener::from(fd);
         let port = listener.local_addr().unwrap().port();
         (listener, port)
     }

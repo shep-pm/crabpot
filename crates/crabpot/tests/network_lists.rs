@@ -1,18 +1,24 @@
 //! A running sandbox follows the network lists it is given while it runs.
 //!
-//! Like `windows_sandbox`, it is its own host: on Linux bwrap runs this binary
-//! again as the helper in front of each command, so `main` calls
+//! Like `windows_sandbox`, it is its own host: on Linux bwrap and on Windows
+//! srt-win run this binary again in front of each command, so `main` calls
 //! `run_from_args` first. The sandboxed command is `curl` asking an origin on
 //! loopback through the proxy, and what it prints is the proxy's status.
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-mod unix {
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+mod cases {
     use std::io::{Read, Write};
     use std::net::{Ipv4Addr, TcpListener};
     use std::process::Command;
     use std::thread;
 
     use crabpot::{Config, Sandbox};
+
+    /// Where curl discards the body.
+    #[cfg(windows)]
+    const NULL: &str = "NUL";
+    #[cfg(not(windows))]
+    const NULL: &str = "/dev/null";
 
     /// A config that allows `allowed` and denies `denied`, and nothing else.
     fn config(allowed: &[&str], denied: &[&str]) -> Config {
@@ -55,13 +61,12 @@ mod unix {
     /// The status the proxy answers `sandbox`'s command with for a request to
     /// the origin on `port`.
     fn status(sandbox: &Sandbox, port: u16) -> String {
-        let mut curl = Command::new("sh");
-        // The sandbox exempts loopback from the proxy, so the proxy is named
-        // and the exemption dropped.
-        curl.arg("-c").arg(format!(
-            "unset NO_PROXY no_proxy; exec curl -s -o /dev/null -w '%{{http_code}}' \
-             --max-time 20 --proxy \"$http_proxy\" http://127.0.0.1:{port}/"
-        ));
+        let mut curl = Command::new("curl");
+        // The sandbox exempts loopback from the proxy. `--noproxy` replaces
+        // that list, so the request goes through the proxy the environment names.
+        curl.args(["-s", "-o", NULL, "-w", "%{http_code}", "--max-time", "20"])
+            .args(["--noproxy", "example.invalid"])
+            .arg(format!("http://127.0.0.1:{port}/"));
         let output = sandbox
             .command(&curl)
             .expect("the command is wrapped")
@@ -107,7 +112,7 @@ mod unix {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn main() {
     crabpot::run_from_args();
     // Linux needs bwrap, user namespaces and curl, which only CI is known to
@@ -120,11 +125,11 @@ fn main() {
     let cases: [(&str, fn()); 2] = [
         (
             "a_running_sandbox_follows_replaced_network_lists",
-            unix::a_running_sandbox_follows_replaced_network_lists,
+            cases::a_running_sandbox_follows_replaced_network_lists,
         ),
         (
             "a_sandbox_can_be_shared_between_threads",
-            unix::a_sandbox_can_be_shared_between_threads,
+            cases::a_sandbox_can_be_shared_between_threads,
         ),
     ];
     for (name, case) in cases {
@@ -133,5 +138,5 @@ fn main() {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn main() {}

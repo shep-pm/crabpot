@@ -110,6 +110,13 @@ mod unix {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn main() {
     crabpot::run_from_args();
+    // Linux needs bwrap, user namespaces and curl, which only CI is known to
+    // have.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("CI").is_none() {
+        eprintln!("skipped: set CI to run a Linux sandbox");
+        return;
+    }
     let cases: [(&str, fn()); 2] = [
         (
             "a_running_sandbox_follows_replaced_network_lists",

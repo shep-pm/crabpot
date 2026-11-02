@@ -60,7 +60,8 @@ impl core::error::Error for ControlError {
 }
 
 /// Applies each line of `input` to `lists`, until the end of the input. A line
-/// that does not parse is ignored, with one message in `said`.
+/// that does not parse is ignored, with one message in `said`, whether or not
+/// that write succeeds.
 ///
 /// # Errors
 ///
@@ -77,7 +78,10 @@ fn follow(input: &mut impl BufRead, lists: &impl Lists, said: &mut impl Write) -
             .and_then(|text| Config::from_json(text).map_err(|e| e.to_string()));
         match config {
             Ok(config) => lists.replace_network_lists(&config),
-            Err(reason) => writeln!(said, "crabpot: control line ignored: {reason}")?,
+            // A message nobody can read does not stop the lines that follow.
+            Err(reason) => {
+                let _ = writeln!(said, "crabpot: control line ignored: {reason}");
+            }
         }
     }
 }
@@ -118,6 +122,17 @@ impl Drop for Control {
     }
 }
 
+/// Checks that `fd` is open, which has to be known before the sandbox starts:
+/// its listeners take the lowest free descriptor numbers, and a number that is
+/// not open would be theirs.
+///
+/// # Errors
+///
+/// [`ControlError::Descriptor`] when `fd` is not open.
+pub(crate) fn check(fd: RawFd) -> Result<(), ControlError> {
+    sys::check_open(fd).map_err(ControlError::Descriptor)
+}
+
 /// Starts following the descriptor `fd` for `lists`: takes it over, leaving
 /// `/dev/null` under its number for the command, and reads it on a thread.
 /// The number is the caller's to give up: nothing else may own `fd`.
@@ -151,7 +166,7 @@ pub(crate) fn start<L: Lists>(fd: RawFd, lists: Arc<L>) -> Result<Control, Contr
         .name("crabpot-control".into())
         .spawn(move || {
             if let Err(e) = follow(&mut input, &*lists, &mut io::stderr()) {
-                eprintln!("crabpot: control descriptor stopped: {e}");
+                let _ = writeln!(io::stderr(), "crabpot: control descriptor stopped: {e}");
             }
         })
         .map_err(ControlError::Descriptor)?;

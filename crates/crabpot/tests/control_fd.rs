@@ -142,6 +142,23 @@ fn a_failing_descriptor_before_the_first_line_refuses_the_command_with_exit_125(
     fs::remove_dir_all(home).unwrap();
 }
 
+#[test]
+fn a_descriptor_that_is_not_open_refuses_the_command_with_exit_125() {
+    let home = home("closed");
+    // The redirect closes descriptor 3, which the sandbox's own sockets would
+    // otherwise be handed.
+    let child = launch(&home, "3<&-", Stdio::null(), "echo ran");
+
+    let (code, stdout, stderr) = finish(child);
+
+    assert_eq!((code, stdout.as_str()), (Some(125), ""), "{stderr}");
+    assert!(
+        stderr.contains("cannot use the control descriptor"),
+        "{stderr}"
+    );
+    fs::remove_dir_all(home).unwrap();
+}
+
 /// The port of an origin on loopback that answers every request with a 200.
 fn origin() -> u16 {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("the origin binds");

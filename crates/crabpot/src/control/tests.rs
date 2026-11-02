@@ -1,6 +1,7 @@
 use std::env;
 use std::io::Write as _;
 use std::os::fd::IntoRawFd;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::sync::{Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -217,8 +218,6 @@ fn a_descriptor_that_fails_to_read_refuses_the_start() {
 
 #[test]
 fn the_descriptor_number_is_left_as_dev_null() {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
-
     // The write end stays open, so a read of the pipe itself would block.
     let (read, _write) = io::pipe().unwrap();
     let fd = read.into_raw_fd();
@@ -252,4 +251,40 @@ fn a_host_that_keeps_writing_does_not_keep_the_reader_from_stopping() {
 
     ended.recv_timeout(WAIT).expect("the reader stopped");
     writer.join().unwrap();
+}
+
+#[test]
+fn a_descriptor_is_checked_before_anything_takes_it() {
+    let (read, _write) = io::pipe().unwrap();
+    let open = read.into_raw_fd();
+
+    assert!(check(open).is_ok());
+    assert!(matches!(check(-1), Err(ControlError::Descriptor(_))));
+    // `check` leaves the descriptor as it was.
+    assert!(check(open).is_ok());
+    assert!(
+        !std::fs::metadata(format!("/dev/fd/{open}"))
+            .unwrap()
+            .file_type()
+            .is_char_device()
+    );
+}
+
+#[test]
+fn a_message_that_cannot_be_written_does_not_stop_the_lines_after_it() {
+    struct Closed;
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let lists = Fake::default();
+    let input = "{not json\n".to_owned() + &line(&["a.example"], &[], &[]);
+
+    follow(&mut input.as_bytes(), &lists, &mut Closed).expect("the input is read");
+
+    assert_eq!(lists.held().allowed, domains(&["a.example"]));
 }

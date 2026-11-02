@@ -12,6 +12,16 @@ use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 /// down (3) and the ones the Linux wrapper keeps for itself (7 to 9).
 const COPY_ABOVE: libc::c_int = 10;
 
+/// Whether `fd` is an open descriptor of this process.
+pub(super) fn check_open(fd: RawFd) -> io::Result<()> {
+    // SAFETY: `fcntl` with `F_GETFD` takes a descriptor number, and returns its
+    // flags or -1. It reads no memory and changes nothing.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Moves the descriptor `fd` to a close-on-exec copy that is returned, and
 /// leaves `/dev/null` open under `fd` in its place, so a command started from
 /// here sees nothing of what the host writes. The number is replaced for the

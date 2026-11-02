@@ -266,6 +266,10 @@ fn prepare(args: args::Args) -> Result<Prepared, Box<dyn Error>> {
         return Err("--control-fd is not supported on Windows".into());
     }
     let config = load_config(args.settings.as_deref(), env::var_os("HOME"))?;
+    #[cfg(unix)]
+    if let Some(fd) = args.control_fd {
+        control::check(fd)?;
+    }
     let sandbox = Arc::new(Sandbox::start(&config)?);
     #[cfg(unix)]
     let control = follow_control(args.control_fd, &sandbox)?;

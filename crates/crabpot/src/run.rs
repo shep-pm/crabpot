@@ -236,6 +236,10 @@ fn run_subcommand(subcommand: Subcommand) -> i32 {
     let done = match subcommand {
         Subcommand::WindowsInstall(options) => install::install(&mut machine, &options),
         Subcommand::WindowsUninstall(options) => install::uninstall(&mut machine, &options),
+        Subcommand::Help => {
+            print!("{}", args::USAGE);
+            return 0;
+        }
     };
     match done {
         Ok(()) => 0,

@@ -47,3 +47,20 @@ fn the_flags_answer_before_a_missing_settings_file_is_read() {
         assert!(output.stderr.is_empty(), "{flag}");
     }
 }
+
+#[test]
+fn a_windows_subcommand_answers_help() {
+    for name in ["windows-install", "windows-uninstall"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_crabpot"))
+            .args([name, "--help"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{name}: {:?}", output.status);
+        assert!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .contains("--settings"),
+            "{name}"
+        );
+    }
+}

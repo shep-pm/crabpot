@@ -113,6 +113,8 @@ pub(crate) enum Subcommand {
     WindowsInstall(InstallOptions),
     /// `windows-uninstall`.
     WindowsUninstall(UninstallOptions),
+    /// `-h` or `--help` among a subcommand's options: print [`USAGE`].
+    Help,
 }
 
 /// Why the command line was refused.
@@ -188,16 +190,17 @@ pub(crate) fn parse_subcommand(
     let mut args = args.into_iter();
     let first = args.next()?;
     match first.to_str()? {
-        "windows-install" => Some(parse_install(args).map(Subcommand::WindowsInstall)),
-        "windows-uninstall" => Some(parse_uninstall(args).map(Subcommand::WindowsUninstall)),
+        "windows-install" => Some(parse_install(args)),
+        "windows-uninstall" => Some(parse_uninstall(args)),
         _ => None,
     }
 }
 
-fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<InstallOptions, ArgsError> {
+fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Subcommand, ArgsError> {
     let mut options = InstallOptions::default();
     while let Some(arg) = args.next() {
         match flag(&arg, &mut args)? {
+            ("-h" | "--help", None) => return Ok(Subcommand::Help),
             ("--allow-loopback", None) => options.allow_loopback = true,
             ("--force", None) => options.force = true,
             ("--sublayer-guid", Some(value)) => options.sublayer_guid = Some(value),
@@ -208,21 +211,20 @@ fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<InstallOpti
             _ => return Err(ArgsError::UnknownOption(arg)),
         }
     }
-    Ok(options)
+    Ok(Subcommand::WindowsInstall(options))
 }
 
-fn parse_uninstall(
-    mut args: impl Iterator<Item = OsString>,
-) -> Result<UninstallOptions, ArgsError> {
+fn parse_uninstall(mut args: impl Iterator<Item = OsString>) -> Result<Subcommand, ArgsError> {
     let mut options = UninstallOptions::default();
     while let Some(arg) = args.next() {
         match flag(&arg, &mut args)? {
+            ("-h" | "--help", None) => return Ok(Subcommand::Help),
             ("--keep-user", None) => options.keep_user = true,
             ("--sublayer-guid", Some(value)) => options.sublayer_guid = Some(value),
             _ => return Err(ArgsError::UnknownOption(arg)),
         }
     }
-    Ok(options)
+    Ok(Subcommand::WindowsUninstall(options))
 }
 
 /// Splits `arg` into an option's name and its value. A value comes from
@@ -800,6 +802,27 @@ mod tests {
         assert_eq!(
             parse_subcommand(os(&["windows-install", "--allow-loopback=yes"])),
             Some(Err(ArgsError::UnknownOption("--allow-loopback=yes".into())))
+        );
+    }
+
+    #[test]
+    fn a_windows_subcommand_answers_help() {
+        for name in ["windows-install", "windows-uninstall"] {
+            for flag in ["-h", "--help"] {
+                assert_eq!(
+                    parse_subcommand(os(&[name, flag])),
+                    Some(Ok(Subcommand::Help)),
+                    "{name} {flag}"
+                );
+            }
+        }
+        assert_eq!(
+            parse_subcommand(os(&["windows-install", "--sandbox-user", "--help"])),
+            Some(Ok(Subcommand::WindowsInstall(InstallOptions {
+                sandbox_user: Some("--help".into()),
+                ..InstallOptions::default()
+            }))),
+            "an option's value is not an option"
         );
     }
 

@@ -19,7 +19,7 @@ crabpot restricts what a process can read, write and reach on the network, using
 | Platform | How it confines a process |
 |---|---|
 | macOS | `sandbox-exec` with a generated profile |
-| Linux | bubblewrap and seccomp (`bwrap` must be on `PATH`) |
+| Linux | bubblewrap and seccomp (`bwrap` must be on `PATH`), after a [setup step](#linux-setup) on Ubuntu 24.04 and later |
 | Windows | a separate sandbox user behind a WFP firewall fence, after a [one-time install](#windows-setup) |
 
 On every platform, network traffic goes through a filtering proxy that only lets the allowed domains through.
@@ -134,6 +134,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 `Sandbox::start` refuses with a typed `StartError` that names what is missing. The sandbox's grants and proxy last until it drops.
+
+## Linux setup
+
+Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns = 1`, which strips capabilities from the helper's nested user namespace. Without a fix crabpot fails with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. Other distributions need nothing here.
+
+The narrow fix is an AppArmor profile that grants `userns` to the binaries that need it, and leaves the restriction on for everything else. Put this in `/etc/apparmor.d/crabpot`:
+
+```
+abi <abi/4.0>,
+include <tunables/global>
+profile crabpot-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+profile crabpot-helper /path/to/crabpot flags=(unconfined) {
+  userns,
+}
+```
+
+Set the second path to the binary that runs crabpot, since the sandbox runs that binary again as the helper: `crabpot` itself, or the program that embeds the library.
+
+1. Disable Ubuntu's own `bwrap-userns-restrict` profile. It attaches to the same `/usr/bin/bwrap` and is what strips the helper's capabilities.
+
+   ```sh
+   sudo ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+   sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+   ```
+
+2. Load the profile:
+
+   ```sh
+   sudo apparmor_parser -r /etc/apparmor.d/crabpot
+   ```
+
+3. Leave `kernel.apparmor_restrict_unprivileged_userns` at 1.
+
+Tested on Ubuntu 26.04 (kernel 7.0, bwrap 0.11.1) as an unprivileged user: the command writes the working directory, an allowed domain passes, another is refused, a nested `unshare` is refused, and `unshare -Ur` outside the sandbox stays refused.
+
+The fallback is to turn the restriction off for the whole host:
+
+```sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+That lets every unprivileged process on the host create user namespaces, which is the door most local privilege escalations use.
 
 ## Windows setup
 

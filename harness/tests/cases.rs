@@ -45,6 +45,8 @@
 //! `a_kelpie_case_is_ready_for_windows_only_where_it_means_windows` holds the
 //! kelpie names and `WINDOWS_READY` together.
 
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
 use crabpot_harness::probe;
 use crabpot_harness::runner::{self, Crabpot, Upstream};
 
@@ -276,6 +278,29 @@ fn runs_crabpot(name: &str) -> bool {
     }
 }
 
+/// Held shared by every case, and exclusively by a case that lists Unix sockets.
+///
+/// On Linux a plan with an `allowUnixSockets` list mounts `/dev/null` over every
+/// socket `/proc/net/unix` names when it is built, and bwrap cannot mount over a
+/// path that is gone by the time it runs. The cases run in parallel threads, and
+/// each upstream or crabpot sandbox they start binds sockets of its own and
+/// unlinks them on exit, so a case that lists sockets would meet a vanished one
+/// now and then. It runs with no other case running instead.
+static SOCKET_LISTING: RwLock<()> = RwLock::new(());
+
+/// The hold a case keeps on [`SOCKET_LISTING`] while it runs.
+enum Held {
+    /// Shared with the cases that list no sockets.
+    Shared(#[allow(dead_code)] RwLockReadGuard<'static, ()>),
+    /// Alone, for a case that lists sockets.
+    Alone(#[allow(dead_code)] RwLockWriteGuard<'static, ()>),
+}
+
+/// Whether the case file's `text` names an `allowUnixSockets` list.
+fn lists_unix_sockets(text: &str) -> bool {
+    text.contains("\"allowUnixSockets\"")
+}
+
 /// Runs the case file `harness/cases/<file>`.
 fn run(name: &str, file: &str) {
     let probe = env!("CARGO_BIN_EXE_probe");
@@ -289,6 +314,19 @@ fn run(name: &str, file: &str) {
     };
     let path = format!("{}/cases/{file}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(&path).unwrap();
+    let _held = if lists_unix_sockets(&text) {
+        Held::Alone(
+            SOCKET_LISTING
+                .write()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    } else {
+        Held::Shared(
+            SOCKET_LISTING
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    };
     let outcome = if runs_crabpot(name) {
         runner::run_case(&text, name, &upstream, &Crabpot::new(probe)).and_then(|ran| {
             if !CRABPOT_ALLOWED.contains(&name) {

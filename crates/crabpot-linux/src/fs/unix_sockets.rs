@@ -22,6 +22,12 @@
 //!   namespace already keeps it out of reach, which is why upstream's Linux
 //!   filter never masked one either.
 //!
+//! A socket that is unlinked between the listing and bwrap's mount has no path
+//! left to mount over, and bwrap cannot make one in the read-only root, so that
+//! launch fails closed with the helper never started. The window is the time
+//! from building the plan to bwrap's mounts, and a host that churns sockets in
+//! it, as parallel test cases do, can meet it now and then.
+//!
 //! The section masks every socket it names or none of them: a listing that
 //! cannot be read, or that names more sockets than [`MAX_MASKS`], leaves
 //! `AF_UNIX` refused, which is what a host with no list gets today. Masking

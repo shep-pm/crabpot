@@ -32,6 +32,8 @@ mod mount_points;
 mod pins;
 #[cfg(unix)]
 mod unix_listing;
+#[cfg(unix)]
+mod unix_refresh;
 
 // The cases need a socket the kernel is holding, which is what the plan reads
 // `/proc/net/unix` for.
@@ -158,6 +160,34 @@ fn build(tree: &Tree, config: &Config) -> Plan {
 fn build_holding(tree: &Tree, config: &Config, own_sockets: &[&Path]) -> Plan {
     tree.dir(CWD);
     Plan::build_with(config, &base(tree), own_sockets).expect("a plan")
+}
+
+/// A config with `network.allowUnixSockets` of `sockets`, `denyRead` of `deny`
+/// and `allowWrite` of `write`.
+fn policy(sockets: &[&str], deny: &[&str], write: &[&str]) -> Config {
+    let list = |entries: &[&str]| {
+        entries
+            .iter()
+            .map(|entry| format!("\"{entry}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    Config::from_json(&format!(
+        r#"{{
+                "network": {{
+                    "allowedDomains": [], "deniedDomains": [],
+                    "allowUnixSockets": [{}]
+                }},
+                "filesystem": {{
+                    "denyRead": [{}], "allowRead": [],
+                    "allowWrite": [{}], "denyWrite": []
+                }}
+            }}"#,
+        list(sockets),
+        list(deny),
+        list(write)
+    ))
+    .expect("a config")
 }
 
 /// A whole plan's words, as text: every mount `bwrap` is asked to make, in the

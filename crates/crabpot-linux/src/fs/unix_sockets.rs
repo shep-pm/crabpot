@@ -82,21 +82,18 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crabpot_core::config::Config;
-use crabpot_core::paths::{
-    PathBase, is_at_or_under, normalize_path_for_sandbox,
-};
+use crabpot_core::paths::{PathBase, is_at_or_under, normalize_path_for_sandbox};
 
 use super::Draft;
 use super::PlanError;
 use super::deny_read::Mount;
 
 #[cfg(target_os = "linux")]
+use super::glob_walk::KERNEL_MOUNTS;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 #[cfg(target_os = "linux")]
 use std::fs;
-#[cfg(target_os = "linux")]
-use super::glob_walk::KERNEL_MOUNTS;
-
 
 /// The kernel's own list of the Unix sockets it holds.
 #[cfg(target_os = "linux")]
@@ -354,7 +351,10 @@ pub(super) fn names(listing: &[u8]) -> Option<Vec<PathBuf>> {
                 end += 1;
             }
             let start = end;
-            while line.get(end).is_some_and(|byte| !byte.is_ascii_whitespace()) {
+            while line
+                .get(end)
+                .is_some_and(|byte| !byte.is_ascii_whitespace())
+            {
                 end += 1;
             }
             if end == start {
@@ -400,7 +400,9 @@ fn canonical(path: &Path) -> PathBuf {
 /// The comparison is by component, so `/run/sock` opens no socket of
 /// `/run/socket`.
 fn opens(entry: &str, socket: &Path) -> bool {
-    socket.to_str().is_some_and(|socket| is_at_or_under(socket, entry))
+    socket
+        .to_str()
+        .is_some_and(|socket| is_at_or_under(socket, entry))
 }
 
 /// Whether the last of the read sections' mounts to cover `socket` hides it. A

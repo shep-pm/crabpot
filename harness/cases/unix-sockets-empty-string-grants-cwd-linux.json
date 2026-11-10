@@ -1,4 +1,7 @@
 {
+  "files": {
+    "$ROOT/seed": "x"
+  },
   "settings": {
     "network": {"allowedDomains": [], "deniedDomains": [], "allowUnixSockets": [""]},
     "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}

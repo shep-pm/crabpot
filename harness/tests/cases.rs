@@ -97,10 +97,10 @@ const LINUX_READY: &[&str] = &[
     "mandatory_git_hooks",
     "mandatory_nested_git_config",
     "mandatory_shell_rc",
-    "unix_socket_listed_folder",
+    "unix_socket_listed_folder_linux",
     "unix_socket_unlisted_is_refused",
     "unix_socket_empty_string_grants_cwd",
-    "kelpie_socket_path_104_bytes",
+    "kelpie_socket_path_104_bytes_linux",
     "kernel_vsock_socket_is_refused",
     "kernel_io_uring_setup_is_refused",
     "kernel_nested_user_namespace_is_refused",
@@ -123,6 +123,7 @@ const LINUX_READY: &[&str] = &[
     "kelpie_group_signal",
     "kelpie_ps",
     "kelpie_full_policy",
+    "kelpie_full_policy_linux",
     "ps_outside",
 ];
 
@@ -242,7 +243,12 @@ const KELPIE_CASES: &[(&str, &str)] = &[
         "kelpie_socket_path_104_bytes",
         "kelpie-socket-path-104-bytes.json",
     ),
+    (
+        "kelpie_socket_path_104_bytes_linux",
+        "kelpie-socket-path-104-bytes-linux.json",
+    ),
     ("kelpie_full_policy", "kelpie-full-policy.json"),
+    ("kelpie_full_policy_linux", "kelpie-full-policy-linux.json"),
     (
         "kelpie_full_policy_windows",
         "kelpie-full-policy-windows.json",
@@ -567,6 +573,20 @@ fn unix_socket_listed_folder() {
     );
 }
 
+/// The same settings on Linux, where crabpot honours `allowUnixSockets` and
+/// upstream's filter refuses every `AF_UNIX` socket. The `connect-unix` probe
+/// records that difference: the socket the harness serves under the listed
+/// folder is dialable under crabpot and not under upstream. The `bind-unix`
+/// probe records nothing, because the folder is no write root for either runner
+/// and both refuse the bind.
+#[test]
+fn unix_socket_listed_folder_linux() {
+    run(
+        "unix_socket_listed_folder_linux",
+        "unix-sockets-listed-folder-linux.json",
+    );
+}
+
 #[test]
 fn socks_other_domain_refused() {
     run(
@@ -753,9 +773,28 @@ fn kelpie_socket_path_104_bytes() {
     );
 }
 
+/// The same settings on Linux, where `sun_path` holds 108 bytes and the long
+/// lease path is over the limit for both runners. The short one records the
+/// difference: crabpot binds it under the listed folder, upstream refuses every
+/// `AF_UNIX` socket.
+#[test]
+fn kelpie_socket_path_104_bytes_linux() {
+    run(
+        "kelpie_socket_path_104_bytes_linux",
+        "kelpie-socket-path-104-bytes-linux.json",
+    );
+}
+
 #[test]
 fn kelpie_full_policy() {
     run("kelpie_full_policy", "kelpie-full-policy.json");
+}
+
+/// The whole kelpie policy on Linux, where crabpot honours `allowUnixSockets`
+/// and upstream does not. Only the `bind-unix` leg differs, and it records it.
+#[test]
+fn kelpie_full_policy_linux() {
+    run("kelpie_full_policy_linux", "kelpie-full-policy-linux.json");
 }
 
 /// The same settings as the `kelpie_full_policy` case, on the probes that mean

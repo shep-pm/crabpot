@@ -11,7 +11,7 @@ use std::ffi::OsString;
 
 use super::exec::{ExecError, exec};
 use super::init::InitError;
-use crate::seccomp::{self, Arch, Program};
+use crate::seccomp::{self, Arch, Program, UnixSockets};
 
 /// A built filter and the name its errors give it.
 struct Filter {
@@ -63,11 +63,11 @@ pub(super) fn install_namespaces() -> Result<(), InitError> {
     install(namespaces(host()?)?, apply)
 }
 
-/// Installs the `namespaces` filter, then the `unix` filter, and replaces this
-/// process with the command `argv` names. It returns only when a filter was not
-/// installed or the command could not be started.
-pub(super) fn exec_confined(argv: &[OsString]) -> InitError {
-    run_confined(argv, apply, exec)
+/// Installs the `namespaces` filter, then the `unix` filter for `sockets`, and
+/// replaces this process with the command `argv` names. It returns only when a
+/// filter was not installed or the command could not be started.
+pub(super) fn exec_confined(argv: &[OsString], sockets: UnixSockets) -> InitError {
+    run_confined(argv, sockets, apply, exec)
 }
 
 fn apply(program: &Program) -> Result<(), seccompiler::Error> {
@@ -76,6 +76,7 @@ fn apply(program: &Program) -> Result<(), seccompiler::Error> {
 
 fn run_confined(
     argv: &[OsString],
+    sockets: UnixSockets,
     apply: impl FnMut(&Program) -> Result<(), seccompiler::Error>,
     run: impl FnOnce(&[OsString]) -> ExecError,
 ) -> InitError {
@@ -83,7 +84,7 @@ fn run_confined(
         let [eperm, enosys] = namespaces(arch)?;
         let unix = Filter {
             name: "unix",
-            program: seccomp::unix(arch).map_err(built)?,
+            program: seccomp::unix(arch, sockets).map_err(built)?,
         };
         install([eperm, enosys, unix], apply)
     });
@@ -115,6 +116,7 @@ mod tests {
 
         let error = run_confined(
             &command(),
+            UnixSockets::Refused,
             |program| {
                 installed.push(program.clone());
                 order.borrow_mut().push("filter");
@@ -133,11 +135,39 @@ mod tests {
             [
                 namespaces.eperm,
                 namespaces.enosys,
-                seccomp::unix(host()).unwrap()
+                seccomp::unix(host(), UnixSockets::Refused).unwrap()
             ]
         );
         assert_eq!(*order.borrow(), ["filter", "filter", "filter", "command"]);
         assert_eq!(error, InitError::Exec(ExecError::NoCommand));
+    }
+
+    /// A list opens `AF_UNIX` to the command, and the bwrap plan holds every
+    /// socket the list leaves out. The filter that goes in is the other one.
+    #[test]
+    fn an_open_unix_socket_filter_is_the_one_that_goes_in() {
+        let mut installed = Vec::new();
+
+        let error = run_confined(
+            &command(),
+            UnixSockets::Open,
+            |program| {
+                installed.push(program.clone());
+                Ok(())
+            },
+            |_| ExecError::NoCommand,
+        );
+
+        assert_eq!(error, InitError::Exec(ExecError::NoCommand));
+        assert_eq!(
+            installed[2],
+            seccomp::unix(host(), UnixSockets::Open).unwrap(),
+            "the filter that leaves `AF_UNIX` to the command"
+        );
+        assert_ne!(
+            installed[2],
+            seccomp::unix(host(), UnixSockets::Refused).unwrap()
+        );
     }
 
     #[test]
@@ -147,6 +177,7 @@ mod tests {
 
         let error = run_confined(
             &command(),
+            UnixSockets::Refused,
             |_| {
                 attempts += 1;
                 Err(seccompiler::Error::Seccomp(io::Error::from_raw_os_error(1)))

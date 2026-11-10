@@ -34,6 +34,7 @@ use super::exec::ExecError;
 use super::filters;
 use super::relay;
 use super::sys;
+use crate::seccomp::UnixSockets;
 
 /// Where the sandbox's `max_user_namespaces` limit is written.
 const MAX_USER_NAMESPACES: &str = "/proc/sys/user/max_user_namespaces";
@@ -104,12 +105,19 @@ pub fn init_with_tcp(
     tcp: &[SocketAddr],
     argv: &[OsString],
 ) -> Result<i32, InitError> {
-    init_with_publish(relay, loopback, tcp, None, argv)
+    init_with_publish(relay, loopback, tcp, None, UnixSockets::Refused, argv)
 }
 
 /// Runs [`init_with_tcp`] with the connections the launcher accepts for
-/// `network.publish`. They arrive on the descriptor `publish` numbers, which
-/// the relay owns from here on, so the command does not inherit it.
+/// `network.publish`, and with `sockets` as the `unix` filter's answer to
+/// `socket(AF_UNIX)`. They arrive on the descriptor `publish` numbers, which the
+/// relay owns from here on, so the command does not inherit it.
+///
+/// `sockets` is [`UnixSockets::Open`] only when the bwrap plan already masked
+/// every socket `network.allowUnixSockets` leaves out, which is what
+/// [`crate::fs::Masks::refresh`] says for the command's words. The other entries of this
+/// ladder always pass [`UnixSockets::Refused`], which is what upstream's filter
+/// does.
 ///
 /// # Errors
 ///
@@ -121,6 +129,7 @@ pub fn init_with_publish(
     loopback: &[IpAddr],
     tcp: &[SocketAddr],
     publish: Option<u32>,
+    sockets: UnixSockets,
     argv: &[OsString],
 ) -> Result<i32, InitError> {
     if argv.is_empty() {
@@ -142,7 +151,7 @@ pub fn init_with_publish(
             confine_outer(child)?;
             Ok(reap_until(child))
         }
-        ForkResult::Child => namespace_init(argv, own_user_namespace),
+        ForkResult::Child => namespace_init(argv, own_user_namespace, sockets),
     }
 }
 
@@ -229,10 +238,15 @@ fn set_dumpable() -> Result<(), InitError> {
     prctl::set_dumpable(false).map_err(|reason| InitError::step(Step::Dumpable, reason))
 }
 
-/// PID 1 of the namespace: makes it the command's, then runs the command.
+/// PID 1 of the namespace: makes it the command's, then runs the command with
+/// the `unix` filter answering `socket(AF_UNIX)` as `sockets` says.
 /// `own_user_namespace` is whether the namespace's user namespace is one this
 /// helper made.
-fn namespace_init(argv: &[OsString], own_user_namespace: bool) -> Result<i32, InitError> {
+fn namespace_init(
+    argv: &[OsString],
+    own_user_namespace: bool,
+    sockets: UnixSockets,
+) -> Result<i32, InitError> {
     set_dumpable()?;
     // Mounts made here must not reach the namespace this one was copied from.
     mount(
@@ -267,7 +281,7 @@ fn namespace_init(argv: &[OsString], own_user_namespace: bool) -> Result<i32, In
         ForkResult::Child => {
             // The mask would outlive the `exec`.
             unblock_forwarded()?;
-            Err(filters::exec_confined(argv))
+            Err(filters::exec_confined(argv, sockets))
         }
     }
 }
@@ -473,7 +487,7 @@ mod tests {
         let argv = [OsString::from("true")];
 
         assert_eq!(
-            init_with_publish(None, &[], &[], Some(7), &argv),
+            init_with_publish(None, &[], &[], Some(7), UnixSockets::Refused, &argv),
             Err(InitError::PublishWithoutRelay)
         );
     }
@@ -484,7 +498,15 @@ mod tests {
         let argv = [OsString::from("true")];
 
         // Descriptor numbers this high are not open in a test process.
-        let error = init_with_publish(Some(socket), &[], &[], Some(900_000), &argv).unwrap_err();
+        let error = init_with_publish(
+            Some(socket),
+            &[],
+            &[],
+            Some(900_000),
+            UnixSockets::Refused,
+            &argv,
+        )
+        .unwrap_err();
 
         assert!(
             matches!(error, InitError::Publish { fd: 900_000, .. }),

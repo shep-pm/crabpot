@@ -1,0 +1,13 @@
+{
+  "files": {
+    "$ROOT/seed": "x"
+  },
+  "settings": {
+    "network": {"allowedDomains": [], "deniedDomains": [], "allowUnixSockets": [""]},
+    "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+  },
+  "platforms": ["linux"],
+  "probes": [
+    {"kind": "connect-unix", "path": "$ROOT/cwd.sock", "upstream": 1}
+  ]
+}

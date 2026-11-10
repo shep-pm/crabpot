@@ -6,7 +6,9 @@
 //!
 //! - [`unix`] refuses `socket(AF_UNIX)`, `socket(AF_VSOCK)` and the three
 //!   `io_uring` calls with EPERM. `socketpair`, and so inherited descriptors
-//!   and `SCM_RIGHTS`, stay allowed.
+//!   and `SCM_RIGHTS`, stay allowed. With an `allowUnixSockets` list it leaves
+//!   `AF_UNIX` to the command, which [`UnixSockets::Open`] says, and the bwrap
+//!   plan then holds every socket the list leaves out out of reach.
 //! - [`namespaces`] keeps the command in the namespaces the sandbox made for
 //!   it. seccompiler has one match action a filter, so its rules are two
 //!   programs: EPERM for `unshare` and `clone` with a namespace flag and for
@@ -33,6 +35,17 @@ mod tests;
 
 /// A built filter, ready for `seccompiler::apply_filter`.
 pub type Program = seccompiler::BpfProgram;
+
+/// What the `unix` filter does with `socket(AF_UNIX)`, which
+/// `network.allowUnixSockets` decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnixSockets {
+    /// No list: every `socket(AF_UNIX)` is refused, as upstream's filter does.
+    Refused,
+    /// A list: `AF_UNIX` is left to the command, and the bwrap plan mounts over
+    /// every socket path the list leaves out.
+    Open,
+}
 
 /// An architecture the filters are built for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,6 +211,18 @@ const UNIX_REFUSALS: &[Refusal] = &[
     Refusal::always(Syscall::same(427)),
 ];
 
+/// [`UNIX_REFUSALS`] with `AF_UNIX` left to the command. The `io_uring` calls
+/// stay refused with it: `IORING_OP_SOCKET` reaches a socket past any mount.
+const UNIX_OPEN_REFUSALS: &[Refusal] = &[
+    Refusal {
+        call: SOCKET,
+        when: &[Arg0::is(AF_VSOCK)],
+    },
+    Refusal::always(Syscall::same(425)),
+    Refusal::always(Syscall::same(426)),
+    Refusal::always(Syscall::same(427)),
+];
+
 const EPERM_REFUSALS: &[Refusal] = &[
     // A command started by uid 0 can make a mount namespace with no new user
     // namespace.
@@ -255,13 +280,18 @@ const EPERM_REFUSALS: &[Refusal] = &[
 /// breaks thread creation.
 const ENOSYS_REFUSALS: &[Refusal] = &[Refusal::always(Syscall::same(435))];
 
-/// The `unix` filter for `arch`.
+/// The `unix` filter for `arch`, with `sockets` as its answer to
+/// `socket(AF_UNIX)`.
 ///
 /// # Errors
 ///
 /// [`Error::Compile`] if seccompiler cannot compile the rules.
-pub fn unix(arch: Arch) -> Result<Program, Error> {
-    compile("unix", arch, EPERM, UNIX_REFUSALS)
+pub fn unix(arch: Arch, sockets: UnixSockets) -> Result<Program, Error> {
+    let refusals = match sockets {
+        UnixSockets::Refused => UNIX_REFUSALS,
+        UnixSockets::Open => UNIX_OPEN_REFUSALS,
+    };
+    compile("unix", arch, EPERM, refusals)
 }
 
 /// The `namespaces` filter for `arch`, as two programs.

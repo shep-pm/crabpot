@@ -20,6 +20,8 @@ use crabpot_core::config::{Config, PathEntry};
 use crabpot_core::paths::PathBase;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::path::PathBuf;
 
 mod allow_read;
@@ -28,6 +30,15 @@ mod deny_read;
 mod deny_write;
 mod mount_points;
 mod pins;
+#[cfg(unix)]
+mod unix_listing;
+#[cfg(unix)]
+mod unix_refresh;
+
+// The cases need a socket the kernel is holding, which is what the plan reads
+// `/proc/net/unix` for.
+#[cfg(target_os = "linux")]
+mod unix_sockets;
 
 /// The name [`build`] makes the plan's working directory under, which is where
 /// the mandatory denies the plan walks for land.
@@ -140,7 +151,43 @@ fn bound_back_at(words: &[String], path: &str) -> usize {
 /// the test runner started in, which is no tree of the test's.
 fn build(tree: &Tree, config: &Config) -> Plan {
     tree.dir(CWD);
-    Plan::build_with(config, &base(tree)).expect("a plan")
+    Plan::build_with(config, &base(tree), &[]).expect("a plan")
+}
+
+/// The plan for `config` over `tree`, holding `own_sockets` out of the
+/// `unix_sockets` mask, which is what [`Plan::build`] does for the proxy socket.
+#[cfg(target_os = "linux")]
+fn build_holding(tree: &Tree, config: &Config, own_sockets: &[&Path]) -> Plan {
+    tree.dir(CWD);
+    Plan::build_with(config, &base(tree), own_sockets).expect("a plan")
+}
+
+/// A config with `network.allowUnixSockets` of `sockets`, `denyRead` of `deny`
+/// and `allowWrite` of `write`.
+fn policy(sockets: &[&str], deny: &[&str], write: &[&str]) -> Config {
+    let list = |entries: &[&str]| {
+        entries
+            .iter()
+            .map(|entry| format!("\"{entry}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    Config::from_json(&format!(
+        r#"{{
+                "network": {{
+                    "allowedDomains": [], "deniedDomains": [],
+                    "allowUnixSockets": [{}]
+                }},
+                "filesystem": {{
+                    "denyRead": [{}], "allowRead": [],
+                    "allowWrite": [{}], "denyWrite": []
+                }}
+            }}"#,
+        list(sockets),
+        list(deny),
+        list(write)
+    ))
+    .expect("a config")
 }
 
 /// A whole plan's words, as text: every mount `bwrap` is asked to make, in the
@@ -399,7 +446,8 @@ fn a_walk_error_is_an_error_not_an_open_door() {
     tree.dir("work");
 
     let no_cwd = PathBase::new(Some(at(&tree, "home")), None);
-    let Err(error) = Plan::build_with(&denying_writes(&[&at(&tree, "work")], &[]), &no_cwd) else {
+    let Err(error) = Plan::build_with(&denying_writes(&[&at(&tree, "work")], &[]), &no_cwd, &[])
+    else {
         panic!("a plan with no working directory to walk built anyway");
     };
     assert_eq!(error, PlanError::Path(PathError::NoWorkingDirectory));
@@ -412,7 +460,7 @@ fn a_walk_error_is_an_error_not_an_open_door() {
     };
     std::fs::write(holder.join(".bashrc"), "x").expect("a file");
     let base = PathBase::new(Some(at(&tree, "home")), Some(at(&tree, CWD)));
-    let Err(error) = Plan::build_with(&denying_writes(&[&at(&tree, CWD)], &[]), &base) else {
+    let Err(error) = Plan::build_with(&denying_writes(&[&at(&tree, CWD)], &[]), &base, &[]) else {
         panic!("a plan that dropped the deny it cannot name built anyway");
     };
     assert!(matches!(error, PlanError::Unspellable { .. }), "{error}");

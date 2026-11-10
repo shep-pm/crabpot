@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crabpot_core::config::Config;
 
-use crate::fs::{MountPoints, Plan, PlanError};
+use crate::fs::{Masks, MountPoints, Plan, PlanError};
 
 /// A bwrap invocation's words, and what must outlast them.
 #[derive(Debug)]
@@ -15,6 +15,12 @@ pub struct Wrapped {
     /// The host paths bwrap makes for the denies in `words`. They are removed
     /// when this drops, so keep it for as long as a command may run.
     pub mount_points: MountPoints,
+    /// What makes the masks of the `network.allowUnixSockets` list again for
+    /// each command, with `None` for no list. The words carry the masks of the
+    /// sockets the host held when they were made, and a command is wrapped in
+    /// words [`Masks::refresh`] made for the sockets it holds then. They are
+    /// placed in `words` as they stand, `bwrap` first.
+    pub unix_masks: Option<Masks>,
 }
 
 /// The descriptor bwrap is told to report its sandbox on, and the one the
@@ -63,7 +69,9 @@ pub fn words(
     proxy_socket: &Path,
     root_with_setfcap: bool,
 ) -> Result<Wrapped, PlanError> {
-    let (plan_words, mount_points) = Plan::build(config)?.into_parts();
+    let plan = Plan::build(config, &[proxy_socket])?;
+    let unix_masks = plan.unix_masks().cloned();
+    let (plan_words, mount_points) = plan.into_parts();
     let mut words = vec![bwrap.as_os_str().to_owned()];
     words.extend(plan_words);
     words.extend([OsString::from("--ro-bind"), helper.into(), helper.into()]);
@@ -73,9 +81,13 @@ pub fn words(
         proxy_socket.into(),
     ]);
     words.extend(capability_words(root_with_setfcap));
+    // The masks were placed in the plan's words, and `bwrap` itself now comes
+    // before them.
+    let unix_masks = unix_masks.map(|masks| masks.after(1));
     Ok(Wrapped {
         words,
         mount_points,
+        unix_masks,
     })
 }
 
@@ -95,6 +107,7 @@ fn capability_words(root_with_setfcap: bool) -> impl Iterator<Item = OsString> {
 mod tests {
     use super::*;
     use crabpot_core::config::PathEntry;
+    use std::path::PathBuf;
 
     const BWRAP: &str = "/usr/bin/bwrap";
 
@@ -191,7 +204,7 @@ mod tests {
             .windows(3)
             .position(|run| run == ["--ro-bind", HELPER, HELPER])
             .unwrap_or_else(|| panic!("{words:?}"));
-        let fs_words = Plan::build(&Config::default()).unwrap();
+        let fs_words = Plan::build(&Config::default(), &[]).unwrap();
         assert!(
             at > fs_words.words().len(),
             "a deny bind before it cannot hide it: {words:?}"
@@ -206,7 +219,7 @@ mod tests {
             .windows(3)
             .position(|run| run == ["--bind", SOCKET, SOCKET])
             .unwrap_or_else(|| panic!("{words:?}"));
-        let fs_words = Plan::build(&Config::default()).unwrap();
+        let fs_words = Plan::build(&Config::default(), &[]).unwrap();
         assert!(
             at > fs_words.words().len(),
             "a deny bind before it cannot hide it: {words:?}"
@@ -242,6 +255,63 @@ mod tests {
             words.iter().filter(|word| *word == "--cap-add").count(),
             1,
             "{words:?}"
+        );
+    }
+
+    /// The masks are placed in the plan's words, and `bwrap` itself comes
+    /// before them here. A refresh of these words must land the section where
+    /// the plan's own refresh does, one word on, with every word around it kept.
+    #[test]
+    fn a_refresh_of_the_wrapped_words_cuts_where_the_plan_does() {
+        let mut config = Config::default();
+        config.filesystem.allow_write = vec![PathEntry::Spelled("/".to_owned())];
+        config.network.allow_unix_sockets = Some(vec!["/run/crabpot-listed.sock".to_owned()]);
+        let socket = PathBuf::from("/run/crabpot-shut.sock");
+        let held = Plan::build(&config, &[Path::new(SOCKET)]).expect("the plan builds");
+        let wrapped = words(
+            Path::new(BWRAP),
+            &config,
+            Path::new(HELPER),
+            Path::new(SOCKET),
+            false,
+        )
+        .expect("the config resolves");
+        let masks = wrapped.unix_masks.as_ref().expect("a list makes masks");
+
+        let (planned, _) = held
+            .unix_masks()
+            .expect("a list makes masks")
+            .refresh_from(held.words(), Some(vec![socket.clone()]));
+        let (fresh, open) = masks.refresh_from(&wrapped.words, Some(vec![socket.clone()]));
+
+        assert!(open);
+        let tail = &wrapped.words[1 + held.words().len()..];
+        let expected: Vec<OsString> = [OsString::from(BWRAP)]
+            .into_iter()
+            .chain(planned)
+            .chain(tail.iter().cloned())
+            .collect();
+        // Each plan makes its own empty directory, numbered, which is no part
+        // of where the words were cut.
+        let settled = |words: &[OsString]| -> Vec<String> {
+            words
+                .iter()
+                .map(|word| {
+                    let word = word.to_string_lossy();
+                    match word.find("crabpot-empty-") {
+                        Some(at) => word[..at].to_owned(),
+                        None => word.into_owned(),
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(settled(&fresh), settled(&expected));
+        let mask = ["--ro-bind", "/dev/null", "/run/crabpot-shut.sock"];
+        assert!(
+            fresh
+                .windows(3)
+                .any(|run| run.iter().zip(mask).all(|(word, want)| word == want)),
+            "{fresh:?}"
         );
     }
 }

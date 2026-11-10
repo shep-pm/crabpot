@@ -274,6 +274,11 @@ pub(crate) const PUBLISH_FD_FLAG: &str = "--publish-fd";
 /// Asks the helper to acknowledge startup through the inherited descriptor it names.
 pub(crate) const REPORT_STARTED_FLAG: &str = "--report-started";
 
+/// Tells `init` that the bwrap plan masked every Unix socket
+/// `network.allowUnixSockets` leaves out, so its `unix` filter may leave
+/// `socket(AF_UNIX)` to the command. Absent, the filter refuses it, as upstream's does.
+pub(crate) const ALLOW_UNIX_SOCKETS_FLAG: &str = "--allow-unix-sockets";
+
 /// The helper's options and the command's untouched arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Init<'a> {
@@ -282,6 +287,7 @@ pub(crate) struct Init<'a> {
     pub(crate) relay: Option<&'a Path>,
     pub(crate) loopback: Vec<IpAddr>,
     pub(crate) tcp: Vec<SocketAddr>,
+    pub(crate) unix_sockets: bool,
     pub(crate) command: &'a [OsString],
 }
 
@@ -292,18 +298,25 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
     let mut relay = None;
     let mut loopback = Vec::new();
     let mut tcp = Vec::new();
+    let mut unix_sockets = false;
     while let Some(arg) = args.first() {
         let flag = match arg.to_str() {
             Some(REPORT_STARTED_FLAG) => REPORT_STARTED_FLAG,
             Some(PUBLISH_FD_FLAG) => PUBLISH_FD_FLAG,
             Some(RELAY_FLAG) => RELAY_FLAG,
             Some(LOOPBACK_FLAG) => LOOPBACK_FLAG,
+            Some(ALLOW_UNIX_SOCKETS_FLAG) => ALLOW_UNIX_SOCKETS_FLAG,
             Some("--") => {
                 args = &args[1..];
                 break;
             }
             _ => break,
         };
+        if flag == ALLOW_UNIX_SOCKETS_FLAG {
+            unix_sockets = true;
+            args = &args[1..];
+            continue;
+        }
         let value = args.get(1).ok_or(ArgsError::MissingValue(flag))?;
         if flag == RELAY_FLAG {
             relay = Some(Path::new(value));
@@ -339,6 +352,7 @@ pub(crate) fn parse_init(mut args: &[OsString]) -> Result<Init<'_>, ArgsError> {
         relay,
         loopback,
         tcp,
+        unix_sockets,
         command: args,
     })
 }
@@ -790,6 +804,47 @@ mod tests {
                 Err(ArgsError::InvalidDescriptor(value.into()))
             );
         }
+    }
+
+    /// The whole line `Sandbox::command` builds on Linux, read the way `run`
+    /// reads it: `parse_helper` takes the mode off, and `parse_init` reads what
+    /// is left. Hand the whole line to `parse_init` and it stops at
+    /// `--crabpot-helper`, so no flag is read and every word is the command's.
+    #[test]
+    fn the_open_unix_sockets_flag_survives_the_line_the_sandbox_builds() {
+        let words = os(&[
+            "--crabpot-helper",
+            "init",
+            "--relay",
+            "/tmp/claude-http.sock",
+            "--allow-unix-sockets",
+            "--",
+            "true",
+        ]);
+        let helper = parse_helper(words.clone()).unwrap().unwrap();
+        assert_eq!(helper.mode, HelperMode::Init);
+        let init = parse_init(&helper.args).unwrap();
+
+        assert!(init.unix_sockets, "{init:?}");
+        assert_eq!(init.relay, Some(Path::new("/tmp/claude-http.sock")));
+        assert_eq!(init.command, &words[words.len() - 1..]);
+    }
+
+    #[test]
+    fn init_reads_the_open_unix_sockets_flag_and_its_absence() {
+        let args = os(&["--allow-unix-sockets", "--relay", "/s", "--", "sh"]);
+        assert!(parse_init(&args).unwrap().unix_sockets);
+
+        let args = os(&["--relay", "/s", "sh"]);
+        assert!(
+            !parse_init(&args).unwrap().unix_sockets,
+            "no flag, and the filter refuses `AF_UNIX`"
+        );
+
+        let args = os(&["sh", "--allow-unix-sockets"]);
+        let init = parse_init(&args).unwrap();
+        assert!(!init.unix_sockets);
+        assert_eq!(init.command, &args[..]);
     }
 
     #[test]

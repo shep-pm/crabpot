@@ -14,7 +14,8 @@ use crabpot_linux::net::{HTTP_PORT, SOCKS_PORT};
 use crabpot_linux::startup::{Pipe, Startup};
 
 use crate::args::{
-    HELPER_FLAG, HelperMode, LOOPBACK_FLAG, PUBLISH_FD_FLAG, RELAY_FLAG, REPORT_STARTED_FLAG,
+    ALLOW_UNIX_SOCKETS_FLAG, HELPER_FLAG, HelperMode, LOOPBACK_FLAG, PUBLISH_FD_FLAG, RELAY_FLAG,
+    REPORT_STARTED_FLAG,
 };
 
 use super::{Sandbox, StartError, WrapError, carry_over, command_line};
@@ -95,6 +96,12 @@ pub(super) fn resolve_publish(config: &Config) -> Result<Vec<SocketAddr>, StartE
 }
 
 impl Sandbox {
+    /// Whether the config lists Unix sockets, so each command carries masks of
+    /// the sockets the host holds when it is wrapped.
+    pub(crate) fn lists_unix_sockets(&self) -> bool {
+        self.unix_masks.is_some()
+    }
+
     /// [`Sandbox::command`], and with it what bwrap reports of the sandbox,
     /// which tells the launcher which process to signal in place of bwrap
     /// itself. The command is given the descriptor the report goes to, so it
@@ -125,6 +132,15 @@ impl Sandbox {
             OsString::from(RELAY_FLAG),
             self.proxy.mux_socket().as_os_str().to_owned(),
         ];
+        // The masks are made again here, for the sockets the host holds now, and
+        // the filter opens `AF_UNIX` only when every one of them is masked.
+        let (mut bwrap_words, unix_sockets_open) = match &self.unix_masks {
+            Some(masks) => masks.refresh(&self.words),
+            None => (self.words.clone(), false),
+        };
+        if unix_sockets_open {
+            words.push(OsString::from(ALLOW_UNIX_SOCKETS_FLAG));
+        }
         if let Some(fd) = report {
             words.extend([
                 OsString::from(REPORT_STARTED_FLAG),
@@ -154,7 +170,6 @@ impl Sandbox {
         words.push(OsString::from("--"));
         words.push(command.get_program().to_owned());
         words.extend(command.get_args().map(OsString::from));
-        let mut bwrap_words = self.words.clone();
         if report.is_some() {
             bwrap_words.splice(1..1, crabpot_linux::wrap::info_words());
         }
@@ -428,6 +443,70 @@ mod tests {
 
         assert!(matches!(error, WrapError::Publish(_)), "{error}");
         assert!(error.to_string().contains(&address.to_string()), "{error}");
+    }
+
+    /// A started sandbox whose `allowUnixSockets` is `sockets`, or `None` where
+    /// the machine has no bwrap to wrap a command in.
+    fn started_with_unix_sockets(sockets: &[&str]) -> Option<Sandbox> {
+        let config = Config::from_json(
+            &serde_json::json!({
+                "network": {
+                    "allowedDomains": [], "deniedDomains": [], "allowUnixSockets": sockets
+                },
+                "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        match Sandbox::start(&config) {
+            Ok(sandbox) => Some(sandbox),
+            // The machine has no bwrap to wrap a command in.
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => None,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[test]
+    fn a_list_of_unix_sockets_tells_the_helper_to_open_af_unix() {
+        let Some(sandbox) = started_with_unix_sockets(&["/run/agent.sock"]) else {
+            return;
+        };
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+        let helper = crate::args::parse_helper(init_of(&wrapped))
+            .unwrap()
+            .unwrap();
+        let init = crate::args::parse_init(&helper.args).unwrap();
+
+        assert!(init.unix_sockets, "{init:?}");
+
+        // The plan binds the proxy's own socket after its words, and bwrap reads
+        // a bind's source through the mounts it made before them, so a mask over
+        // that path would leave the relays inside the sandbox with no proxy.
+        let words: Vec<_> = wrapped
+            .get_args()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        let socket = sandbox.proxy.mux_socket().to_string_lossy();
+        assert!(
+            !words
+                .windows(3)
+                .any(|run| run == ["--ro-bind", "/dev/null", &*socket]),
+            "the plan masked its own proxy socket: {words:?}"
+        );
+    }
+
+    #[test]
+    fn no_list_of_unix_sockets_leaves_the_helper_to_refuse_af_unix() {
+        let Some(sandbox) = started_with_unix_sockets(&[]) else {
+            return;
+        };
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+        let helper = crate::args::parse_helper(init_of(&wrapped))
+            .unwrap()
+            .unwrap();
+        let init = crate::args::parse_init(&helper.args).unwrap();
+
+        assert!(!init.unix_sockets, "{init:?}");
     }
 
     #[test]

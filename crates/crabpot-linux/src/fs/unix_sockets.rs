@@ -7,9 +7,7 @@
 //! socket the command can read. Reading a socket file is what dialing it asks
 //! for, and a read-only bind does not stop that, so the plan mounts `/dev/null`
 //! over each socket the list leaves out. That is the mask
-//! [`deny_read`](super::deny_read) gives a denied file, and a dial of a masked
-//! path is answered `ECONNREFUSED`, which is what a dial of a socket nobody
-//! listens on is answered anyway.
+//! [`deny_read`](super::deny_read) gives a denied file.
 //!
 //! The sockets to mask are the ones the kernel lists in `/proc/net/unix` when
 //! the plan is built. Three things follow from that, and none of them is a way
@@ -38,11 +36,23 @@
 //! mount of this one beneath a mask of theirs has no mount point to land on,
 //! since bwrap cannot make one in the read-only root.
 //!
+//! A dial of a masked path is answered `ENOTSOCK`, which is what a dial of a
+//! path that is no longer a socket is answered: the harness counts it as a
+//! refusal (`harness/src/probe/unix.rs`), as a sandbox refusing the dial.
+//!
 //! The masks are not added to the plan's `protected` paths, so no ancestor of
 //! one is pinned read-only: a listed socket in a writable directory stays
 //! bindable there, as it is on macOS. Moving a masked socket's directory moves
 //! the mask with it, and what the command makes in its place is a socket of its
 //! own, never the host's.
+//!
+//! The proxy's own mux socket is held out of the mask, through
+//! [`Draft::own_sockets`]. The plan binds it after its words, and bwrap reads a
+//! bind's source through the mounts it made before it: a mask over that path
+//! would hand the bind `/dev/null` for a source, and the relays in the sandbox
+//! would have no proxy to reach.
+//!
+//! [`Draft::own_sockets`]: super::Draft
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -111,6 +121,7 @@ pub(super) fn words(
         .filter(|socket| {
             !opened.iter().any(|entry| opens(entry, socket))
                 && !under_a_read_mount(socket, &hidden)
+                && !held_by_the_plan(socket, &draft.own_sockets)
         })
         .collect();
     if shut.len() > MAX_MASKS {
@@ -220,6 +231,18 @@ fn mask_of(socket: &Path) -> [OsString; 3] {
         OsString::from("/dev/null"),
         socket.as_os_str().to_owned(),
     ]
+}
+
+/// Whether `socket` is one the plan binds itself, which no mask may cover. Both
+/// sides are read canonical: the kernel's listing names what it resolved, and a
+/// bind names what the process was handed.
+fn held_by_the_plan(socket: &Path, held: &[PathBuf]) -> bool {
+    held.iter().any(|bind| canonical(bind) == *socket)
+}
+
+/// `path` with its links resolved, or itself when they cannot be.
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Whether `entry` opens `socket`: it is the socket, or a directory holding it.

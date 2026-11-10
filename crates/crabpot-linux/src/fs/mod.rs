@@ -15,7 +15,7 @@
 //! `pins` module).
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crabpot_core::PathError;
 use crabpot_core::config::Config;
@@ -109,6 +109,9 @@ struct Draft {
     /// The write denies the `mandatory` section walked for, in the order the
     /// walk found them, which `deny_write` puts after the settings' own.
     mandatory_denies: Vec<String>,
+    /// The sockets the plan binds itself after its words, which no mask may
+    /// cover. See the `unix_sockets` section's module doc.
+    own_sockets: Vec<PathBuf>,
     /// Whether the `unix_sockets` section masked every socket the
     /// `allowUnixSockets` list leaves out, which is when the `unix` seccomp
     /// filter may leave `socket(AF_UNIX)` to the command.
@@ -133,7 +136,8 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Builds the plan for `config`, read against this process's own base.
+    /// Builds the plan for `config`, read against this process's own base,
+    /// holding `own_sockets` unmasked.
     ///
     /// # Errors
     ///
@@ -142,8 +146,8 @@ impl Plan {
     /// [`PlanError::Unspellable`] when the mandatory-deny walk finds a path the
     /// plan cannot name. A mount written for what is missing would be dropped,
     /// and a deny the plan cannot name is no deny at all, so there is no plan.
-    pub fn build(config: &Config) -> Result<Self, PlanError> {
-        Self::build_with(config, &PathBase::from_env())
+    pub fn build(config: &Config, own_sockets: &[&Path]) -> Result<Self, PlanError> {
+        Self::build_with(config, &PathBase::from_env(), own_sockets)
     }
 
     /// Builds the plan for `config` with `base` as the base its relative
@@ -154,10 +158,23 @@ impl Plan {
     /// `denyRead` and `allowRead` entries are the exception: `Config` resolves
     /// them against this process's own base (see [`Filesystem::read_denies`]).
     ///
+    /// `own_sockets` are the sockets the plan binds after its words, which the
+    /// `unix_sockets` section holds unmasked.
+    ///
     /// [`Filesystem::read_denies`]: crabpot_core::config::Filesystem::read_denies
-    fn build_with(config: &Config, base: &PathBase) -> Result<Self, PlanError> {
+    fn build_with(
+        config: &Config,
+        base: &PathBase,
+        own_sockets: &[&Path],
+    ) -> Result<Self, PlanError> {
         let mut words = Vec::new();
-        let mut draft = Draft::default();
+        let mut draft = Draft {
+            own_sockets: own_sockets
+                .iter()
+                .map(|socket| socket.to_path_buf())
+                .collect(),
+            ..Draft::default()
+        };
         for section in SECTIONS {
             draft.offset = words.len();
             words.extend(section(config, base, &mut draft)?);

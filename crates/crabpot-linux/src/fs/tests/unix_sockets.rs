@@ -6,7 +6,7 @@
 
 use std::os::unix::net::UnixListener;
 
-use super::{at, bind_at, build, mount_at, plan};
+use super::{at, bind_at, build, build_holding, mount_at, plan};
 use crate::support::Tree;
 use crabpot_core::config::Config;
 
@@ -252,4 +252,41 @@ fn a_list_of_sockets_says_the_filter_may_open_af_unix() {
         !without.unix_sockets_open(),
         "no list, and the filter keeps refusing `AF_UNIX`"
     );
+}
+
+/// The proxy socket is bound after the plan's words, and bwrap reads a bind's
+/// source through the mounts it made before them. A mask over that path would
+/// hand the bind `/dev/null` for a source, and the relays in the sandbox would
+/// have no proxy to reach.
+#[test]
+fn the_socket_the_plan_binds_itself_is_never_masked() {
+    let tree = Tree::empty("fs-unix-sockets-own");
+    let (mux, _mux) = listening(&tree, "mux.sock");
+    let (other, _other) = listening(&tree, "other.sock");
+    let (listed, _listed) = listening(&tree, "listed.sock");
+
+    let held = build_holding(
+        &tree,
+        &policy(&[&listed], &[], &[]),
+        &[std::path::Path::new(&mux)],
+    );
+    let words = held.words().to_vec();
+    let words = words
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert!(
+        !masked(&words, &mux),
+        "the plan's own socket is masked: {words:#?}"
+    );
+    assert!(
+        masked(&words, &other),
+        "an unlisted socket is not masked: {words:#?}"
+    );
+    assert!(
+        !masked(&words, &listed),
+        "a listed socket is masked: {words:#?}"
+    );
+    assert!(held.unix_sockets_open());
 }

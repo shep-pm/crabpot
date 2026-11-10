@@ -101,8 +101,10 @@ pub struct Network {
     /// profile opens each one for binding and for dialing. On Linux the bwrap
     /// plan mounts `/dev/null` over every socket the kernel lists that no entry
     /// opens, and the `unix` seccomp filter then leaves `socket(AF_UNIX)` to the
-    /// command; with no list it refuses `AF_UNIX` outright, as upstream's does.
-    /// ADR-0013 says what the two platforms do with the key.
+    /// command, which opens the dial and not the binding: a socket the command
+    /// makes needs a folder `allowWrite` reaches. With no list the filter
+    /// refuses `AF_UNIX` outright, as upstream's does. ADR-0013 says what the
+    /// two platforms do with the key.
     pub allow_unix_sockets: Option<Vec<String>>,
     /// `allowLocalBinding`: whether the command may bind, accept on and dial
     /// any local port.

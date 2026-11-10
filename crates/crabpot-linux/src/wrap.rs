@@ -69,7 +69,7 @@ pub fn words(
     proxy_socket: &Path,
     root_with_setfcap: bool,
 ) -> Result<Wrapped, PlanError> {
-    let plan = Plan::build(config)?;
+    let plan = Plan::build(config, &[proxy_socket])?;
     let unix_sockets_open = plan.unix_sockets_open();
     let (plan_words, mount_points) = plan.into_parts();
     let mut words = vec![bwrap.as_os_str().to_owned()];
@@ -200,7 +200,7 @@ mod tests {
             .windows(3)
             .position(|run| run == ["--ro-bind", HELPER, HELPER])
             .unwrap_or_else(|| panic!("{words:?}"));
-        let fs_words = Plan::build(&Config::default()).unwrap();
+        let fs_words = Plan::build(&Config::default(), &[]).unwrap();
         assert!(
             at > fs_words.words().len(),
             "a deny bind before it cannot hide it: {words:?}"
@@ -215,7 +215,7 @@ mod tests {
             .windows(3)
             .position(|run| run == ["--bind", SOCKET, SOCKET])
             .unwrap_or_else(|| panic!("{words:?}"));
-        let fs_words = Plan::build(&Config::default()).unwrap();
+        let fs_words = Plan::build(&Config::default(), &[]).unwrap();
         assert!(
             at > fs_words.words().len(),
             "a deny bind before it cannot hide it: {words:?}"

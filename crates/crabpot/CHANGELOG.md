@@ -5,6 +5,19 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-11-10
+
+### Added
+
+- Open the Unix sockets an allowUnixSockets list names **(BREAKING)**
+
+### Fixed
+
+- Read the wrapped helper words the way run reads them
+- Mask the sockets the host holds for each command, in every namespace **(BREAKING)**
+- Make a launch again when a vanished socket stops bwrap
+
+
 ## [0.10.8] - 2026-11-03
 
 

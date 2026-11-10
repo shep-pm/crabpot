@@ -5,6 +5,20 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-11-10
+
+### Added
+
+- Open the Unix sockets an allowUnixSockets list names **(BREAKING)**
+
+### Fixed
+
+- Hold the proxy's own socket out of the Unix socket mask **(BREAKING)**
+- Mask the sockets the host holds for each command, in every namespace **(BREAKING)**
+- Place the socket masks in the words wrap::words makes
+- Skip a relative socket name in the listing, not the listing
+
+
 ## [0.10.8] - 2026-11-03
 
 

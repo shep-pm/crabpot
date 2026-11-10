@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-10
+
+### Fixed
+
+- Hold the proxy's own socket out of the Unix socket mask **(BREAKING)**
+
+
 ## [0.10.8] - 2026-11-03
 
 

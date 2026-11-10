@@ -15,14 +15,18 @@
 //! sockets of the reader's network namespace alone, and a pathname socket is
 //! found by its inode, so one bound in another namespace is dialable all the
 //! same. The section therefore reads the listing of every network namespace a
-//! process it may inspect holds, once each. Three things follow from that, and
-//! none of them is a way in for a socket the host held:
+//! process it may inspect holds, once each. Four kinds of socket the masks do not
+//! cover are known, and the docs of the section name them so none is a surprise:
 //!
 //! - A socket the host binds while a command runs is not in that command's
 //!   listing and stays dialable by it. The list holds the sockets the host
 //!   held, and does not keep the host from making another.
 //! - One inode bound at two paths is masked only where the kernel recorded it.
 //!   A hard link to a socket is a second door the listing does not name.
+//! - A socket bound to a relative path is named in the listing as the binder
+//!   spelled it, and the directory it is relative to is the binder's working
+//!   directory, which the listing does not hold. It has no path to mount over,
+//!   so it stays dialable where its file can be reached.
 //! - An abstract socket has no path to mount over. The sandbox's own network
 //!   namespace already keeps it out of reach, which is why upstream's Linux
 //!   filter never masked one either.
@@ -36,7 +40,11 @@
 //! left to mount over, and bwrap cannot make one in the read-only root, so that
 //! launch fails closed with the helper never started. The window is the time
 //! from reading the listing to bwrap's mounts, and a host that churns sockets in
-//! it, as parallel test cases do, can meet it now and then.
+//! it, as other sandboxes starting and stopping do with their proxy sockets, can
+//! meet it now and then. The `crabpot` wrapper makes a launch that failed so
+//! again, up to twice, with the masks made afresh, since no part of the command
+//! has run; the caller of the library's `Sandbox::command` spawns its own and
+//! sees the failure as bwrap's exit status.
 //!
 //! The section masks every socket it names or none of them: a listing that
 //! cannot be read, or that names more sockets than [`MAX_MASKS`], leaves
@@ -320,10 +328,17 @@ fn under_kernel_mount(path: &Path) -> bool {
 /// newline. The listing is read as bytes, since a path is bytes, so one name
 /// that is no text costs no more than the socket it names.
 ///
-/// `None` for a line whose name is neither a pathname nor an abstract one, or
-/// that has fewer than seven fields, which is a listing this parser no longer
-/// reads, or a name holding a newline. Masking none of it would leave every
-/// socket dialable, so none of it is read at all.
+/// A name that starts with neither `/` nor `@` is a relative path, which a
+/// process bound as it spelled it. The kernel prints it as given, and the
+/// directory it is relative to is the binder's working directory at the time,
+/// which the listing does not hold. The socket is skipped: there is no path to
+/// mount over. Any process of the host can make one, so one may not cost the
+/// whole listing.
+///
+/// `None` for a line that has fewer than seven fields, which is a listing this
+/// parser no longer reads, or a name holding a newline, which spills onto a line
+/// of its own. Masking none of it would leave every socket dialable, so none of
+/// it is read at all.
 #[cfg(any(target_os = "linux", all(test, unix)))]
 pub(super) fn names(listing: &[u8]) -> Option<Vec<PathBuf>> {
     use std::os::unix::ffi::OsStringExt;
@@ -353,7 +368,8 @@ pub(super) fn names(listing: &[u8]) -> Option<Vec<PathBuf>> {
         match path.first() {
             None | Some(b'@') => {}
             Some(b'/') => named.push(PathBuf::from(OsString::from_vec(path.to_vec()))),
-            Some(_) => return None,
+            // A relative name has no path to mount over.
+            Some(_) => {}
         }
     }
     Some(named)

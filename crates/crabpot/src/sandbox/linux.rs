@@ -96,6 +96,12 @@ pub(super) fn resolve_publish(config: &Config) -> Result<Vec<SocketAddr>, StartE
 }
 
 impl Sandbox {
+    /// Whether the config lists Unix sockets, so each command carries masks of
+    /// the sockets the host holds when it is wrapped.
+    pub(crate) fn lists_unix_sockets(&self) -> bool {
+        self.unix_masks.is_some()
+    }
+
     /// [`Sandbox::command`], and with it what bwrap reports of the sandbox,
     /// which tells the launcher which process to signal in place of bwrap
     /// itself. The command is given the descriptor the report goes to, so it

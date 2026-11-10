@@ -30,6 +30,11 @@ use crate::control::{self, Control};
 use crate::sandbox::Sandbox;
 use crate::windows::install::{self, Machine};
 
+#[cfg(any(target_os = "linux", test))]
+mod relaunch;
+#[cfg(target_os = "linux")]
+use relaunch::execute_relaunching;
+
 #[cfg(unix)]
 const SIGINT: i32 = 2;
 #[cfg(unix)]
@@ -221,15 +226,19 @@ fn run_status(args: impl IntoIterator<Item = OsString>) -> i32 {
             return REFUSED;
         }
     };
+    #[cfg(target_os = "linux")]
+    let invocation = args.command.clone();
     match prepare(args) {
-        Ok((_sandbox, _control, command, target)) => {
+        Ok((sandbox, _control, command, target)) => {
             #[cfg(target_os = "linux")]
-            let command = {
-                let mut command = command;
-                crabpot_linux::helper::hold_signals(&mut command);
-                command
-            };
-            execute(command, target)
+            {
+                execute_relaunching(&sandbox, &invocation, command, target)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = sandbox;
+                execute(command, target)
+            }
         }
         Err(e) => {
             eprintln!("crabpot: {e}");
@@ -281,18 +290,7 @@ fn prepare(args: args::Args) -> Result<Prepared, Box<dyn Error>> {
     let control = follow_control(args.control_fd, &sandbox)?;
     #[cfg(not(unix))]
     let control: Option<Control> = None;
-    let command = match args.command {
-        Invocation::Argv(argv) => {
-            let mut command = Command::new(&argv[0]);
-            command.args(&argv[1..]);
-            command
-        }
-        Invocation::Shell(line) => {
-            let mut command = Command::new("bash");
-            command.arg("-c").arg(line);
-            command
-        }
-    };
+    let command = user_command(&args.command);
     #[cfg(windows)]
     let command = {
         let mut command = command;
@@ -310,6 +308,22 @@ fn prepare(args: args::Args) -> Result<Prepared, Box<dyn Error>> {
         eprintln!("crabpot: running {}", debug_line(&wrapped));
     }
     Ok((sandbox, control, wrapped, target))
+}
+
+/// The command `invocation` names, before the sandbox wraps it.
+fn user_command(invocation: &Invocation) -> Command {
+    match invocation {
+        Invocation::Argv(argv) => {
+            let mut command = Command::new(&argv[0]);
+            command.args(&argv[1..]);
+            command
+        }
+        Invocation::Shell(line) => {
+            let mut command = Command::new("bash");
+            command.arg("-c").arg(line);
+            command
+        }
+    }
 }
 
 /// Starts the reader of the `--control-fd` descriptor, if one was named, which
@@ -396,6 +410,21 @@ enum ForwardTarget {
         info: crabpot_linux::info::Info,
         startup: crabpot_linux::startup::Startup,
     },
+}
+
+#[cfg(target_os = "linux")]
+impl ForwardTarget {
+    /// Whether the helper's startup pipe closed with no acknowledgement, which
+    /// is bwrap failing before the command could run.
+    fn unstarted(&self) -> bool {
+        match self {
+            Self::Helper { startup, .. } => {
+                startup.report() == crabpot_linux::startup::Report::Missing
+            }
+            #[cfg(test)]
+            Self::Child => false,
+        }
+    }
 }
 
 #[cfg(unix)]

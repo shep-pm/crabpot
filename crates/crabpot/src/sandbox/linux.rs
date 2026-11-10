@@ -461,10 +461,27 @@ mod tests {
             return;
         };
         let wrapped = sandbox.command(&Command::new("true")).unwrap();
-        let words = init_of(&wrapped);
-        let helper = crate::args::parse_init(&words).unwrap();
+        let helper = crate::args::parse_helper(init_of(&wrapped))
+            .unwrap()
+            .unwrap();
+        let init = crate::args::parse_init(&helper.args).unwrap();
 
-        assert!(helper.unix_sockets, "{helper:?}");
+        assert!(init.unix_sockets, "{init:?}");
+
+        // The plan binds the proxy's own socket after its words, and bwrap reads
+        // a bind's source through the mounts it made before them, so a mask over
+        // that path would leave the relays inside the sandbox with no proxy.
+        let words: Vec<_> = wrapped
+            .get_args()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        let socket = sandbox.proxy.mux_socket().to_string_lossy();
+        assert!(
+            !words
+                .windows(3)
+                .any(|run| run == ["--ro-bind", "/dev/null", &*socket]),
+            "the plan masked its own proxy socket: {words:?}"
+        );
     }
 
     #[test]
@@ -473,10 +490,12 @@ mod tests {
             return;
         };
         let wrapped = sandbox.command(&Command::new("true")).unwrap();
-        let words = init_of(&wrapped);
-        let helper = crate::args::parse_init(&words).unwrap();
+        let helper = crate::args::parse_helper(init_of(&wrapped))
+            .unwrap()
+            .unwrap();
+        let init = crate::args::parse_init(&helper.args).unwrap();
 
-        assert!(!helper.unix_sockets, "{helper:?}");
+        assert!(!init.unix_sockets, "{init:?}");
     }
 
     #[test]

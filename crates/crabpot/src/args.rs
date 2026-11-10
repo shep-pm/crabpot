@@ -806,6 +806,30 @@ mod tests {
         }
     }
 
+    /// The whole line `Sandbox::command` builds on Linux, read the way `run`
+    /// reads it: `parse_helper` takes the mode off, and `parse_init` reads what
+    /// is left. Hand the whole line to `parse_init` and it stops at
+    /// `--crabpot-helper`, so no flag is read and every word is the command's.
+    #[test]
+    fn the_open_unix_sockets_flag_survives_the_line_the_sandbox_builds() {
+        let words = os(&[
+            "--crabpot-helper",
+            "init",
+            "--relay",
+            "/tmp/claude-http.sock",
+            "--allow-unix-sockets",
+            "--",
+            "true",
+        ]);
+        let helper = parse_helper(words.clone()).unwrap().unwrap();
+        assert_eq!(helper.mode, HelperMode::Init);
+        let init = parse_init(&helper.args).unwrap();
+
+        assert!(init.unix_sockets, "{init:?}");
+        assert_eq!(init.relay, Some(Path::new("/tmp/claude-http.sock")));
+        assert_eq!(init.command, &words[words.len() - 1..]);
+    }
+
     #[test]
     fn init_reads_the_open_unix_sockets_flag_and_its_absence() {
         let args = os(&["--allow-unix-sockets", "--relay", "/s", "--", "sh"]);

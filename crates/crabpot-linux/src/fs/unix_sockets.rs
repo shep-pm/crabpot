@@ -110,23 +110,53 @@ pub struct Masks {
     hidden: Vec<Mount>,
     /// The sockets the plan binds itself.
     own: Vec<PathBuf>,
-    /// Where the section's words start in the plan's words.
+    /// Where the section's words start in the words [`Masks::refresh`] is
+    /// given: the plan's own, until [`Masks::after`] moves it past a prefix.
     at: usize,
     /// How many words the section made when the plan was built.
     len: usize,
 }
 
 impl Masks {
-    /// `words`, the plan's own, with the section's words made again for the
-    /// sockets the host holds now, and whether the `unix` filter may leave
-    /// `socket(AF_UNIX)` to the command: false when the listing cannot be read
-    /// or holds more sockets than [`MAX_MASKS`], which masks none of them.
+    /// These masks for words that start with `prefix` more words than the
+    /// plan's own, as `bwrap` itself does in [`wrap::words`]. [`Masks::refresh`]
+    /// cuts at a place it counts from the first word it is given, so it needs
+    /// the place to be counted from there.
+    ///
+    /// [`wrap::words`]: crate::wrap::words
+    #[must_use]
+    pub fn after(mut self, prefix: usize) -> Self {
+        self.at += prefix;
+        self
+    }
+
+    /// `words`, the ones these masks were placed for, with the section's words
+    /// made again for the sockets the host holds now, and whether the `unix`
+    /// filter may leave `socket(AF_UNIX)` to the command: false when the listing
+    /// cannot be read or holds more sockets than `MAX_MASKS`, which masks none
+    /// of them.
+    ///
+    /// Those are the plan's words as [`Plan::words`] gives them, or the words of
+    /// [`wrap::words`] once [`Masks::after`] has moved the place past `bwrap`
+    /// itself. Given words the masks were not placed for, it cuts a mount in two.
+    ///
+    /// [`Plan::words`]: super::Plan::words
+    /// [`wrap::words`]: crate::wrap::words
     #[must_use]
     pub fn refresh(&self, words: &[OsString]) -> (Vec<OsString>, bool) {
+        self.refresh_from(words, bound())
+    }
+
+    /// [`Masks::refresh`] against `bound`, the sockets the host holds.
+    pub(crate) fn refresh_from(
+        &self,
+        words: &[OsString],
+        bound: Option<Vec<PathBuf>>,
+    ) -> (Vec<OsString>, bool) {
         let end = (self.at + self.len).min(words.len());
         let at = self.at.min(end);
         let mut fresh = words[..at].to_vec();
-        let open = match self.masks() {
+        let open = match self.masks_from(bound) {
             Some(masks) => {
                 fresh.extend(masks);
                 true
@@ -150,8 +180,8 @@ impl Masks {
     /// socket it would have to mask, and an open `AF_UNIX` with some of them
     /// left unmasked is a wider door than the refusal the filter gives with no
     /// list.
-    fn masks(&self) -> Option<Vec<OsString>> {
-        let bound = bound()?;
+    fn masks_from(&self, bound: Option<Vec<PathBuf>>) -> Option<Vec<OsString>> {
+        let bound = bound?;
         let shut: Vec<&PathBuf> = bound
             .iter()
             .filter(|socket| {
@@ -200,7 +230,7 @@ pub(super) fn words(
         at: draft.offset,
         len: 0,
     };
-    let made = masks.masks();
+    let made = masks.masks_from(bound());
     draft.unix_sockets_open = made.is_some();
     let made = made.unwrap_or_default();
     masks.len = made.len();

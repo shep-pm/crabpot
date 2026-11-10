@@ -115,7 +115,7 @@ pub fn init_with_tcp(
 ///
 /// `sockets` is [`UnixSockets::Open`] only when the bwrap plan already masked
 /// every socket `network.allowUnixSockets` leaves out, which is what
-/// [`crate::wrap::Wrapped::unix_sockets_open`] says. The other entries of this
+/// [`crate::fs::Masks::refresh`] says for the command's words. The other entries of this
 /// ladder always pass [`UnixSockets::Refused`], which is what upstream's filter
 /// does.
 ///

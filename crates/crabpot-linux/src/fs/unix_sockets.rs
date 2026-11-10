@@ -9,23 +9,33 @@
 //! over each socket the list leaves out. That is the mask
 //! [`deny_read`](super::deny_read) gives a denied file.
 //!
-//! The sockets to mask are the ones the kernel lists in `/proc/net/unix` when
-//! the plan is built. Three things follow from that, and none of them is a way
-//! in:
+//! The sockets to mask are the ones the kernel lists in `/proc/net/unix`, read
+//! for each command the sandbox wraps, so a socket the host bound after the
+//! sandbox started is named by the next command's masks. The listing shows the
+//! sockets of the reader's network namespace alone, and a pathname socket is
+//! found by its inode, so one bound in another namespace is dialable all the
+//! same. The section therefore reads the listing of every network namespace a
+//! process it may inspect holds, once each. Three things follow from that, and
+//! none of them is a way in for a socket the host held:
 //!
-//! - A socket the host binds after the sandbox starts is not in the listing and
-//!   stays dialable. The list holds the sockets the host held, and does not
-//!   keep the host from making another.
+//! - A socket the host binds while a command runs is not in that command's
+//!   listing and stays dialable by it. The list holds the sockets the host
+//!   held, and does not keep the host from making another.
 //! - One inode bound at two paths is masked only where the kernel recorded it.
 //!   A hard link to a socket is a second door the listing does not name.
 //! - An abstract socket has no path to mount over. The sandbox's own network
 //!   namespace already keeps it out of reach, which is why upstream's Linux
 //!   filter never masked one either.
 //!
+//! A socket in a namespace that only processes this one may not inspect hold,
+//! such as another user's container, is not listed, and is dialable where its
+//! path is visible and its permissions allow it. So is one whose path the
+//! container's own mount namespace spells differently from this one's.
+//!
 //! A socket that is unlinked between the listing and bwrap's mount has no path
 //! left to mount over, and bwrap cannot make one in the read-only root, so that
 //! launch fails closed with the helper never started. The window is the time
-//! from building the plan to bwrap's mounts, and a host that churns sockets in
+//! from reading the listing to bwrap's mounts, and a host that churns sockets in
 //! it, as parallel test cases do, can meet it now and then.
 //!
 //! The section masks every socket it names or none of them: a listing that
@@ -42,9 +52,9 @@
 //! mount of this one beneath a mask of theirs has no mount point to land on,
 //! since bwrap cannot make one in the read-only root.
 //!
-//! A dial of a masked path is answered `ENOTSOCK`, which is what a dial of a
-//! path that is no longer a socket is answered: the harness counts it as a
-//! refusal (`harness/src/probe/unix.rs`), as a sandbox refusing the dial.
+//! A dial of a masked path is answered `ECONNREFUSED` on Linux, which is what
+//! `connect(2)` answers for a path that is no socket (unix(7)): the harness
+//! counts it as a refusal (`harness/src/probe/unix.rs`).
 //!
 //! The masks are not added to the plan's `protected` paths, so no ancestor of
 //! one is pinned read-only: a listed socket in a writable directory stays
@@ -90,13 +100,78 @@ const LISTING: &str = "/proc/net/unix";
 /// cap is left to the masks.
 const MAX_MASKS: usize = 1_500;
 
+/// What a command's masks are made from, kept so each command the sandbox wraps
+/// is masked against the sockets the host holds then.
+#[derive(Debug, Clone)]
+pub struct Masks {
+    /// The entries of the list, read against the plan's base.
+    opened: Vec<String>,
+    /// What the read sections mounted, which hides a socket already.
+    hidden: Vec<Mount>,
+    /// The sockets the plan binds itself.
+    own: Vec<PathBuf>,
+    /// Where the section's words start in the plan's words.
+    at: usize,
+    /// How many words the section made when the plan was built.
+    len: usize,
+}
+
+impl Masks {
+    /// `words`, the plan's own, with the section's words made again for the
+    /// sockets the host holds now, and whether the `unix` filter may leave
+    /// `socket(AF_UNIX)` to the command: false when the listing cannot be read
+    /// or holds more sockets than [`MAX_MASKS`], which masks none of them.
+    #[must_use]
+    pub fn refresh(&self, words: &[OsString]) -> (Vec<OsString>, bool) {
+        let end = (self.at + self.len).min(words.len());
+        let at = self.at.min(end);
+        let mut fresh = words[..at].to_vec();
+        let open = match self.masks() {
+            Some(masks) => {
+                fresh.extend(masks);
+                true
+            }
+            None => false,
+        };
+        fresh.extend_from_slice(&words[end..]);
+        (fresh, open)
+    }
+
+    /// Moves the section's place for `pinned` words spliced in at `pin_at`,
+    /// which `Plan::build_with` does once every section has run.
+    pub(super) fn shift_for_pins(&mut self, pin_at: usize, pinned: usize) {
+        if pin_at <= self.at {
+            self.at += pinned;
+        }
+    }
+
+    /// The mask words for the sockets the list leaves out, or `None` when none
+    /// can be made: the listing cannot be read, or the plan cannot name every
+    /// socket it would have to mask, and an open `AF_UNIX` with some of them
+    /// left unmasked is a wider door than the refusal the filter gives with no
+    /// list.
+    fn masks(&self) -> Option<Vec<OsString>> {
+        let bound = bound()?;
+        let shut: Vec<&PathBuf> = bound
+            .iter()
+            .filter(|socket| {
+                !self.opened.iter().any(|entry| opens(entry, socket))
+                    && !under_a_read_mount(socket, &self.hidden)
+                    && !held_by_the_plan(socket, &self.own)
+            })
+            .collect();
+        if shut.len() > MAX_MASKS {
+            return None;
+        }
+        Some(shut.iter().flat_map(|socket| mask_of(socket)).collect())
+    }
+}
+
 /// The mask words for the sockets `config`'s list does not open.
 ///
 /// Sets [`Draft::unix_sockets_open`] when it has them, which is when the `unix`
-/// filter may leave `AF_UNIX` to the command. The flag is set only when every
-/// socket is named: a host whose `/proc/net/unix` cannot be read, or which
-/// holds more sockets than [`MAX_MASKS`], masks none and keeps refusing
-/// `AF_UNIX`, which is what the list does on such a host today.
+/// filter may leave `AF_UNIX` to the command, and leaves the pieces a later
+/// command's masks are made from in [`Draft::unix_masks`].
 pub(super) fn words(
     config: &Config,
     base: &PathBase,
@@ -113,44 +188,38 @@ pub(super) fn words(
     if opened.is_empty() {
         return Ok(Vec::new());
     }
-    let Some(bound) = bound() else {
-        return Ok(Vec::new());
+    let mut masks = Masks {
+        opened,
+        hidden: draft
+            .read_mounts
+            .iter()
+            .chain(&draft.remounts)
+            .cloned()
+            .collect(),
+        own: draft.own_sockets.clone(),
+        at: draft.offset,
+        len: 0,
     };
-    let hidden: Vec<Mount> = draft
-        .read_mounts
-        .iter()
-        .chain(&draft.remounts)
-        .cloned()
-        .collect();
-    let shut: Vec<&PathBuf> = bound
-        .iter()
-        .filter(|socket| {
-            !opened.iter().any(|entry| opens(entry, socket))
-                && !under_a_read_mount(socket, &hidden)
-                && !held_by_the_plan(socket, &draft.own_sockets)
-        })
-        .collect();
-    if shut.len() > MAX_MASKS {
-        // The plan cannot name every socket it would have to mask, and an open
-        // `AF_UNIX` with some of them left unmasked is a wider door than the
-        // refusal the filter gives with no list. The list is ignored here, as
-        // it is when the listing cannot be read.
-        return Ok(Vec::new());
-    }
-    draft.unix_sockets_open = true;
-    Ok(shut.iter().flat_map(|socket| mask_of(socket)).collect())
+    let made = masks.masks();
+    draft.unix_sockets_open = made.is_some();
+    let made = made.unwrap_or_default();
+    masks.len = made.len();
+    draft.unix_masks = Some(masks);
+    Ok(made)
 }
 
-/// The sockets `/proc/net/unix` lists, each canonical and each still a socket,
-/// sorted so one host renders one plan. `None` when the listing is not there to
-/// read.
+/// The sockets every network namespace this process can inspect lists, each
+/// canonical and each still a socket, sorted so one host renders one plan.
+/// `None` when this process's own listing is not there to read, or one is a
+/// listing this parser no longer understands.
 #[cfg(target_os = "linux")]
 pub(super) fn bound() -> Option<Vec<PathBuf>> {
-    let listing = fs::read(LISTING).ok()?;
     let mut bound = BTreeSet::new();
-    for name in names(&listing)? {
-        if let Some(socket) = maskable(&name) {
-            bound.insert(socket);
+    for listing in listings()? {
+        for name in names(&listing)? {
+            if let Some(socket) = maskable(&name) {
+                bound.insert(socket);
+            }
         }
     }
     Some(bound.into_iter().collect())
@@ -160,6 +229,33 @@ pub(super) fn bound() -> Option<Vec<PathBuf>> {
 #[cfg(not(target_os = "linux"))]
 pub(super) fn bound() -> Option<Vec<PathBuf>> {
     None
+}
+
+/// The kernel's socket listing of this process's network namespace, then that
+/// of every other one a process this one may inspect holds, once each. A
+/// pathname socket is found by its inode, so a command can dial one bound in a
+/// namespace this process is not in, and `/proc/net/unix` lists only the
+/// reader's own. A process that is gone or cannot be inspected is skipped.
+#[cfg(target_os = "linux")]
+fn listings() -> Option<Vec<Vec<u8>>> {
+    let mut listings = vec![fs::read(LISTING).ok()?];
+    let mut seen: BTreeSet<PathBuf> = fs::read_link("/proc/self/ns/net").into_iter().collect();
+    for process in fs::read_dir("/proc").ok()?.flatten() {
+        let name = process.file_name();
+        if !name.as_encoded_bytes().iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let Ok(namespace) = fs::read_link(process.path().join("ns/net")) else {
+            continue;
+        };
+        if !seen.insert(namespace) {
+            continue;
+        }
+        if let Ok(listing) = fs::read(process.path().join("net/unix")) {
+            listings.push(listing);
+        }
+    }
+    Some(listings)
 }
 
 /// Where `path` is a socket this plan can mount over: not under a mount bwrap
@@ -189,15 +285,17 @@ fn under_kernel_mount(path: &Path) -> bool {
 }
 
 /// The path of every pathname socket in a `/proc/net/unix` listing: what
-/// follows the seven fixed fields of a line, which a name may hold spaces in.
-/// The listing is read as bytes, since a path is bytes, so one name that is no
-/// text costs no more than the socket it names.
+/// follows the seven fixed fields of a line and the one space after them, kept
+/// byte for byte, since a name may hold runs of spaces and any other byte but a
+/// newline. The listing is read as bytes, since a path is bytes, so one name
+/// that is no text costs no more than the socket it names.
 ///
-/// `None` for a line whose name is neither a pathname nor an abstract one,
-/// which is a listing this parser no longer reads. Masking none of it would
-/// leave every socket dialable, so none of it is read at all.
-#[cfg(target_os = "linux")]
-fn names(listing: &[u8]) -> Option<Vec<PathBuf>> {
+/// `None` for a line whose name is neither a pathname nor an abstract one, or
+/// that has fewer than seven fields, which is a listing this parser no longer
+/// reads, or a name holding a newline. Masking none of it would leave every
+/// socket dialable, so none of it is read at all.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub(super) fn names(listing: &[u8]) -> Option<Vec<PathBuf>> {
     use std::os::unix::ffi::OsStringExt;
 
     let mut named = Vec::new();
@@ -205,25 +303,26 @@ fn names(listing: &[u8]) -> Option<Vec<PathBuf>> {
         if line.is_empty() {
             continue;
         }
-        let mut fields = line
-            .split(|byte| byte.is_ascii_whitespace())
-            .filter(|field| !field.is_empty());
+        let mut end = 0;
         for _ in 0..7 {
-            fields.next()?;
-        }
-        let mut path: Vec<u8> = Vec::new();
-        for field in fields {
-            if !path.is_empty() {
-                path.push(b' ');
+            while line.get(end).is_some_and(u8::is_ascii_whitespace) {
+                end += 1;
             }
-            path.extend_from_slice(field);
+            let start = end;
+            while line.get(end).is_some_and(|byte| !byte.is_ascii_whitespace()) {
+                end += 1;
+            }
+            if end == start {
+                return None;
+            }
         }
+        let path = line.get(end + 1..).unwrap_or_default();
         // An unnamed socket prints no name, an abstract one prints one with
         // `@` first, and a pathname one prints its path. The sandbox's own
         // network namespace keeps the abstract ones out of reach.
         match path.first() {
             None | Some(b'@') => {}
-            Some(b'/') => named.push(PathBuf::from(OsString::from_vec(path))),
+            Some(b'/') => named.push(PathBuf::from(OsString::from_vec(path.to_vec()))),
             Some(_) => return None,
         }
     }

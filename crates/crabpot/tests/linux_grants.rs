@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
+use std::sync::{PoisonError, RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -123,9 +123,32 @@ fn settings_allowing_tcp(case: &str, destinations: &[String]) -> PathBuf {
     path
 }
 
+/// Held shared by every sandbox a case here launches, and exclusively by one
+/// whose settings list Unix sockets.
+///
+/// A plan with an `allowUnixSockets` list mounts `/dev/null` over every socket
+/// `/proc/net/unix` names when it is built, and bwrap cannot mount over a path
+/// that was unlinked since. The cases run in parallel threads, and each sandbox
+/// binds a proxy socket of its own and unlinks it on exit, so a case that lists
+/// sockets would meet a vanished one now and then (exit 125). It launches with
+/// no other sandbox running instead.
+static LAUNCH: RwLock<()> = RwLock::new(());
+
 /// Runs `script` as `python3 -c` for the command of a sandbox started with
 /// `settings`, and ends the sandbox if it has not finished in 20 seconds.
 fn run_script(settings: &std::path::Path, script: &str) -> Output {
+    let _launching = LAUNCH.read().unwrap_or_else(PoisonError::into_inner);
+    run_script_unlocked(settings, script)
+}
+
+/// [`run_script`] for settings that list Unix sockets: no other sandbox is
+/// launched while it runs. See [`LAUNCH`].
+fn run_script_alone(settings: &std::path::Path, script: &str) -> Output {
+    let _launching = LAUNCH.write().unwrap_or_else(PoisonError::into_inner);
+    run_script_unlocked(settings, script)
+}
+
+fn run_script_unlocked(settings: &std::path::Path, script: &str) -> Output {
     let child = Command::new(CRABPOT)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args([
@@ -230,7 +253,7 @@ fn listening(case: &str, name: &str) -> (PathBuf, std::os::unix::net::UnixListen
 fn a_listed_unix_socket_is_reachable_from_the_command() {
     let (live, _held) = listening("listed", "live.sock");
     let settings = settings_with_unix_sockets("listed", &[live.to_str().unwrap()]);
-    let output = run_script(
+    let output = run_script_alone(
         &settings,
         &format!(
             r#"
@@ -251,7 +274,7 @@ fn a_unix_socket_the_list_leaves_out_is_refused() {
     let (listed, _listed) = listening("unlisted", "listed.sock");
     let (other, _other) = listening("unlisted", "other.sock");
     let settings = settings_with_unix_sockets("unlisted", &[listed.to_str().unwrap()]);
-    let output = run_script(
+    let output = run_script_alone(
         &settings,
         &format!(
             r#"
@@ -276,9 +299,12 @@ for name, path in (('listed', {listed:?}), ('other', {other:?})):
 fn a_listed_directory_leaves_every_socket_beneath_it_reachable() {
     let socks = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("listed-dir-socks");
     fs::create_dir_all(&socks).unwrap();
+    // A listener's drop does not unlink its file, so a second run in this
+    // target directory finds the last one's.
+    let _ = fs::remove_file(socks.join("a.sock"));
     let _held = std::os::unix::net::UnixListener::bind(socks.join("a.sock")).unwrap();
     let settings = settings_with_unix_sockets("listed-dir", &[socks.to_str().unwrap()]);
-    let output = run_script(
+    let output = run_script_alone(
         &settings,
         &format!(
             r#"

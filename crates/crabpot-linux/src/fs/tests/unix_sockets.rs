@@ -290,3 +290,45 @@ fn the_socket_the_plan_binds_itself_is_never_masked() {
     );
     assert!(held.unix_sockets_open());
 }
+
+/// The masks are made again for each command, from what the host holds then.
+#[test]
+fn a_socket_bound_after_the_plan_is_masked_in_the_words_a_later_command_gets() {
+    let tree = Tree::empty("fs-unix-sockets-refresh");
+    let (listed, _listed) = listening(&tree, "listed.sock");
+    // A writable folder makes the plan splice ancestor pins ahead of the masks,
+    // which moves where the section's words sit.
+    let work = at(&tree, "work");
+    tree.dir("work");
+    let held = build(&tree, &policy(&[&listed], &[], &[&work]));
+    let masks = held.unix_masks().expect("a list makes masks");
+    let (later, _later) = listening(&tree, "later.sock");
+    let text = |words: &[std::ffi::OsString]| {
+        words
+            .iter()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    assert!(!masked(&text(held.words()), &later), "bound after the plan");
+    let (fresh, open) = masks.refresh(held.words());
+    let fresh = text(&fresh);
+
+    assert!(open);
+    assert!(masked(&fresh, &later), "{fresh:#?}");
+    assert!(!masked(&fresh, &listed), "{fresh:#?}");
+    // Nothing else moved: the words around the section are the plan's own.
+    let original = text(held.words());
+    let strip = |words: &[String]| {
+        let mut words = words.to_vec();
+        while let Some(at) = words.windows(3).position(|run| {
+            run[0] == "--ro-bind"
+                && run[1] == "/dev/null"
+                && run[2].contains("fs-unix-sockets-refresh")
+        }) {
+            words.drain(at..at + 3);
+        }
+        words
+    };
+    assert_eq!(strip(&fresh), strip(&original));
+}

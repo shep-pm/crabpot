@@ -126,7 +126,13 @@ impl Sandbox {
             OsString::from(RELAY_FLAG),
             self.proxy.mux_socket().as_os_str().to_owned(),
         ];
-        if self.unix_sockets_open {
+        // The masks are made again here, for the sockets the host holds now, and
+        // the filter opens `AF_UNIX` only when every one of them is masked.
+        let (mut bwrap_words, unix_sockets_open) = match &self.unix_masks {
+            Some(masks) => masks.refresh(&self.words),
+            None => (self.words.clone(), false),
+        };
+        if unix_sockets_open {
             words.push(OsString::from(ALLOW_UNIX_SOCKETS_FLAG));
         }
         if let Some(fd) = report {
@@ -158,7 +164,6 @@ impl Sandbox {
         words.push(OsString::from("--"));
         words.push(command.get_program().to_owned());
         words.extend(command.get_args().map(OsString::from));
-        let mut bwrap_words = self.words.clone();
         if report.is_some() {
             bwrap_words.splice(1..1, crabpot_linux::wrap::info_words());
         }

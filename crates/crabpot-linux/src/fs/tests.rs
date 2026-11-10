@@ -30,6 +30,8 @@ mod deny_read;
 mod deny_write;
 mod mount_points;
 mod pins;
+#[cfg(unix)]
+mod unix_listing;
 
 // The cases need a socket the kernel is holding, which is what the plan reads
 // `/proc/net/unix` for.

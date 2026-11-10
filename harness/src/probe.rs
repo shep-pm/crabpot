@@ -737,8 +737,8 @@ mod tests {
     }
 
     /// What crabpot's Linux plan leaves an unlisted socket as: it mounts
-    /// `/dev/null` over the path, and the dial of a path that is no longer a
-    /// socket is answered `ENOTSOCK`. The sandbox refused the dial.
+    /// `/dev/null` over the path, and the dial of a path that is no socket is
+    /// answered `ECONNREFUSED` on Linux (unix(7)). The sandbox refused the dial.
     #[test]
     #[cfg(target_os = "linux")]
     fn connect_unix_to_a_socket_mounted_over_exits_1() {

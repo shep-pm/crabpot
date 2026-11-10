@@ -26,6 +26,7 @@ mod mount_points;
 mod pins;
 
 pub use mount_points::MountPoints;
+pub use unix_sockets::Masks;
 
 /// Declares each section's module and lists them in the order they render.
 macro_rules! sections {
@@ -116,6 +117,9 @@ struct Draft {
     /// `allowUnixSockets` list leaves out, which is when the `unix` seccomp
     /// filter may leave `socket(AF_UNIX)` to the command.
     unix_sockets_open: bool,
+    /// What the `unix_sockets` section makes each command's masks from, when
+    /// the config lists sockets.
+    unix_masks: Option<unix_sockets::Masks>,
 }
 
 /// The fixture tree the cases build their paths on needs `symlink`, so the
@@ -133,6 +137,7 @@ pub struct Plan {
     words: Vec<OsString>,
     mount_points: MountPoints,
     unix_sockets_open: bool,
+    unix_masks: Option<Masks>,
 }
 
 impl Plan {
@@ -180,11 +185,18 @@ impl Plan {
             words.extend(section(config, base, &mut draft)?);
         }
         let pins = pins::words(&draft);
+        let pinned = pins.len();
         words.splice(draft.pin_at..draft.pin_at, pins);
+        // The pins went in ahead of the section's words, or at their start.
+        let unix_masks = draft.unix_masks.map(|mut masks| {
+            masks.shift_for_pins(draft.pin_at, pinned);
+            masks
+        });
         Ok(Self {
             words,
             mount_points: draft.mount_points,
             unix_sockets_open: draft.unix_sockets_open,
+            unix_masks,
         })
     }
 
@@ -197,6 +209,13 @@ impl Plan {
     #[must_use]
     pub fn unix_sockets_open(&self) -> bool {
         self.unix_sockets_open
+    }
+
+    /// What makes the masks of the `allowUnixSockets` list again, for a command
+    /// wrapped after the plan was built. `None` with no list.
+    #[must_use]
+    pub fn unix_masks(&self) -> Option<&Masks> {
+        self.unix_masks.as_ref()
     }
 
     /// The words, to follow `bwrap` itself.

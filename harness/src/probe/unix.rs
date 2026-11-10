@@ -15,8 +15,13 @@ use crate::signal;
 use super::{Error, Outcome, judge, socket_path_too_long};
 
 /// A socket the sandbox will not let the command use answers `EPERM`, which is
-/// what a refused `bind` or `connect` on `AF_UNIX` gives back.
-const UNIX_BIND_REFUSED: &[io::ErrorKind] = &[io::ErrorKind::PermissionDenied];
+/// what a refused `bind` or `connect` on `AF_UNIX` gives back. A bind into a
+/// folder the sandbox mounted read-only answers `EROFS`, which is how bubblewrap
+/// refuses a socket path it made no room for.
+const UNIX_BIND_REFUSED: &[io::ErrorKind] = &[
+    io::ErrorKind::PermissionDenied,
+    io::ErrorKind::ReadOnlyFilesystem,
+];
 
 /// A dial of a socket file nobody is listening on is answered, and an answer is
 /// not a refusal.
@@ -24,6 +29,13 @@ const UNIX_CONNECT_REFUSED: &[io::ErrorKind] = &[
     io::ErrorKind::PermissionDenied,
     io::ErrorKind::ConnectionRefused,
 ];
+
+/// A dial of a path the sandbox mounted over is answered `ENOTSOCK`, which is
+/// what a dial of a path that is no longer a socket is answered. crabpot's Linux
+/// plan mounts `/dev/null` over every socket an `allowUnixSockets` list leaves
+/// out (`crates/crabpot-linux/src/fs/unix_sockets.rs`), and `std` has no
+/// `ErrorKind` for the answer.
+const UNIX_CONNECT_REFUSED_ERRNO: i32 = nix::errno::Errno::ENOTSOCK as i32;
 
 /// Binds a Unix socket at `path`, which is how a command takes a path the
 /// profile lists for it.
@@ -40,7 +52,18 @@ pub(super) fn connect_unix(path: &str) -> Outcome {
     if socket_path_too_long(path) {
         return Ok(false);
     }
-    judge(UnixStream::connect(path).map(drop), UNIX_CONNECT_REFUSED)
+    match UnixStream::connect(path).map(drop) {
+        Ok(()) => Ok(true),
+        Err(error) if is_a_connect_refusal(&error) => Ok(false),
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+/// Whether `error` is the sandbox refusing the dial, and not the dial failing
+/// for a reason the case did not mean to ask about.
+fn is_a_connect_refusal(error: &io::Error) -> bool {
+    UNIX_CONNECT_REFUSED.contains(&error.kind())
+        || error.raw_os_error() == Some(UNIX_CONNECT_REFUSED_ERRNO)
 }
 
 /// The program the probe starts as the member of the group it means to signal.

@@ -736,6 +736,21 @@ mod tests {
         assert_eq!(probe_path("connect-unix", &dead), 1);
     }
 
+    /// What crabpot's Linux plan leaves an unlisted socket as: it mounts
+    /// `/dev/null` over the path, and the dial of a path that is no longer a
+    /// socket is answered `ENOTSOCK`. The sandbox refused the dial.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn connect_unix_to_a_socket_mounted_over_exits_1() {
+        let fixture = Fixture::new("unix-masked");
+        let masked = fixture.path().join("masked.sock");
+        UnixListener::bind(&masked).unwrap();
+        fs::remove_file(&masked).unwrap();
+        fs::write(&masked, "").unwrap();
+
+        assert_eq!(probe_path("connect-unix", &masked), 1);
+    }
+
     #[test]
     #[cfg(unix)]
     fn a_unix_probe_that_reaches_no_socket_exits_2() {

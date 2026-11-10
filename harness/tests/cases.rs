@@ -100,6 +100,7 @@ const LINUX_READY: &[&str] = &[
     "unix_socket_listed_folder_linux",
     "unix_socket_unlisted_is_refused",
     "unix_socket_empty_string_grants_cwd",
+    "unix_socket_empty_string_grants_cwd_linux",
     "kelpie_socket_path_104_bytes_linux",
     "kernel_vsock_socket_is_refused",
     "kernel_io_uring_setup_is_refused",
@@ -687,6 +688,17 @@ fn unix_socket_empty_string_grants_cwd() {
     run(
         "unix_socket_empty_string_grants_cwd",
         "unix-sockets-empty-string-grants-cwd.json",
+    );
+}
+
+/// The same settings on Linux, where the empty entry is read as the working
+/// directory the plan is built against. The socket the harness serves there is
+/// dialable under crabpot and not under upstream, which records the `1`.
+#[test]
+fn unix_socket_empty_string_grants_cwd_linux() {
+    run(
+        "unix_socket_empty_string_grants_cwd_linux",
+        "unix-sockets-empty-string-grants-cwd-linux.json",
     );
 }
 

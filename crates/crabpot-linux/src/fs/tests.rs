@@ -29,6 +29,11 @@ mod deny_write;
 mod mount_points;
 mod pins;
 
+// The cases need a socket the kernel is holding, which is what the plan reads
+// `/proc/net/unix` for.
+#[cfg(target_os = "linux")]
+mod unix_sockets;
+
 /// The name [`build`] makes the plan's working directory under, which is where
 /// the mandatory denies the plan walks for land.
 const CWD: &str = "cwd";

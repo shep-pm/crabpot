@@ -60,6 +60,11 @@ pub struct Sandbox {
     published: Mutex<Vec<crabpot_linux::net::publish::Published>>,
     #[cfg(target_os = "linux")]
     tcp: Vec<crabpot_core::proxy::TcpGrant>,
+    /// Whether the bwrap words masked every Unix socket
+    /// `network.allowUnixSockets` leaves out, which is when the helper's `unix`
+    /// filter may leave `socket(AF_UNIX)` to the command.
+    #[cfg(target_os = "linux")]
+    unix_sockets_open: bool,
     /// The grants and the proxy of the Windows session, which its commands run
     /// through srt-win under.
     #[cfg(windows)]
@@ -186,6 +191,7 @@ impl Sandbox {
                     publish,
                     published: Mutex::new(Vec::new()),
                     tcp,
+                    unix_sockets_open: wrapped.unix_sockets_open,
                     facts: Facts::for_sandbox(config),
                     proxy,
                 })

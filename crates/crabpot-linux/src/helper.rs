@@ -11,9 +11,11 @@
 //! it is given the proxy's socket, it forks the relay for the network namespace
 //! before that, and waits for the relay to listen. The command is started with
 //! both seccomp filters installed, and a filter that cannot be installed ends
-//! the helper with status 125 before the command runs. The `connect` mode is the
-//! other way the binary is re-entered: a sandboxed ssh starts it for its
-//! `ProxyCommand`.
+//! the helper with status 125 before the command runs. The `unix` filter refuses
+//! `socket(AF_UNIX)` unless the facade says the bwrap plan masked every socket
+//! `network.allowUnixSockets` leaves out, which is the `--allow-unix-sockets`
+//! flag's job. The `connect` mode is the other way the binary is re-entered: a
+//! sandboxed ssh starts it for its `ProxyCommand`.
 //!
 //! With extra loopback addresses, `init_with_loopback` first makes a user and
 //! network namespace and configures `lo`. The relay shares that network namespace.

@@ -15,6 +15,12 @@ pub struct Wrapped {
     /// The host paths bwrap makes for the denies in `words`. They are removed
     /// when this drops, so keep it for as long as a command may run.
     pub mount_points: MountPoints,
+    /// Whether the plan masked every Unix socket `network.allowUnixSockets`
+    /// leaves out, which is when the helper may leave `socket(AF_UNIX)` to the
+    /// command. See [`Plan::unix_sockets_open`].
+    ///
+    /// [`Plan::unix_sockets_open`]: crate::fs::Plan::unix_sockets_open
+    pub unix_sockets_open: bool,
 }
 
 /// The descriptor bwrap is told to report its sandbox on, and the one the
@@ -63,7 +69,9 @@ pub fn words(
     proxy_socket: &Path,
     root_with_setfcap: bool,
 ) -> Result<Wrapped, PlanError> {
-    let (plan_words, mount_points) = Plan::build(config)?.into_parts();
+    let plan = Plan::build(config)?;
+    let unix_sockets_open = plan.unix_sockets_open();
+    let (plan_words, mount_points) = plan.into_parts();
     let mut words = vec![bwrap.as_os_str().to_owned()];
     words.extend(plan_words);
     words.extend([OsString::from("--ro-bind"), helper.into(), helper.into()]);
@@ -76,6 +84,7 @@ pub fn words(
     Ok(Wrapped {
         words,
         mount_points,
+        unix_sockets_open,
     })
 }
 

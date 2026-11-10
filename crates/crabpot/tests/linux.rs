@@ -758,7 +758,7 @@ fn allow_tcp_on_a_proxy_port_of_another_address_still_starts_the_sandbox() {
 #[test]
 fn allow_tcp_refuses_a_scoped_ipv6_address_naming_it() {
     let settings = settings_allowing_tcp("scoped", &["[fe80::1%2]:22".to_owned()]);
-    let output = run_with_tcp(&settings, "print('ran')");
+    let output = run_script(&settings, "print('ran')");
 
     assert_eq!(output.status.code(), Some(125), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
@@ -793,7 +793,7 @@ fn tcp_round_trip_on(case: &str, address: std::net::Ipv4Addr, port: u16, host: O
         None => destination.to_string(),
     };
     let settings = settings_allowing_tcp(case, &[entry]);
-    let output = run_with_tcp(
+    let output = run_script(
         &settings,
         &format!(
             r#"
@@ -839,7 +839,9 @@ fn settings_allowing_tcp(case: &str, destinations: &[String]) -> PathBuf {
     path
 }
 
-fn run_with_tcp(settings: &std::path::Path, script: &str) -> Output {
+/// Runs `script` as `python3 -c` for the command of a sandbox started with
+/// `settings`, and ends the sandbox if it has not finished in 20 seconds.
+fn run_script(settings: &std::path::Path, script: &str) -> Output {
     let child = Command::new(CRABPOT)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args([
@@ -876,7 +878,7 @@ fn allow_tcp_refuses_a_host_server_on_an_unlisted_port() {
     let listed = TcpListener::bind((address, 0)).unwrap();
     let settings =
         settings_allowing_tcp("unlisted-port", &[listed.local_addr().unwrap().to_string()]);
-    let output = run_with_tcp(
+    let output = run_script(
         &settings,
         &format!(
             r#"
@@ -905,11 +907,126 @@ else:
 fn allow_tcp_refuses_an_unresolved_host_before_running_the_command() {
     let settings =
         settings_allowing_tcp("unresolved", &["database.crabpot.invalid:5432".to_owned()]);
-    let output = run_with_tcp(&settings, "print('ran')");
+    let output = run_script(&settings, "print('ran')");
 
     assert_eq!(output.status.code(), Some(125), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("database.crabpot.invalid"), "{error}");
     assert!(error.contains("cannot resolve"), "{error}");
+}
+
+/// A settings file whose `network.allowUnixSockets` is `sockets`, written where
+/// the wrapper can read it.
+fn settings_with_unix_sockets(case: &str, sockets: &[&str]) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("allow-unix-{case}.json"));
+    fs::write(
+        &path,
+        serde_json::json!({
+            "network": {"allowedDomains": [], "deniedDomains": [], "allowUnixSockets": sockets},
+            "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    path
+}
+
+/// A Unix socket the host is listening on, named for `case`, held for as long as
+/// a sandbox needs to dial it. The plan reads the kernel's socket listing when
+/// it is built, so a socket must be there before `crabpot` starts.
+fn listening(case: &str, name: &str) -> (PathBuf, std::os::unix::net::UnixListener) {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{case}-{name}"));
+    let _ = fs::remove_file(&path);
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("a socket to listen on");
+    (path, listener)
+}
+
+#[test]
+fn a_listed_unix_socket_is_reachable_from_the_command() {
+    let (live, _held) = listening("listed", "live.sock");
+    let settings = settings_with_unix_sockets("listed", &[live.to_str().unwrap()]);
+    let output = run_script(
+        &settings,
+        &format!(
+            r#"
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect({live:?})
+print('connected')
+"#
+        ),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "connected\n");
+}
+
+#[test]
+fn a_unix_socket_the_list_leaves_out_is_refused() {
+    let (listed, _listed) = listening("unlisted", "listed.sock");
+    let (other, _other) = listening("unlisted", "other.sock");
+    let settings = settings_with_unix_sockets("unlisted", &[listed.to_str().unwrap()]);
+    let output = run_script(
+        &settings,
+        &format!(
+            r#"
+import socket
+for name, path in (('listed', {listed:?}), ('other', {other:?})):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except OSError:
+        print(name, 'refused')
+    else:
+        print(name, 'connected')
+"#
+        ),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "listed connected\nother refused\n");
+}
+
+#[test]
+fn a_listed_directory_leaves_every_socket_beneath_it_reachable() {
+    let socks = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("listed-dir-socks");
+    fs::create_dir_all(&socks).unwrap();
+    let _held = std::os::unix::net::UnixListener::bind(socks.join("a.sock")).unwrap();
+    let settings = settings_with_unix_sockets("listed-dir", &[socks.to_str().unwrap()]);
+    let output = run_script(
+        &settings,
+        &format!(
+            r#"
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect({a:?})
+print('connected')
+"#,
+            a = socks.join("a.sock")
+        ),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "connected\n");
+}
+
+#[test]
+fn with_no_list_socket_af_unix_is_refused() {
+    let settings = settings_with_unix_sockets("none", &[]);
+    let output = run_script(
+        &settings,
+        r#"
+import socket
+try:
+    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+except PermissionError:
+    print('refused')
+else:
+    raise AssertionError('AF_UNIX was open with no list')
+"#,
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "refused\n");
 }

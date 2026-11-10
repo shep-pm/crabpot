@@ -14,7 +14,8 @@ use crabpot_linux::net::{HTTP_PORT, SOCKS_PORT};
 use crabpot_linux::startup::{Pipe, Startup};
 
 use crate::args::{
-    HELPER_FLAG, HelperMode, LOOPBACK_FLAG, PUBLISH_FD_FLAG, RELAY_FLAG, REPORT_STARTED_FLAG,
+    ALLOW_UNIX_SOCKETS_FLAG, HELPER_FLAG, HelperMode, LOOPBACK_FLAG, PUBLISH_FD_FLAG, RELAY_FLAG,
+    REPORT_STARTED_FLAG,
 };
 
 use super::{Sandbox, StartError, WrapError, carry_over, command_line};
@@ -125,6 +126,9 @@ impl Sandbox {
             OsString::from(RELAY_FLAG),
             self.proxy.mux_socket().as_os_str().to_owned(),
         ];
+        if self.unix_sockets_open {
+            words.push(OsString::from(ALLOW_UNIX_SOCKETS_FLAG));
+        }
         if let Some(fd) = report {
             words.extend([
                 OsString::from(REPORT_STARTED_FLAG),
@@ -428,6 +432,51 @@ mod tests {
 
         assert!(matches!(error, WrapError::Publish(_)), "{error}");
         assert!(error.to_string().contains(&address.to_string()), "{error}");
+    }
+
+    /// A started sandbox whose `allowUnixSockets` is `sockets`, or `None` where
+    /// the machine has no bwrap to wrap a command in.
+    fn started_with_unix_sockets(sockets: &[&str]) -> Option<Sandbox> {
+        let config = Config::from_json(
+            &serde_json::json!({
+                "network": {
+                    "allowedDomains": [], "deniedDomains": [], "allowUnixSockets": sockets
+                },
+                "filesystem": {"denyRead": [], "allowRead": [], "allowWrite": [], "denyWrite": []}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        match Sandbox::start(&config) {
+            Ok(sandbox) => Some(sandbox),
+            // The machine has no bwrap to wrap a command in.
+            Err(StartError::Missing { .. } | StartError::Uid0WithoutSetfcap) => None,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[test]
+    fn a_list_of_unix_sockets_tells_the_helper_to_open_af_unix() {
+        let Some(sandbox) = started_with_unix_sockets(&["/run/agent.sock"]) else {
+            return;
+        };
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+        let words = init_of(&wrapped);
+        let helper = crate::args::parse_init(&words).unwrap();
+
+        assert!(helper.unix_sockets, "{helper:?}");
+    }
+
+    #[test]
+    fn no_list_of_unix_sockets_leaves_the_helper_to_refuse_af_unix() {
+        let Some(sandbox) = started_with_unix_sockets(&[]) else {
+            return;
+        };
+        let wrapped = sandbox.command(&Command::new("true")).unwrap();
+        let words = init_of(&wrapped);
+        let helper = crate::args::parse_init(&words).unwrap();
+
+        assert!(!helper.unix_sockets, "{helper:?}");
     }
 
     #[test]

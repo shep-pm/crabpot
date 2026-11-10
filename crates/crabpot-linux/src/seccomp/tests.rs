@@ -128,13 +128,29 @@ fn token(arch: Arch) -> u32 {
 }
 
 /// The answer of the three filters, installed one over another, to a call
-/// made on `arch` with `arg0` as its first argument.
+/// made on `arch` with `arg0` as its first argument. The `unix` filter is the
+/// one with no `allowUnixSockets` list, which is what every case here asks
+/// about unless it says otherwise.
 fn answer(arch: Arch, call: &Call, arg0: u64) -> Verdict {
-    answer_to(arch, call.nr(arch), token(arch), arg0)
+    answer_with(arch, UnixSockets::Refused, call, arg0)
 }
 
 fn answer_to(built_for: Arch, nr: u32, arch: u32, arg0: u64) -> Verdict {
-    let unix = unix(built_for).expect("the unix filter builds");
+    answer_at(built_for, UnixSockets::Refused, nr, arch, arg0)
+}
+
+fn answer_with(built_for: Arch, sockets: UnixSockets, call: &Call, arg0: u64) -> Verdict {
+    answer_at(
+        built_for,
+        sockets,
+        call.nr(built_for),
+        token(built_for),
+        arg0,
+    )
+}
+
+fn answer_at(built_for: Arch, sockets: UnixSockets, nr: u32, arch: u32, arg0: u64) -> Verdict {
+    let unix = unix(built_for, sockets).expect("the unix filter builds");
     let namespaces = namespaces(built_for).expect("the namespaces filters build");
     let data = SeccompData {
         nr,
@@ -175,6 +191,46 @@ fn io_uring_calls_are_refused() {
         for call in [IO_URING_SETUP, IO_URING_ENTER, IO_URING_REGISTER] {
             assert_eq!(answer(arch, &call, 0), EPERM, "{arch:?} {}", call.nr(arch));
         }
+    }
+}
+
+/// With an `allowUnixSockets` list the bwrap plan masks every socket the list
+/// leaves out, so the filter has no path to guard and leaves `AF_UNIX` open.
+#[test]
+fn an_open_filter_leaves_socket_af_unix_to_the_command() {
+    for arch in ARCHES {
+        assert_eq!(
+            answer_with(arch, UnixSockets::Open, &SOCKET, AF_UNIX),
+            Verdict::Allow,
+            "{arch:?}"
+        );
+    }
+}
+
+/// The open filter is the refused one with the `AF_UNIX` rule taken out, and
+/// nothing else taken out with it.
+#[test]
+fn an_open_filter_refuses_af_vsock_and_the_io_uring_calls_still() {
+    for arch in ARCHES {
+        let open = UnixSockets::Open;
+        assert_eq!(
+            answer_with(arch, open, &SOCKET, AF_VSOCK),
+            EPERM,
+            "{arch:?}"
+        );
+        for call in [IO_URING_SETUP, IO_URING_ENTER, IO_URING_REGISTER] {
+            assert_eq!(
+                answer_with(arch, open, &call, 0),
+                EPERM,
+                "{arch:?} {}",
+                call.nr(arch)
+            );
+        }
+        assert_eq!(
+            answer_with(arch, open, &SOCKET, AF_INET),
+            Verdict::Allow,
+            "{arch:?}"
+        );
     }
 }
 

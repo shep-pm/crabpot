@@ -45,6 +45,7 @@ sections!(
     allow_read,
     mandatory,
     deny_write,
+    unix_sockets,
     private_mounts
 );
 
@@ -108,6 +109,10 @@ struct Draft {
     /// The write denies the `mandatory` section walked for, in the order the
     /// walk found them, which `deny_write` puts after the settings' own.
     mandatory_denies: Vec<String>,
+    /// Whether the `unix_sockets` section masked every socket the
+    /// `allowUnixSockets` list leaves out, which is when the `unix` seccomp
+    /// filter may leave `socket(AF_UNIX)` to the command.
+    unix_sockets_open: bool,
 }
 
 /// The fixture tree the cases build their paths on needs `symlink`, so the
@@ -124,6 +129,7 @@ mod tests;
 pub struct Plan {
     words: Vec<OsString>,
     mount_points: MountPoints,
+    unix_sockets_open: bool,
 }
 
 impl Plan {
@@ -161,7 +167,19 @@ impl Plan {
         Ok(Self {
             words,
             mount_points: draft.mount_points,
+            unix_sockets_open: draft.unix_sockets_open,
         })
+    }
+
+    /// Whether the plan leaves `socket(AF_UNIX)` to the command: it masked
+    /// every Unix socket the `allowUnixSockets` list leaves out, so the `unix`
+    /// seccomp filter may open `AF_UNIX` with nothing else dialable.
+    ///
+    /// False with no list, and false when the kernel's socket listing could not
+    /// be read, since then no socket can be named to mask.
+    #[must_use]
+    pub fn unix_sockets_open(&self) -> bool {
+        self.unix_sockets_open
     }
 
     /// The words, to follow `bwrap` itself.
